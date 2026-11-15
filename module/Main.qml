@@ -32,7 +32,7 @@ QtObject {
         busy: main.client.busy
         canChange: main.client.canChange
         // The owner's decision (tailscale.md §8): the shell's kill switch does not support it
-        lockdownNote: "Tailscale does not work with the shell's blocking of traffic outside a VPN: blocked, it cannot reach its servers or its peers, so it may not connect or carry traffic. Turn the blocking off to use Tailscale."
+        lockdownNote: "Tailscale is not let through while traffic outside a VPN is blocked: turn the blocking off to use it."
 
         // An unknown origin is taken as "network" (the client reads anything but "user" so)
         function connect(entryId, request) {
@@ -46,9 +46,10 @@ QtObject {
         }
     }
 
-    // Never a text starting with "-" into a notification (notify-send would read it as an option)
+    // Never a text starting with "-" into a notification (notify-send would read it as an
+    // option), and no addresses (a notification may show on a shared screen)
     function _plain(text) {
-        return String(text ?? "").replace(/^[\s-]+/, "");
+        return TailscaleRules.withoutAddresses(String(text ?? "")).replace(/^[\s-]+/, "");
     }
 
     property Connections _failures: Connections {
@@ -59,11 +60,12 @@ QtObject {
     }
 
     // Facts for profile conditions: pushed only when their value changes (each setFact
-    // re-evaluates the shell's settings)
+    // re-evaluates the shell's settings). Neutral values only: whether an exit node is in
+    // use, never its name (no profile condition needs which one)
     readonly property bool connected: client.entry.state === "activated"
-    readonly property string exitNodeName: connected ? (client.view.exitNode?.name ?? "") : ""
+    readonly property bool exitNodeInUse: connected && client.view.exitNode !== null
     onConnectedChanged: module?.setFact("connected", connected)
-    onExitNodeNameChanged: module?.setFact("exitNode", exitNodeName)
+    onExitNodeInUseChanged: module?.setFact("exitNodeInUse", exitNodeInUse)
 
     // For tests and scripts: plain state — no names, addresses or URLs
     property IpcHandler ipc: IpcHandler {
@@ -80,19 +82,22 @@ QtObject {
                 attentionAction: client.entry.attention?.action ?? "", status: status, busy: client.busy, operation: client.operation,
                 exitNode: exitNode !== null, exitNodeOnline: exitNode?.online ?? false, cli: client.cli, daemon: client.daemon,
                 streamUp: client.streamUp, canChange: client.canChange, ready: client.ready, toolsMode: client.toolsMode,
+                stale: client.stale, curlMissing: client.curlMissing, elevation: client.elevationProblem === "",
                 loginPending: client.authUrl !== "", devices: client.devices.length, exitNodes: client.exitNodes.count,
                 warnings: client.warnings.length, reads: client.reads, streamStarts: client.streamStarts, events: client.events,
                 opened: client.opened, registered: main.provider.registered
             });
         }
 
-        // The provider's own, as the core calls it (origin "user"): for tests
+        // The provider's own, for tests and scripts — as origin "network" (never a password
+        // prompt, never a browser: any process of the user may call this), except while the
+        // tools seam names stand-ins (the lock-bed test: its pkexec asks nobody)
         function connect(): void {
-            main.provider.connect(TailscaleRules.entryId, { origin: "user" });
+            main.provider.connect(TailscaleRules.entryId, { origin: main._ipcOrigin() });
         }
 
         function disconnect(): void {
-            main.provider.disconnect(TailscaleRules.entryId, { origin: "user" });
+            main.provider.disconnect(TailscaleRules.entryId, { origin: main._ipcOrigin() });
         }
 
         function refresh(): void {
@@ -100,10 +105,14 @@ QtObject {
         }
     }
 
+    function _ipcOrigin() {
+        return client.toolsMode === "seam" || client.toolsMode === "test-stand-ins" || client.toolsMode === "owner" ? "user" : "network";
+    }
+
     Component.onCompleted: {
         Tailscale.client = client;
         module?.setFact("connected", connected);
-        module?.setFact("exitNode", exitNodeName);
+        module?.setFact("exitNodeInUse", exitNodeInUse);
     }
     Component.onDestruction: {
         if (Tailscale.client === client)

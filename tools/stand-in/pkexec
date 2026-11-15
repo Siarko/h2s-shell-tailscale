@@ -1,10 +1,15 @@
 #!/bin/sh
-# A stand-in `pkexec` for the module's end-to-end tests: it asks nobody and runs nothing as
-# root. It logs what it was asked to run, then answers as pkexec does:
+# h2s-stand-in: a stand-in `pkexec` for the module's end-to-end tests: it asks nobody and
+# runs nothing as root. It logs what it was asked to run, then answers as pkexec does:
 #
 #   TS_FAKE_PKEXEC      ok (default): runs the program, with TS_FAKE_ROOT=1 so the stand-in
 #                       tailscale behaves as for root | dismiss: exit 126 (the prompt was
-#                       dismissed, or the password refused) | no-agent: exit 127
+#                       dismissed, or the password refused) | no-agent: exit 127 |
+#                       unkillable: as ok, but like a process run as root it cannot be
+#                       signalled by the user — SIGTERM, SIGINT and SIGHUP are ignored (by
+#                       it and, inherited, by what it runs) — and it lasts at least
+#                       TS_FAKE_UNKILLABLE_SECONDS (default 3) before it exits with the
+#                       program's status
 #   TS_FAKE_PKEXEC_LOG  a file each call's argv is appended to (one line, arguments
 #                       separated by tabs)
 #
@@ -18,6 +23,13 @@ case ${1:-} in
 esac
 case ${TS_FAKE_PKEXEC:-ok} in
     ok) TS_FAKE_ROOT=1 exec "$@" ;;
+    unkillable)
+        trap '' TERM INT HUP
+        started=$(date +%s)
+        TS_FAKE_ROOT=1 "$@"
+        status=$?
+        while [ $(($(date +%s) - started)) -lt "${TS_FAKE_UNKILLABLE_SECONDS:-3}" ]; do sleep 0.2; done
+        exit "$status" ;;
     dismiss) echo "Error executing command as another user: Request dismissed" >&2; exit 126 ;;
     no-agent) echo "Error executing command as another user: No authentication agent found." >&2; exit 127 ;;
     *) echo "stand-in pkexec: unknown TS_FAKE_PKEXEC=$TS_FAKE_PKEXEC" >&2; exit 127 ;;

@@ -58,7 +58,7 @@ TestCase {
         assert(module !== null && module.active, "the module is loaded and active");
         assertEqual(module.status?.state, "loaded", "… state loaded");
         assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, qs.components, Quickshell)");
-        assertEqual(module.manifest.api, "1.1", "written for module API 1.1");
+        assertEqual(module.manifest.api, "1.2", "written for module API 1.2 (resumed(), shown)");
         const slots = (module.manifest.slots ?? []).map(entry => entry.slot).sort().join(",");
         assertEqual(slots, "network.vpn.card,network.vpn.page,network.vpn.row", "the three VPN slots in its manifest");
         assert(Api.slots.some(slot => slot.name === "network.vpn.row"), "… offered by the shell");
@@ -76,7 +76,8 @@ TestCase {
         });
         _then("the client read the stand-in's state", () => Tailscale.client?.status !== null && Tailscale.client?.entry.state === "activated", () => {
             assertEqual(module.facts["tailscale.connected"], true, "fact tailscale.connected pushed");
-            assertEqual(module.facts["tailscale.exitNode"], "", "fact tailscale.exitNode: none");
+            assertEqual(module.facts["tailscale.exitNodeInUse"], false, "fact tailscale.exitNodeInUse: false (a neutral value, never a name)");
+            assertEqual(module.facts["tailscale.exitNode"], undefined, "… no fact with the exit node's name");
             assert(module.setFact("connected", "yes") !== "", "… a fact checked against its declared type");
             assert(Tailscale.client.streamStarts >= 1, "the main's client streams the bus");
             // Off: the handle's host is the shell's module host

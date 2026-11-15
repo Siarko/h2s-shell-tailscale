@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checks the stand-ins (tools/stand-in: tailscale, pkexec, curl) do what the next stage's
+# Checks the stand-ins (tools/stand-in: tailscale, pkexec, curl, timeout, …) do what the next stage's
 # end-to-end tests will count on. Each is run by its absolute path, never through PATH — so
 # the real tailscale (or pkexec, or curl) can never be the one that runs — with a private
 # state directory, and nothing reaches a daemon or the network.
@@ -29,7 +29,7 @@ check() { # check <description> <command…>: passes when the command succeeds
 fresh() {
     rm -rf "$work/state" "$work/log" "$work/pkexec.log"
     mkdir -p "$work/state"
-    unset TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT
+    unset TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT TS_FAKE_UP_DELAY TS_FAKE_UP_URL TS_FAKE_STATUS_HANG
     export TS_FAKE_STATE_DIR=$work/state TS_FAKE_LOG=$work/log TS_FAKE_PKEXEC_LOG=$work/pkexec.log
     export TS_FAKE_LOGIN_DELAY=0 TS_FAKE_USER=tester TS_FAKE_FIXTURES=$FIXTURES
 }
@@ -211,6 +211,52 @@ kill -TERM "$login_pid"
 wait "$login_pid" 2> /dev/null
 sleep 0.2
 check "a login ended while it waits takes its sleep with it" test -z "$(pgrep -fx "sleep 5" 2> /dev/null)"
+
+echo "=== stand-in timeout, unkillable pkexec, slow up, hung status ==="
+fresh
+TIMEOUT=$TOOLS/stand-in/timeout
+run "$work/out" "$work/err" "$TIMEOUT" -k 1 5 "$TS" version
+check "timeout: runs the program (the real timeout(1) found on PATH)" test "$status" = 0 -a "$(head -n 1 "$work/out")" = 1.104.4
+start=$SECONDS
+run "$work/out" "$work/err" env TS_FAKE_STATUS_HANG=30 "$TIMEOUT" -k 1 1 "$TS" status --json
+check "hung status: under timeout 1 s it is stopped with 124" test "$status" = 124 -a $((SECONDS - start)) -le 4
+run "$work/out" "$work/err" env PATH="$TOOLS/stand-in" "$TIMEOUT" 1 /bin/true
+check "timeout: no real timeout(1) on PATH → 125, nothing run" test "$status" = 125
+echo 30 > "$work/state/status-hang"
+start=$SECONDS
+run "$work/out" "$work/err" "$TIMEOUT" -k 1 1 "$TS" status --json
+check "hung status by the state file: stopped too" test "$status" = 124 -a $((SECONDS - start)) -le 4
+rm -f "$work/state/status-hang"
+check "… answering again without it" cmp -s <("$TS" status --json) "$FIXTURES/status-running.json"
+export TS_FAKE_OPERATOR=1
+"$TS" down > /dev/null 2>&1
+start=$SECONDS
+TS_FAKE_UP_DELAY=30 TS_FAKE_UP_URL=1 "$TIMEOUT" -k 1 1 "$TS" up > "$work/out" 2> "$work/err"
+status=$?
+check "slow up: still waiting after 1 s, stopped by timeout (124)" test "$status" = 124 -a $((SECONDS - start)) -le 4
+check "slow up: the login URL printed first" grep -q "https://login.tailscale.com/a/REDACTED" "$work/err"
+check "slow up: meanwhile Starting, WantRunning set" test "$(backend)" = Starting -a "$(pref WantRunning)" = true
+"$TS" down > /dev/null 2>&1; TS_FAKE_UP_DELAY=1 "$TS" up > /dev/null 2>&1
+check "slow up given the time: Running" test "$(backend)" = Running
+"$TS" down > /dev/null 2>&1
+TS_FAKE_UP_DELAY=2 "$TS" up > /dev/null 2> "$work/err" &
+up_pid=$!
+sleep 0.5
+"$TS" down > /dev/null 2>&1
+wait "$up_pid"
+check "slow up, then down meanwhile: up fails, never Running" test $? = 1 -a "$(backend)" = Stopped
+unset TS_FAKE_OPERATOR
+"$TS" logout > /dev/null 2>&1; TS_FAKE_ROOT=1 "$TS" logout > /dev/null 2>&1
+start=$SECONDS
+TS_FAKE_PKEXEC=unkillable TS_FAKE_UNKILLABLE_SECONDS=2 TS_FAKE_LOGIN_DELAY=0 "$PKEXEC" "$TS" login > /dev/null 2>&1 &
+pk_pid=$!
+sleep 0.3
+kill -TERM "$pk_pid" 2> /dev/null
+sleep 0.3
+check "unkillable pkexec: SIGTERM ignored" kill -0 "$pk_pid"
+wait "$pk_pid"
+check "… it ends by itself after TS_FAKE_UNKILLABLE_SECONDS, with the program's status" test $? = 0 -a $((SECONDS - start)) -ge 2
+check "… logged like any call" grep -qP "^pkexec\t$TS\tlogin$" "$work/pkexec.log"
 
 echo
 echo "--- stand-ins: $passed/$((passed + failed)) passed$([ "$failed" -gt 0 ] && echo ", $failed FAILED") ---"

@@ -1,5 +1,5 @@
 #!/bin/sh
-# A stand-in `curl` for the module's end-to-end tests of the LocalAPI event stream
+# h2s-stand-in: a stand-in `curl` for the module's end-to-end tests of the LocalAPI event stream
 # (GET /localapi/v0/watch-ipn-bus over tailscaled's unix socket). It connects to nothing:
 # it prints scripted bus lines.
 #

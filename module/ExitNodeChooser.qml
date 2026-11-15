@@ -100,12 +100,14 @@ ColumnLayout {
             anchors { fill: parent; leftMargin: Api.theme.row.horizontalPadding; rightMargin: Api.theme.row.horizontalPadding }
             spacing: 6
             Text {
+                textFormat: Text.PlainText
                 text: "Exit node"
                 font.family: Api.theme.fontFamily
                 font.pixelSize: Api.theme.fontSizeSmall
                 color: Api.theme.textMuted
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 elide: Text.ElideRight
                 text: root.nodes.current ? root.nodes.current.label + (root.nodes.current.online ? "" : " (offline)") : "None"
@@ -117,6 +119,7 @@ ColumnLayout {
                 need: root.need
             }
             Text {
+                textFormat: Text.PlainText
                 text: root.expanded ? "▾" : "▸"
                 font.family: Api.theme.fontFamily
                 font.pixelSize: Api.theme.fontSizeSmall
@@ -163,6 +166,7 @@ ColumnLayout {
                 anchors { fill: parent; leftMargin: Api.theme.row.horizontalPadding + _row.modelData.depth * 12; rightMargin: Api.theme.row.horizontalPadding }
                 spacing: 6
                 Text {
+                    textFormat: Text.PlainText
                     visible: _row.modelData.kind === "country"
                     text: _row.modelData.open ? "▾" : "▸"
                     font.family: Api.theme.fontFamily
@@ -170,6 +174,7 @@ ColumnLayout {
                     color: Api.theme.textMuted
                 }
                 Text {
+                    textFormat: Text.PlainText
                     id: _rowLabel
                     Layout.fillWidth: true
                     elide: Text.ElideRight
@@ -182,6 +187,7 @@ ColumnLayout {
                         : _row.modelData.current ? Api.theme.accent : Api.theme.textPrimary
                 }
                 Text {
+                    textFormat: Text.PlainText
                     visible: text !== ""
                     text: _row.modelData.detail
                     elide: Text.ElideRight
@@ -191,6 +197,7 @@ ColumnLayout {
                     color: _row.modelData.detail === "offline" ? Api.theme.textDisabled : Api.theme.textMuted
                 }
                 Text {
+                    textFormat: Text.PlainText
                     visible: _row.modelData.kind === "choice" && _row.modelData.current
                     text: "✓"
                     font.family: Api.theme.fontFamily

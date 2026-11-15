@@ -1,5 +1,5 @@
 #!/bin/sh
-# A stand-in `systemctl` for the module's tests: it starts and stops nothing but the stand-in
+# h2s-stand-in: a stand-in `systemctl` for the module's tests: it starts and stops nothing but the stand-in
 # tailscale's daemon — the file "daemon-down" in its state directory (TS_FAKE_STATE_DIR, the
 # same default as the stand-in tailscale's). Logs each call to TS_FAKE_LOG.
 #

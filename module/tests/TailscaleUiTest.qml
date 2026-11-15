@@ -1,0 +1,101 @@
+import QtQuick
+import qs.tests
+import ".."
+
+// What peers and the control server name is shown as TEXT, never as markup: a device, an
+// exit node or a warning named `<b>x</b><img src="http://example.invalid/">` is shown
+// literally (Text.PlainText) — with the default AutoText it would be rich text, and the
+// <img> a URL the shell would fetch. The device row, the exit-node chooser and the card are
+// built with crafted data, and every Text showing it is checked.
+TestCase {
+    id: suite
+    suiteName: "tailscale: peers' names shown as plain text"
+
+    readonly property string crafted: "<b>x</b><img src=\"http://example.invalid/\">"
+
+    property Component _deviceRow: Component {
+        DeviceRow {
+            width: 600
+        }
+    }
+    property Component _chooser: Component {
+        ExitNodeChooser {
+            width: 600
+            collapsible: false
+        }
+    }
+    property Component _card: Component {
+        TailscaleCard {
+            width: 600
+        }
+    }
+    // The width rich text would take for the same string ("x" in bold, an image)
+    property Component _reference: Component {
+        Text {
+            textFormat: Text.RichText
+        }
+    }
+
+    // Every Text (and TextEdit) under `item` whose text holds `needle`
+    function textsWith(item, needle) {
+        const found = [];
+        const walk = node => {
+            if (!node)
+                return;
+            if ((node instanceof Text || node instanceof TextEdit) && String(node.text).indexOf(needle) >= 0)
+                found.push(node);
+            for (const child of node.children ?? [])
+                walk(child);
+        };
+        walk(item);
+        return found;
+    }
+
+    function checkPlain(item, where) {
+        const texts = textsWith(item, "<img");
+        assert(texts.length > 0, where + ": the crafted name is shown (" + texts.length + " text(s))");
+        for (const text of texts) {
+            const plain = text instanceof TextEdit ? text.textFormat === TextEdit.PlainText : text.textFormat === Text.PlainText;
+            assert(plain, where + ": shown as plain text: " + JSON.stringify(String(text.text).slice(0, 80)));
+            assert(String(text.text).indexOf(crafted) >= 0, where + ": the markup kept literally, not interpreted");
+        }
+        return texts;
+    }
+
+    function run() {
+        const device = {
+            id: "n1", name: crafted, dnsName: "peer.example-tailnet.ts.net", os: crafted, owner: crafted, tags: [], online: true,
+            connection: "direct", addresses: ["100.64.0.9"], exitNodeOption: true, isExitNode: false, sharedIn: false, keyExpired: false,
+            rxBytes: 0, txBytes: 0, lastSeenText: ""
+        };
+        const row = _deviceRow.createObject(null, { device: device });
+        const texts = checkPlain(row, "device row");
+        assert(texts.length >= 2, "device row: the name and the owner · system line both plain");
+        const reference = _reference.createObject(null, { text: crafted });
+        const nameText = texts.find(text => text.text === crafted);
+        assert(nameText !== undefined && nameText.implicitWidth > reference.implicitWidth,
+               "device row: the name takes the width of its characters, wider than the rendered markup (" + nameText?.implicitWidth + " > " + reference.implicitWidth + ")");
+        reference.destroy();
+        row.destroy();
+
+        const option = { id: "n1", label: crafted, name: crafted, dnsName: crafted, online: true, current: false, argument: "100.64.0.9" };
+        const client = {
+            busy: false, canChange: true, view: { phase: "running", exitNode: null },
+            exitNodes: { own: [option], countries: [], current: Object.assign({}, option, { current: true }), suggested: null, count: 1 },
+            setExitNode: () => {}
+        };
+        const chooser = _chooser.createObject(null, { client: client });
+        checkPlain(chooser, "exit-node chooser");
+        chooser.destroy();
+
+        const fakeClient = {
+            entry: { state: "activated" }, prefs: { acceptDns: true, loginName: crafted }, status: { addresses: [], tailnet: { name: crafted } },
+            self: null, lastTailnet: "", keyExpiry: null,
+            view: { phase: "running", exitNode: { name: crafted, online: false } },
+            warnings: [{ kind: "health", text: crafted }]
+        };
+        const card = _card.createObject(null, { context: { provider: { client: fakeClient }, otherVpnsUp: [] } });
+        checkPlain(card, "card");
+        card.destroy();
+    }
+}

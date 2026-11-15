@@ -21,9 +21,12 @@ printf 'stopped\n' > "$tools/state/scenario"
 echo '{"Health":{"Warnings":{}}}' > "$tools/bus.jsonl"
 : > "$tools/log"
 : > "$tools/pkexec.log"
-for program in tailscale curl pkexec systemctl xdg-open nmcli; do
+: > "$tools/calls"
+for program in tailscale timeout curl pkexec systemctl xdg-open nmcli; do
     cat > "$tools/$program" << WRAPPER
 #!/bin/sh
+# h2s-stand-in wrapper: every call logged by the path it was called by
+printf '%s\n' "\$0" >> "$tools/calls"
 export TS_FAKE_STATE_DIR="$tools/state" TS_FAKE_LOG="$tools/log" TS_FAKE_PKEXEC_LOG="$tools/pkexec.log" \\
     TS_FAKE_LOGIN_DELAY=1 TS_FAKE_FIXTURES="$module_repo/fixtures" TS_FAKE_BUS_FILE="$tools/bus.jsonl" \\
     TS_FAKE_BUS_END=hold TS_FAKE_BUS_HOLD=240 TS_FAKE_USER=tester
@@ -53,7 +56,9 @@ print(json.dumps(modules[0]["errors"] + modules[0].get("warnings", []) if module
 }
 
 # The module comes after the bar's first frame (the host checks its files first)
-check_within 20 "the module is loaded" test "$(module_state)" = loaded
+# (a function: check_within re-runs its command, but arguments are expanded only once)
+module_loaded() { [ "$(module_state)" = loaded ]; }
+check_within 20 "the module is loaded" module_loaded
 check_within 15 "its IPC answers, its provider registered" ts_is registered true
 check "the tools seam names the stand-ins (H2S_TAILSCALE_TOOLS)" ts_is toolsMode seam
 check_within 15 "the entry: off (the stand-in is stopped)" ts_is phase stopped
@@ -82,7 +87,7 @@ shell_ipc tailscale connect > /dev/null
 check_within 15 "connect: the entry is connected" ts_is state activated
 check "… not busy any more" ts_is busy false
 check "bare \`up\`, run plainly, denied, then as root" test "$(grep -cx 'up' "$tools/log")" = 2
-check "… through pkexec by the absolute path of the tailscale it found" grep -qP "^pkexec\t$tools/tailscale\tup\$" "$tools/pkexec.log"
+check "… through pkexec: the seam's timeout (60 s) around the seam's tailscale, by absolute paths" grep -qP "^pkexec\t$tools/timeout\t-k\t5\t60\t$tools/tailscale\tup\$" "$tools/pkexec.log"
 check "no \`up\` with a flag, ever" test "$(grep -c '^up ' "$tools/log")" = 0
 
 # The exit-node chooser under Tailscale's row: its header, then the list
@@ -135,7 +140,13 @@ screenshot settings-tailscale
 check "… built without an error or a warning" test "$(module_errors)" = "[]"
 shell_ipc settings close > /dev/null
 
-check "nothing ran the real tailscale: every call went to the stand-ins (their log)" test "$(grep -c . "$tools/log")" -gt 3
+check "the stand-ins were called (their log)" test "$(grep -c . "$tools/log")" -gt 3
+outside_calls() { grep -cv "^$tools/[a-z-]*\$" "$tools/calls"; }
+check "every program the module ran was one of the seam's: each call's path under $tools" test "$(grep -c . "$tools/calls")" -gt 3 -a "$(outside_calls)" = 0
+outside_pkexec() { awk -F '\t' -v dir="$tools/" '{ for (i = 2; i <= NF; i++) if ($i ~ /^\// && index($i, dir) != 1) bad++ } END { print bad + 0 }' "$tools/pkexec.log"; }
+check "… and every path handed to pkexec too" test "$(outside_pkexec)" = 0
+check "… and as many tailscale calls through the seam as its log has lines (none bypassed it)" \
+    test "$(grep -cx "$tools/tailscale" "$tools/calls")" -ge "$(grep -cvE '^(curl|xdg-open|systemctl) |^$' "$tools/log")"
 
 # The lock, with the module loaded and streaming
 lock_by_ipc

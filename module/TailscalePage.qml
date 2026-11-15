@@ -8,8 +8,8 @@ import qs.components
 // core's frame: Back, title, scrolling) and the settings page "tailscale" under System →
 // Network (its manifest's settingsPages) — the same file. A plain column at the page's width,
 // scrolled by its implicitHeight. Sections: Connection, Exit node, Network, Devices,
-// Administration, About. The devices' traffic is read only while this page exists
-// (client.watch() / unwatch()).
+// Administration, About. The devices' traffic is read only while this page is on screen
+// (`shown`, module API 1.2: client.watch() / unwatch()).
 ColumnLayout {
     id: root
     objectName: "tailscalePage"
@@ -26,22 +26,26 @@ ColumnLayout {
     readonly property bool _free: client !== null && !client.busy
     readonly property string _operatorLine: "services.tailscale.extraSetFlags = [ \"--operator=" + (client?.userName || "<user>") + "\" ];"
     property string _deviceFilter: ""
+    // On screen (given and kept current by the core: module API 1.2)
+    property bool shown: false
     property var _watched: null
 
     spacing: 4
 
-    // The traffic counters are read while the page is there
+    // The traffic counters are read while the page is on screen
     onClientChanged: _follow()
+    onShownChanged: _follow()
     Component.onCompleted: _follow()
     Component.onDestruction: {
         _watched?.unwatch();
         _watched = null;
     }
     function _follow() {
-        if (_watched === client)
+        const wanted = shown ? client : null;
+        if (_watched === wanted)
             return;
         _watched?.unwatch();
-        _watched = client;
+        _watched = wanted;
         _watched?.watch();
     }
 
@@ -59,6 +63,7 @@ ColumnLayout {
         Layout.fillWidth: true
         spacing: 8
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
             text: root.client ? [root.client.entry.state === "activated" ? "Connected" : root.client.entry.state === "activating" ? "Connecting…"
@@ -101,6 +106,7 @@ ColumnLayout {
         }
     }
     Text {
+        textFormat: Text.PlainText
         visible: text !== ""
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
@@ -136,15 +142,24 @@ ColumnLayout {
             onClicked: Api.copy(parent.url)
         }
         SmallButton {
-            visible: root.client?.operation === "login"
+            visible: root.client?.operation === "login" || root.client?.operation === "connect"
             label: "Cancel"
             kind: "cancel"
             onClicked: root.client.cancelLogin()
         }
     }
+    Hint {
+        visible: root.client?.operation === "login" && root.client._loginElevated
+        text: "Logging in as administrator: it stops by itself after "
+            + Math.round((root.client?.loginTimeoutMs ?? 0) / 60000) + " minutes if not finished."
+    }
+    Hint {
+        visible: (root.client?.elevationProblem ?? "") !== ""
+        text: root.client?.elevationProblem ?? ""
+    }
     SwitchRow {
         label: "Open the login page in the browser"
-        hint: "Off: the link is only shown here and under Tailscale's row in the network popup, to copy"
+        hint: "Off: the link is only shown, here and in the network popup"
         checked: root.module ? root.module.value("openLoginInBrowser") !== false : true
         onToggled: root.module?.setValue("openLoginInBrowser", !checked)
     }
@@ -156,7 +171,7 @@ ColumnLayout {
     }
     Hint {
         visible: root._running
-        text: "An exit node carries this computer's internet traffic; the tailnet is reached either way."
+        text: "It carries this computer's internet traffic; the tailnet is reached either way."
     }
     ExitNodeChooser {
         visible: root._running
@@ -167,7 +182,7 @@ ColumnLayout {
     SwitchRow {
         visible: root._running
         label: "Allow the local network"
-        hint: "Printers, shares and the router stay reachable while an exit node is in use"
+        hint: "Printers, shares and the router, while an exit node is in use"
         checked: root.prefs?.exitNodeAllowLan === true
         need: root.need
         onToggled: root._free && root.client.setAllowLan(!checked)
@@ -181,7 +196,7 @@ ColumnLayout {
     SwitchRow {
         visible: root.prefs !== null
         label: "Use routes from other devices"
-        hint: "Subnets other devices of the tailnet offer are reached through them"
+        hint: "Subnets that other devices of the tailnet offer"
         checked: root.prefs?.acceptRoutes === true
         need: root.need
         onToggled: root._free && root.client.setAcceptRoutes(!checked)
@@ -189,7 +204,7 @@ ColumnLayout {
     SwitchRow {
         visible: root.prefs !== null
         label: "Use Tailscale's DNS"
-        hint: "Names of the tailnet (MagicDNS) and the tailnet's DNS settings"
+        hint: "MagicDNS names and the tailnet's DNS settings"
         checked: root.prefs?.acceptDns !== false
         need: root.need
         onToggled: root._free && root.client.setAcceptDns(!checked)
@@ -238,6 +253,7 @@ ColumnLayout {
         text: "Administration"
     }
     Text {
+        textFormat: Text.PlainText
         visible: root.client !== null && root.client.cli === "present" && root.client.canChange
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
@@ -248,9 +264,8 @@ ColumnLayout {
     }
     Hint {
         visible: root.client !== null && root.client.cli === "present" && !root.client.canChange
-        text: "Every change asks for an administrator's password. Making this user Tailscale's operator asks once instead — but an operator "
-            + "may then do nearly anything with Tailscale without a password: turn on its SSH server, offer this computer as an exit node "
-            + "or its networks as routes, change its DNS, log it out or into another account."
+        text: "Each change asks for an administrator's password; making this user the operator asks once. An operator may then, without a password, "
+            + "turn on Tailscale's SSH server, offer this computer as an exit node or its networks as routes, change its DNS, log it out or into another account."
     }
     RowLayout {
         visible: root.client !== null && root.client.cli === "present" && !root.client.canChange
@@ -266,7 +281,7 @@ ColumnLayout {
     }
     Hint {
         visible: root.client !== null && root.client.cli === "present" && root.client.updateManagedBySystem
-        text: "On NixOS, the same lasts in the system's configuration (the setting above is Tailscale's own and also stays):"
+        text: "On NixOS, to set it in the system's configuration too:"
     }
     RowLayout {
         visible: root.client !== null && root.client.cli === "present" && root.client.updateManagedBySystem
@@ -317,7 +332,8 @@ ColumnLayout {
         }
     }
     Hint {
-        visible: root.client?.updateManagedBySystem === true
-        text: "Tailscale's version is managed by your NixOS configuration: it is updated with the system, not here."
+        // Not beside an update warning, which says the same
+        visible: root.client?.updateManagedBySystem === true && !(root.client?.warnings ?? []).some(warning => warning.kind === "update")
+        text: "Tailscale is updated with the NixOS system, not here."
     }
 }

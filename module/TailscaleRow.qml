@@ -33,6 +33,7 @@ ColumnLayout {
         visible: root._loggingIn
         spacing: 6
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             elide: Text.ElideMiddle
             text: "Log in at " + (root.client?.authUrl ?? "")

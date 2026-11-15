@@ -86,6 +86,23 @@ Singleton {
     // version, no private keys, no network map (peers are re-read from status on a change)
     readonly property int watchMask: 2 | 4 | 16 | 128 | 1024 | 2048 | 8192
     readonly property string localApiSocket: "/var/run/tailscale/tailscaled.sock"
+    // Where tailscaled's LocalAPI socket may be, in this order (the live side takes the first
+    // that exists; localApiSocket when none does)
+    readonly property var localApiSockets: ["/var/run/tailscale/tailscaled.sock", "/run/tailscale/tailscaled.sock"]
+    // Time limits, in seconds: every command runs under coreutils' timeout (timed(), and
+    // privileged() under pkexec), so nothing it runs can wait for ever — not a `status --json`
+    // that hangs, not a bare `up` that waits for Running offline, behind a captive portal or
+    // with an expired key, and not a root process the shell cannot signal.
+    //   read      status --json, debug prefs, exit-node suggest: answered at once by a healthy
+    //             daemon; 15 s is a stuck one
+    //   change    set, down, logout, switch, systemctl start: the daemon applies them at once
+    //   up        a bare `up` sets WantRunning and then WAITS for Running: with a working
+    //             network that takes seconds; 60 s leaves room for a slow control server.
+    //             Past it the daemon keeps trying by itself (WantRunning stays set), so
+    //             stopping the CLI loses nothing — the entry follows the daemon's state
+    //   login     the time a person gets to finish the login in the browser
+    //   killAfter timeout(1)'s -k: KILL this long after TERM, for a program that ignores TERM
+    readonly property var timeLimits: ({ read: 15, change: 60, up: 60, login: 600, killAfter: 5 })
     // An account (profile) id from `switch --list`: never starting with "-", which the CLI
     // would read as a flag
     readonly property var accountIdPattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
@@ -429,7 +446,10 @@ Singleton {
 
     // The state of the one entry: status, prefs as parsed (either may be null: not read
     // yet) and facts the live side knows:
-    //   cli          "present" | "missing" (the tailscale program is not on PATH)
+    //   cli          "present" | "missing" (the tailscale program is not on PATH) |
+    //                "untrusted" (a program found could be changed by this user: nothing runs;
+    //                untrustedReason says which)
+    //   stale        bool — the last read timed out: the state is unknown
     //   daemon       "running" | "not-running" (an errorKind "not-running" from a read)
     //   readDenied   bool — this user may not even read Tailscale's state
     //   operation    "connect" | "disconnect" | "login" | "logout" | "" — one in flight
@@ -440,7 +460,7 @@ Singleton {
     // → { state, attention { kind, reason, action } | null, status (the short line beside
     //     the state, ≤ 80 characters: the entry's `status`), summary (= status), phase,
     //     warnings [{ kind, text }], authUrl, exitNode (currentExitNode) }
-    // `phase`: "unknown" | "missing" | "not-running" | "denied" | "other-user" |
+    // `phase`: "unknown" | "missing" | "untrusted" | "not-running" | "denied" | "other-user" |
     //   "logged-out" | "needs-login" | "key-expired" | "needs-approval" | "stopped" |
     //   "starting" | "running" — what the plans below decide on.
     // Attention only for lasting states; a login in progress, starting, connecting are
@@ -464,6 +484,13 @@ Singleton {
             view.status = "Not installed";
             return finish();
         }
+        if (_get(facts, "cli") === "untrusted") {
+            view.phase = "untrusted";
+            view.attention = _attention("untrusted", _string(_get(facts, "untrustedReason"), 300)
+                || "The tailscale program found is not trusted (this user could change it): nothing is run", "");
+            view.status = "Not trusted";
+            return finish();
+        }
         if (_get(facts, "daemon") === "not-running") {
             view.phase = "not-running";
             view.attention = _attention("service-not-running", "The Tailscale service (tailscaled) is not running", "Start");
@@ -474,6 +501,14 @@ Singleton {
             view.phase = "denied";
             view.attention = _attention("read-denied", "This user may not read Tailscale's state", "");
             view.status = "Not readable";
+            return finish();
+        }
+        if (_get(facts, "stale") === true) {
+            // The last read timed out: what was read before may be false now — not shown as
+            // the state (the entry stays listed, off, with this line); re-read with a backoff
+            view.phase = "unknown";
+            view.status = operation === "connect" ? "Connecting…" : (operation === "disconnect" ? "Disconnecting…" : "Not answering — state unknown");
+            view.state = operation === "connect" ? "activating" : (operation === "disconnect" ? "deactivating" : "");
             return finish();
         }
         if (!status || status.ok !== true) {
@@ -495,7 +530,7 @@ Singleton {
                 view.state = "activating";
                 view.status = view.authUrl !== "" ? "Waiting for the login in the browser…" : "Logging in…";
             } else if (keyExpired) {
-                view.attention = _attention("key-expired", "Tailscale's key for this computer has expired: log in again to reconnect", "Log in");
+                view.attention = _attention("key-expired", "This computer's Tailscale key has expired: log in again", "Log in");
                 view.status = "Key expired";
             } else {
                 view.attention = _attention("login", "Log in to Tailscale to connect", "Log in");
@@ -503,7 +538,7 @@ Singleton {
             }
         } else if (backend === "NeedsMachineAuth") {
             view.phase = "needs-approval";
-            view.attention = _attention("approval", "Waiting for an administrator of the tailnet to approve this computer", "Approve…");
+            view.attention = _attention("approval", "Waiting for a tailnet administrator to approve this computer", "Approve…");
             view.status = "Waiting for approval";
         } else if (backend === "InUseOtherUser") {
             view.phase = "other-user";
@@ -534,7 +569,7 @@ Singleton {
             if (view.exitNode && !view.exitNode.online && !stopping) {
                 const since = _number(_get(facts, "exitNodeOfflineSince"), 0);
                 const lasting = since <= 0 || now <= 0 || now - since >= exitNodeOfflineGraceMs;
-                const sentence = "The exit node " + view.exitNode.name + " is offline: internet traffic is blocked until it returns or another is chosen";
+                const sentence = "Exit node " + view.exitNode.name + " is offline: no internet traffic until it returns or another is chosen";
                 if (lasting)
                     view.attention = _attention("exit-node-offline", sentence, "Use none");
                 else
@@ -556,7 +591,7 @@ Singleton {
             warnings.push({
                 kind: "update",
                 text: "Tailscale " + status.clientVersion.latestVersion + " is available"
-                    + (managed ? " — it is updated with the system, not here" : "")
+                    + (managed ? " — updated with the system, not here" : "")
             });
         }
         return finish();
@@ -569,15 +604,34 @@ Singleton {
     // the live side remembers, so a logged-out or stopped entry keeps its name), else "".
     function tailnetName(status, facts) {
         const tailnet = _isObject(status) && _isObject(status.tailnet) ? status.tailnet : {};
+        const remembered = _string(_get(facts, "lastTailnet"), 200);
         return _string(tailnet.name, 200) || _string(tailnet.magicDnsSuffix, 200) || _string(_isObject(status) ? status.magicDnsSuffix : "", 200)
-            || _string(_get(facts, "lastTailnet"), 200);
+            || (isEmailLike(remembered) ? "" : remembered);
+    }
+
+    // An account's e-mail address rather than a name (a personal tailnet is named so)
+    function isEmailLike(text) {
+        return typeof text === "string" && text.indexOf("@") >= 0;
+    }
+
+    // The tailnet's name as the ENTRY's name shows it (the VPN list's label, on a shared
+    // screen; the core's page frame titles the page with it): a named (organisation)
+    // tailnet's display name, CurrentTailnet.Name — never an e-mail address (a personal
+    // tailnet: ""), never the MagicDNS suffix; while no tailnet is current (logged out, the
+    // daemon down) facts.lastTailnet. That is also the only thing the live side remembers.
+    // The account is on the card.
+    function entryTailnet(status, facts) {
+        const tailnet = _isObject(status) && _isObject(status.tailnet) ? status.tailnet : {};
+        const name = _string(tailnet.name, 200) || _string(_get(facts, "lastTailnet"), 200);
+        return isEmailLike(name) ? "" : name;
     }
 
     // The ONE provider entry, in every state (logged out, daemon down, CLI missing, status
     // unreadable): a provider that reports no entry lets the shell delete the user's "VPN
     // with a network" setting. → { id, name, state, attention { reason, action } | null,
     // detail, active, status, busy }
-    //   name     "Tailscale · <tailnet>", or "Tailscale" while no tailnet is known
+    //   name     "Tailscale · <tailnet>" (entryTailnet: never an e-mail address), else
+    //            "Tailscale"
     //   detail   while up: { server (the exit node, else the control server's host), iface
     //            (tailscale0 unless userspace networking; facts.interfaceName overrides),
     //            interfaceName, addresses (this computer's Tailscale IPs), dns
@@ -585,7 +639,7 @@ Singleton {
     //   busy     facts.operation is not ""
     function entry(status, prefs, facts) {
         const view = stateOf(status, prefs, facts);
-        const tailnet = tailnetName(status, facts);
+        const tailnet = entryTailnet(status, facts);
         const detail = {};
         if (view.state === "activated" || view.state === "deactivating") {
             const interfaceName = /^[A-Za-z0-9_.-]{1,15}$/.test(_string(_get(facts, "interfaceName"), 15))
@@ -630,6 +684,8 @@ Singleton {
     //                      (privileged(argv, path)) — only ever with origin "user"
     //        "needs-user"  do nothing; set `attention` (lasting until the user acts)
     //        "open-url"    open `url` in the browser (origin "user" only)
+    //        "read"        the state is not known (not read yet, or the last read timed
+    //                      out): re-read, and do nothing until it is — never a blind `up`
     //        "nothing"     already there, or nothing can be done (`attention` says why, if
     //                      anything should)
 
@@ -657,19 +713,24 @@ Singleton {
                 return _plan("needs-user", { attention: view.attention ?? _attention("login", "Log in to Tailscale to connect", "Log in") });
             return _privilegedRun("login", changeAllowed, origin, {}, null);
         }
-        if (phase === "stopped" || phase === "unknown")
+        if (phase === "unknown")
+            return _plan("read");
+        if (phase === "stopped")
             return _privilegedRun("connect", changeAllowed, origin, {},
-                _attention("needs-privilege", "Bringing Tailscale up with this network needs an administrator's password — or make this user Tailscale's operator", "Connect"));
+                _attention("needs-privilege", "Connecting Tailscale with this network needs an administrator's password, or this user as its operator", "Connect"));
         // missing, not running, denied, other user, needs approval: the attention says it
         return origin === "network" && view?.attention ? _plan("needs-user", { attention: view.attention }) : _plan("nothing", { attention: view?.attention ?? null });
     }
 
-    function planDisconnect(view, changeAllowed, origin) {
+    // options { connecting }: a connect is still pending (its `up` waiting for Running): it is
+    // no longer waited for, and `down` runs whatever the phase says — the bare `up` set
+    // WantRunning, and the daemon would otherwise keep trying
+    function planDisconnect(view, changeAllowed, origin, options) {
         const phase = view?.phase ?? "unknown";
-        if (phase !== "running" && phase !== "starting")
-            return _plan("nothing");
+        if (phase !== "running" && phase !== "starting" && _get(options, "connecting") !== true)
+            return phase === "unknown" ? _plan("read") : _plan("nothing");
         return _privilegedRun("disconnect", changeAllowed, origin, {},
-            _attention("needs-privilege", "Taking Tailscale down with this network needs an administrator's password — or make this user Tailscale's operator", "Disconnect"));
+            _attention("needs-privilege", "Disconnecting Tailscale with this network needs an administrator's password, or this user as its operator", "Disconnect"));
     }
 
     // The attention's action (always the user's: attend is a click)
@@ -1167,7 +1228,8 @@ Singleton {
     //   "revert"      `tailscale up` refused because flags would reset settings (the module
     //                 never passes flags to `up`; recognised so that it shows, not hides)
     //   "needs-login" logged out
-    //   "timeout"     timed out (the CLI's own, or timeout(1)'s exit 124)
+    //   "timeout"     timed out (the CLI's own, or timeout(1)'s exit 124 — 137 when it had
+    //                 to KILL after TERM)
     //   "other"       anything else; `message` its first line
     // `message` is one sentence for a notification's body.
     function errorKind(exitCode, stderr) {
@@ -1176,16 +1238,16 @@ Singleton {
         if (code === 0)
             return { kind: "", message: "" };
         if (/^\s*Access denied:/m.test(text) || /\baccess denied\b/i.test(text))
-            return { kind: "denied", message: "Tailscale refused: this user may not change it (an administrator, or Tailscale's operator, may)." };
+            return { kind: "denied", message: "Tailscale refused: only an administrator or its operator may change it." };
         if (/Failed to connect to local Tailscale daemon/i.test(text) || /tailscaled\.sock[^\n]*(no such file|connection refused)/i.test(text)
                 || /tailscaled[^\n]*not running/i.test(text) || /is Tailscale running\?/i.test(text))
             return { kind: "not-running", message: "The Tailscale service (tailscaled) is not running." };
         if (/changing settings via 'tailscale up' requires mentioning all/.test(text))
-            return { kind: "revert", message: "Tailscale refused to change settings through 'tailscale up' (it would have reset others); nothing was changed." };
+            return { kind: "revert", message: "Tailscale refused: 'tailscale up' would have reset other settings. Nothing was changed." };
         if (/^\s*Logged out\./m.test(text) || /\bNeedsLogin\b/.test(text) || /\bnot logged in\b/i.test(text) || /\byou are logged out\b/i.test(text))
             return { kind: "needs-login", message: "Tailscale is logged out: log in first." };
-        if (code === 124 || /\btimed? ?out\b/i.test(text) || /context deadline exceeded/i.test(text))
-            return { kind: "timeout", message: "Tailscale did not answer in time." };
+        if (code === 124 || code === 137 || /\btimed? ?out\b/i.test(text) || /context deadline exceeded/i.test(text))
+            return { kind: "timeout", message: "Tailscale did not answer in time and was stopped: check its service and the network." };
         const firstLine = text.split("\n").map(line => line.trim()).find(line => line !== "") ?? "";
         return { kind: "other", message: firstLine !== "" ? firstLine.slice(0, 300) : ("Tailscale exited with status " + (isFinite(code) ? code : "?") + ".") };
     }
@@ -1205,6 +1267,120 @@ Singleton {
         if (exitCode === 127)
             return { outcome: "no-agent", failure: true, message: "No authentication agent answered." };
         return { outcome: "failed", failure: true, message: "" };
+    }
+
+    // A command stopped by its time limit (`seconds`, timeLimits) → one sentence for the
+    // failure notification
+    function timeoutMessage(name, seconds) {
+        const value = _number(seconds, 0);
+        const limit = value >= 120 ? Math.round(value / 60) + " minutes" : Math.round(value) + " s";
+        if (name === "connect")
+            return "Tailscale did not connect within " + limit + ". It keeps trying by itself; Disconnect stops it.";
+        if (name === "login" || name === "addAccount")
+            return "The login was not finished within " + limit + "; nothing was changed.";
+        if (name === "status" || name === "prefs" || name === "exitNodeSuggest")
+            return "Tailscale did not answer within " + limit + ".";
+        return "Tailscale did not answer within " + limit + "; the change may not have been made.";
+    }
+
+    // A failure's text without addresses (a notification may show on a shared screen): IPv4
+    // and IPv6 addresses (and prefixes) → "<address>"
+    function withoutAddresses(text) {
+        return String(text ?? "").slice(0, 2000).replace(/[0-9A-Fa-f:.]{3,}(?:\/\d{1,3})?/g, match => {
+            const address = match.replace(/\/\d{1,3}$/, "").replace(/[.:]+$/, "");
+            return _parseIpv4(address) !== null || (address.indexOf(":") >= 0 && _parseIpv6(address) !== null) ? "<address>" : match;
+        });
+    }
+
+    // ---- Which programs run ----
+    //
+    // The live side finds tailscale, timeout, pkexec and curl once (by the tools seam, or on
+    // PATH with `command -v`) and, for those found on PATH, `stat`s them: a program this
+    // user could replace would be handed to pkexec — run as root. Its probe prints, per
+    // program, tab-separated:
+    //   tool  <name> <path, "" not found>
+    //   real  <name> <readlink -f of it>
+    //   stat  <name> <uid> <octal mode> <path>   for the found path's directory, the real
+    //                                            file and the real file's directory
+    // and `socket <path>` for the first LocalAPI socket (localApiSockets) that exists.
+    readonly property var probedTools: ["tailscale", "timeout", "pkexec", "curl"]
+
+    // One `stat` line's verdict: in the Nix store (read-only), or owned by root and writable
+    // by nobody else (no group / other write bit)
+    function _statTrusted(uid, mode, path) {
+        if (typeof path === "string" && path.startsWith("/nix/store/") && !path.split("/").includes(".."))
+            return true;
+        const bits = /^[0-7]{1,5}$/.test(mode ?? "") ? parseInt(mode, 8) : -1;
+        return uid === "0" && bits >= 0 && (bits & 0o022) === 0;
+    }
+
+    // probeText: the probe's output; checkTrust: judge each program (false: the seam's
+    // programs, chosen by the owner, are taken as they are) → { tools: { <name>: { path,
+    // trusted, reason } }, socket, untrusted: [names] }. curl is never judged (it runs as
+    // this user only, never through pkexec).
+    function toolsProbe(probeText, checkTrust) {
+        const tools = {};
+        for (const name of probedTools)
+            tools[name] = { path: "", real: "", stats: [], trusted: false, reason: "" };
+        let socket = "";
+        const lines = typeof probeText === "string" ? probeText.slice(0, 65536).split("\n") : [];
+        for (const line of lines.slice(0, 200)) {
+            const parts = line.split("\t");
+            if (parts[0] === "socket" && parts.length === 2 && localApiSockets.includes(parts[1]) && socket === "")
+                socket = parts[1];
+            if (!probedTools.includes(parts[1]))
+                continue;
+            const entry = tools[parts[1]];
+            if (parts[0] === "tool" && parts.length === 3 && (parts[2] === "" || (_validPath(parts[2]) && !/\s/.test(parts[2]))))
+                entry.path = parts[2];
+            else if (parts[0] === "real" && parts.length === 3 && _validPath(parts[2]))
+                entry.real = parts[2];
+            else if (parts[0] === "stat" && parts.length === 5)
+                entry.stats.push({ uid: parts[2], mode: parts[3], path: parts[4] });
+        }
+        const untrusted = [];
+        for (const name of probedTools) {
+            const entry = tools[name];
+            if (entry.path === "")
+                continue;
+            if (checkTrust !== true || name === "curl") {
+                entry.trusted = true;
+            } else if (entry.real === "" || entry.stats.length < 3) {
+                entry.reason = "The " + name + " found on PATH could not be checked: nothing is run";
+            } else {
+                const bad = entry.stats.find(stat => !_statTrusted(stat.uid, stat.mode, stat.path));
+                entry.trusted = bad === undefined;
+                if (bad)
+                    entry.reason = "The " + name + " found on PATH is not trusted (this user could replace it: not root's, not in the Nix store): nothing is run";
+            }
+            if (!entry.trusted)
+                untrusted.push(name);
+        }
+        const result = {};
+        for (const name of probedTools)
+            result[name] = { path: tools[name].path, trusted: tools[name].trusted, reason: tools[name].reason };
+        return { tools: result, socket: socket, untrusted: untrusted };
+    }
+
+    // The plain form of a command with its time limit: timed(argv, timeoutPath, seconds) →
+    // { ok, error, argv, limited }. argv[0] is the program's absolute path (tailscale's, or
+    // systemctl's); timeoutPath coreutils' timeout — "" when it was not found: the argv as it
+    // is, limited false (the live side's own watchdog then only stops waiting for it).
+    //   [timeout, "-k", killAfter, seconds, program, args…]
+    function timed(argv, timeoutPath, seconds) {
+        if (!Array.isArray(argv) || argv.length === 0 || !argv.every(item => typeof item === "string") || !_validPath(argv[0]) || /\s/.test(argv[0]))
+            return { ok: false, error: "not a command by absolute path", argv: [], limited: false };
+        if (!_validSeconds(seconds))
+            return { ok: false, error: "not a time limit", argv: [], limited: false };
+        if (timeoutPath === "" || timeoutPath === null || timeoutPath === undefined)
+            return { ok: true, error: "", argv: argv.slice(), limited: false };
+        if (typeof timeoutPath !== "string" || !_validPath(timeoutPath) || /\s/.test(timeoutPath))
+            return { ok: false, error: "the path to timeout is not absolute", argv: [], limited: false };
+        return { ok: true, error: "", argv: [timeoutPath, "-k", String(timeLimits.killAfter), String(seconds)].concat(argv), limited: true };
+    }
+
+    function _validSeconds(seconds) {
+        return typeof seconds === "number" && Number.isInteger(seconds) && seconds >= 1 && seconds <= 86400;
     }
 
     // ---- Commands ----
@@ -1239,9 +1415,11 @@ Singleton {
         return "--" + name + "=" + (on === true ? "true" : "false");
     }
 
+    // timeLimit: the timeLimits key it runs under ("read" for what changes nothing, else
+    // "change"; `up` and `login` their own)
     function _command(name, argv, changes, privileged, description, extra) {
         return Object.assign({ ok: true, error: "", name: name, argv: argv, changes: changes, privileged: privileged,
-            description: description, writesAsRoot: false, longRunning: false }, extra ?? {});
+            description: description, writesAsRoot: false, longRunning: false, timeLimit: changes ? "change" : "read" }, extra ?? {});
     }
 
     function _refused(name, error) {
@@ -1271,15 +1449,18 @@ Singleton {
         const set = (flag, description) => _command(name, ["tailscale", "set", flag], true, true, description);
         switch (name) {
         case "connect":
-            return _command(name, ["tailscale", "up"], true, true, "Connecting Tailscale");
+            // Bare, always: never a flag on `up` (or `login`) — not even --timeout: a flag makes
+            // `up` demand every non-default setting (the accidental-revert trap). Its time
+            // limit is timeout(1)'s, around it
+            return _command(name, ["tailscale", "up"], true, true, "Connecting Tailscale", { timeLimit: "up" });
         case "disconnect":
             return _command(name, ["tailscale", "down"], true, true, "Disconnecting Tailscale");
         case "login":
-            return _command(name, ["tailscale", "login"], true, true, "Logging in to Tailscale", { longRunning: true });
+            return _command(name, ["tailscale", "login"], true, true, "Logging in to Tailscale", { longRunning: true, timeLimit: "login" });
         case "addAccount":
             // `login` while logged in adds an account (a new profile) — up.go keeps the
             // profile name only for `up`
-            return _command(name, ["tailscale", "login"], true, true, "Adding a Tailscale account", { longRunning: true });
+            return _command(name, ["tailscale", "login"], true, true, "Adding a Tailscale account", { longRunning: true, timeLimit: "login" });
         case "logout":
             return _command(name, ["tailscale", "logout"], true, true, "Logging out of Tailscale");
         case "exitNode": {
@@ -1288,7 +1469,8 @@ Singleton {
                 return set("--exit-node=auto:any", "Choosing Tailscale's exit node automatically");
             if (!validTarget(target))
                 return _refused(name, "not an exit node's address or name");
-            return set("--exit-node=" + target, "Using " + target + " as Tailscale's exit node");
+            // No address or name in the description: it ends up in notifications
+            return set("--exit-node=" + target, "Changing Tailscale's exit node");
         }
         case "exitNodeAuto":
             return set("--exit-node=auto:any", "Choosing Tailscale's exit node automatically");
@@ -1471,17 +1653,34 @@ Singleton {
             adding ? what : "Stopping " + what.charAt(0).toLowerCase() + what.slice(1));
     }
 
-    // The pkexec form of a command: privileged(argv, tailscalePath) → { ok, error, argv }.
-    // pkexec does not search the user's PATH, so the program goes by its absolute path —
-    // the live side resolves it once (`command -v tailscale` through a Process, kept as
-    // found: on NixOS /run/current-system/sw/bin/tailscale, a link that survives updates,
-    // unlike the store path it points to).
-    function privileged(argv, tailscalePath) {
+    // The pkexec form of a command: privileged(argv, tailscalePath, { timeout, seconds,
+    // description }) → { ok, error, argv, prompt }:
+    //   ["pkexec", <timeout>, "-k", killAfter, <seconds>, <tailscale>, args…]
+    // A process run as root cannot be signalled by the shell — cancelling only stops waiting
+    // for it — so it must END BY ITSELF: coreutils' timeout around it, under pkexec. Without a
+    // timeout (not found) nothing is run as root: { ok: false } with the reason, for the page.
+    // pkexec does not search the user's PATH, so both go by absolute path — the live side
+    // resolves them once (kept as found: on NixOS /run/current-system/sw/bin/…, links that
+    // survive updates, unlike the store paths they point to). `prompt`: what runs, in words,
+    // the label of the authentication.
+    function privileged(argv, tailscalePath, options) {
         if (!Array.isArray(argv) || argv.length === 0 || argv[0] !== "tailscale" || !argv.every(item => typeof item === "string"))
-            return { ok: false, error: "not a tailscale command", argv: [] };
+            return { ok: false, error: "not a tailscale command", argv: [], prompt: "" };
         if (typeof tailscalePath !== "string" || !_validPath(tailscalePath) || /\s/.test(tailscalePath) || tailscalePath.endsWith("/"))
-            return { ok: false, error: "the path to tailscale is not absolute", argv: [] };
-        return { ok: true, error: "", argv: ["pkexec", tailscalePath].concat(argv.slice(1)) };
+            return { ok: false, error: "the path to tailscale is not absolute", argv: [], prompt: "" };
+        const timeoutPath = _get(options, "timeout");
+        if (typeof timeoutPath !== "string" || timeoutPath === "")
+            return { ok: false, error: "coreutils' timeout was not found: nothing is run as administrator without a time limit", argv: [], prompt: "" };
+        const seconds = _get(options, "seconds") ?? timeLimits.change;
+        const limited = timed([tailscalePath].concat(argv.slice(1)), timeoutPath, seconds);
+        if (!limited.ok)
+            return { ok: false, error: limited.error, argv: [], prompt: "" };
+        const limit = seconds >= 120 ? Math.round(seconds / 60) + " minutes" : seconds + " s";
+        const description = _string(_get(options, "description"), 120);
+        return {
+            ok: true, error: "", argv: ["pkexec"].concat(limited.argv),
+            prompt: (description !== "" ? description + ": " : "") + "runs `tailscale " + argv.slice(1).join(" ") + "` as administrator, stopped after " + limit
+        };
     }
 
     // ---- Warnings ----
@@ -1496,12 +1695,12 @@ Singleton {
             return null;
         const remaining = expiry - moment;
         if (remaining <= 0 || self?.expired === true)
-            return { kind: "key-expired", days: 0, text: "Tailscale's key for this computer has expired: log in again" };
+            return { kind: "key-expired", days: 0, text: "This computer's Tailscale key has expired: log in again" };
         const days = Math.ceil(remaining / 86400000);
         if (days > keyExpiryWarningDays)
             return null;
         const when = remaining < 86400000 ? "within a day" : (days === 1 ? "in 1 day" : "in " + days + " days");
-        return { kind: "key-expiring", days: days, text: "Tailscale's key for this computer expires " + when + ": log in again before then to stay connected" };
+        return { kind: "key-expiring", days: days, text: "This computer's Tailscale key expires " + when + ": log in again before then" };
     }
 
     // Accepted subnet routes that cover the local network — a known trap: traffic for the
@@ -1524,7 +1723,7 @@ Singleton {
                     found.push({
                         route: cidr.network, lan: lan.network, device: _shortName(node),
                         text: "The route " + cidr.network + " from " + _shortName(node) + " covers the local network " + lan.network
-                            + ": local devices may be reached through the tailnet instead"
+                            + ": local traffic may go into the tailnet"
                     });
                     if (found.length >= 64)
                         return found;
@@ -1544,9 +1743,9 @@ Singleton {
         const exitNode = _string(_get(input, "exitNode"), 200);
         const parts = [];
         if (exitNode !== "")
-            parts.push("Both " + names + " and Tailscale's exit node " + exitNode + " want to carry internet traffic: which one does depends on their routes");
+            parts.push(names + " and Tailscale's exit node " + exitNode + " compete for internet traffic");
         if (_get(input, "acceptDns") !== false)
-            parts.push("Tailscale's DNS (" + quadHundred + ") and " + names + "'s compete: names of one may not resolve while the other answers");
+            parts.push("Tailscale's DNS (" + quadHundred + ") and " + names + "'s compete: some names may not resolve");
         return parts.length > 0 ? parts.join(". ") + "." : "";
     }
 

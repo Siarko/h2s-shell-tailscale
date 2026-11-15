@@ -2,7 +2,7 @@
     "id": "tailscale",
     "name": "Tailscale",
     "version": "0.2.0",
-    "api": "1.1",
+    "api": "1.2",
     "description": "Tailscale among the shell's VPNs: connect, log in and out, exit nodes, the main switches, the devices.",
     "main": "Main.qml",
     "slots": [
@@ -19,7 +19,7 @@
     ],
     "facts": [
         { "fact": "tailscale.connected", "label": "Tailscale connected", "type": "bool" },
-        { "fact": "tailscale.exitNode", "label": "Tailscale's exit node (\"\" none)", "type": "string" }
+        { "fact": "tailscale.exitNodeInUse", "label": "Tailscale sends internet traffic through an exit node", "type": "bool" }
     ],
     "setupHints": [
         "Install Tailscale and run its service (NixOS: services.tailscale.enable = true;).",
@@ -30,6 +30,7 @@
         "tests/TailscaleDevicesTest.qml",
         "tests/TailscaleIoTest.qml",
         "tests/TailscaleLiveTest.qml",
-        "tests/TailscaleModuleTest.qml"
+        "tests/TailscaleModuleTest.qml",
+        "tests/TailscaleUiTest.qml"
     ]
 }

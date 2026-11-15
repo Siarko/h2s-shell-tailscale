@@ -64,6 +64,7 @@ ColumnLayout {
             objectProp: "text"
         }
         Text {
+            textFormat: Text.PlainText
             required property var modelData
             Layout.fillWidth: true
             wrapMode: Text.WordWrap
@@ -75,6 +76,6 @@ ColumnLayout {
     }
 
     Hint {
-        text: "The shell's blocking of traffic outside a VPN does not support Tailscale."
+        text: "Not let through when traffic outside a VPN is blocked."
     }
 }

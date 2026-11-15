@@ -1,5 +1,5 @@
 #!/bin/sh
-# A stand-in `tailscale` CLI for the module's end-to-end tests: a small state machine over
+# h2s-stand-in: a stand-in `tailscale` CLI for the module's end-to-end tests: a small state machine over
 # the redacted fixtures. It never touches a real tailscaled or the network. Put
 # tools/stand-in first on PATH (or name it by absolute path where the module takes one).
 #
@@ -22,6 +22,13 @@
 #   TS_FAKE_LOGIN_RESULT "fail": the login ends with an error instead of success
 #   TS_FAKE_BUS_DELAY    seconds between the objects `debug watch-ipn` prints (default 0)
 #   TS_FAKE_PING         "timeout": ping gets no reply
+#   TS_FAKE_UP_DELAY     seconds a bare `up` from Stopped waits before it reaches Running (a
+#                        daemon that cannot get there: offline, a captive portal); default 0.
+#                        Also a file "up-delay" in the state dir holding the seconds
+#   TS_FAKE_UP_URL       1: that slow `up` first prints a login URL to stderr (as `up` does
+#                        when the key expired), then waits
+#   TS_FAKE_STATUS_HANG  seconds `status --json` hangs before it answers (a stuck daemon);
+#                        also a file "status-hang" in the state dir holding the seconds
 #   TS_FAKE_LOG          a file each call's arguments are appended to (one line per call)
 #
 # State dir files: scenario (the status fixture's name), prefs (key=value overrides of the
@@ -73,6 +80,15 @@ need_write() { # $1 the denial text, then the command as typed
     what=$1
     shift
     can_write || denied "$what" "$@"
+}
+
+# Waits $1 seconds, ended with its sleep by TERM (as the module's timeout or the module ends it)
+pause() {
+    sleep "$1" &
+    sleeper=$!
+    trap 'kill "$sleeper" 2> /dev/null; exit 143' TERM INT HUP
+    wait "$sleeper"
+    trap - TERM INT HUP
 }
 
 status_fixture() {
@@ -169,6 +185,8 @@ case $command in
         printf '1.104.4\n  tailscale commit: 0000000000000000000000000000000000000000\n  long version: 1.104.4-stand-in\n' ;;
     status)
         need_daemon
+        hang=${TS_FAKE_STATUS_HANG:-$(cat "$STATE_DIR/status-hang" 2> /dev/null || echo 0)}
+        [ "$hang" != 0 ] && pause "$hang"
         case " $* " in
             *" --json "* | *" --json=true "*) cat "$(status_fixture)" ;;
             *) echo "# stand-in: only status --json is replayed" ;;
@@ -263,6 +281,19 @@ case $command in
                 sleep "${TS_FAKE_LOGIN_DELAY:-2}" ;;
             stopped)
                 set_pref WantRunning true
+                delay=${TS_FAKE_UP_DELAY:-$(cat "$STATE_DIR/up-delay" 2> /dev/null || echo 0)}
+                if [ "$delay" != 0 ]; then
+                    # WantRunning is set at once; Running comes only after the wait (the real
+                    # `up` returns only once the daemon is Running)
+                    save_scenario starting
+                    [ "${TS_FAKE_UP_URL:-0}" = 1 ] && printf '\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/REDACTED\n\n' >&2
+                    pause "$delay"
+                    # Taken down meanwhile (`down` cleared WantRunning): never Running
+                    if [ "$(get_pref WantRunning)" = false ]; then
+                        echo "stand-in: the daemon was stopped while up waited" >&2
+                        exit 1
+                    fi
+                fi
                 resume=$(cat "$STATE_DIR/resume" 2> /dev/null || echo running)
                 save_scenario "$resume" ;;
             *) set_pref WantRunning true ;;
@@ -282,7 +313,7 @@ case $command in
         need_daemon
         need_write "prefs write access denied" down "$@"
         case $scenario in
-            stopped | needs-login | login-pending | key-expired | needs-machine-auth) ;;
+            stopped | starting | needs-login | login-pending | key-expired | needs-machine-auth) ;;
             *) printf '%s\n' "$scenario" > "$STATE_DIR/resume" ;;
         esac
         set_pref WantRunning false

@@ -4,19 +4,27 @@ The Tailscale module for [h2s-shell](../h2s-shell), the Quickshell desktop shell
 listed among the shell's VPNs (connect, disconnect, log in and out, exit nodes), with a page of
 its own for the main switches and the devices. The plan is the shell's
 `docs/plans/tailscale.md`; the module system it plugs into is `docs/plans/modules.md`. It needs
-module API 1.1 (the VPN slots).
+module API 1.2 (the VPN slots, the handle's `resumed()`, the pages' `shown`).
 
 ## What works (delivery step 1)
 
-- **The entry among the VPNs** — "Tailscale · <tailnet>" in the bar's VPN glyph, the network
+- **The entry among the VPNs** — "Tailscale" (or "Tailscale · <organisation>" for a named
+  tailnet; never the account's e-mail address, which is on the card) in the bar's VPN glyph, the network
   popup's VPN section, the overview and Settings → System → Network → VPN, in every state: off,
   connecting, connected ("Tailnet only" / "Via <exit node>"), and what needs you, with its
   button: log in, key expired, waiting for approval (opens the admin console), the service not
-  running ("Start"), the exit node offline ("Use none", after a minute's grace), not installed.
+  running ("Start"), the exit node offline ("Use none", after a minute's grace), not installed,
+  not trusted (a tailscale, timeout or pkexec on PATH this user could replace: nothing runs),
+  not answering ("Not answering — state unknown": a read timed out; retried with a backoff).
+- **Time limits**: every command runs under coreutils' `timeout -k 5 <s>` — reads 15 s,
+  changes 60 s, a bare `up` 60 s (past that the daemon keeps trying by itself; Disconnect
+  stops it), login 10 minutes — and through pkexec as `pkexec timeout … tailscale …`, so a
+  root process ends by itself. Without `timeout`, nothing is run as administrator.
 - **Connect / disconnect** (bare `tailscale up` / `down`), **log in** (bare `tailscale login`:
   the link opens in the browser — setting "Open Tailscale's login page in the browser" — and
-  can be copied; cancel; given up after 10 minutes), **log out** (confirmed with the shell's
-  delete button).
+  can be copied; cancel — at once, even for a login running as root; given up after 10
+  minutes), **log out** (confirmed with the shell's delete button). A pending connect shows a
+  login URL as soon as `up` prints it or the bus sends it; Disconnect or Cancel ends it.
 - **Exit nodes**: under Tailscale's row in the popup and on the page — none, the suggested one,
   this tailnet's own, Mullvad locations by country (collapsed) and city, offline ones disabled,
   a filter when the list is long; "Allow the local network".
@@ -33,11 +41,18 @@ module API 1.1 (the VPN slots).
   node, the key's expiry, warnings (Tailscale's health, an accepted route that covers the local
   network, two VPNs up), and that the shell's blocking of traffic outside a VPN does not
   support Tailscale (the owner's decision).
-- **Live**: one reader of tailscaled's event bus (`curl` on the LocalAPI socket), each
-  message a trigger for one coalesced re-read of `status --json` and `debug prefs`; restarted
-  with a backoff when it ends, a 60 s poll meanwhile, a re-read after the computer slept.
-- Profile facts `tailscale.connected` and `tailscale.exitNode`; IPC target `tailscale`
-  (`state`: phase, state, attention, counts — no names, addresses or URLs).
+- **Live**: one reader of tailscaled's event bus (`curl` on the LocalAPI socket,
+  /var/run/tailscale/tailscaled.sock or /run/tailscale/tailscaled.sock), each message a trigger
+  for one coalesced re-read of `status --json` and `debug prefs`; restarted with a backoff
+  when it ends; a 60 s poll AT ALL TIMES; a re-read after the computer slept (`resumed()`).
+  Without curl: "live updates need curl", the poll only. **To confirm on the real machine**:
+  whether the bus (mask 11414: no peer changes) sends a message when a peer goes offline —
+  until then a peer's or exit node's online state may be up to a minute old.
+- Profile facts `tailscale.connected` and `tailscale.exitNodeInUse` (true/false — never which
+  node); IPC target `tailscale` (`state`: phase, state, attention, counts — no names,
+  addresses or URLs; `connect`/`disconnect` act as origin "network": they never prompt —
+  except while the tools seam names stand-ins, for the lock-bed test). Failure notifications
+  carry no addresses; peers' names are shown as plain text, never as markup.
 
 Not yet: accounts and tailnets, hostname, diagnostics, sharing this computer, Taildrop, serve
 and funnel, a bar widget of its own (delivery steps 2–6 of the plan's §8).
@@ -75,7 +90,8 @@ module/                 the module itself — what gets installed
 fixtures/               redacted real outputs and synthetic ones (see fixtures/README.md)
 tools/
   stand-in/tailscale    a stand-in CLI: a state machine over the fixtures
-  stand-in/pkexec       a stand-in pkexec: ok / 126 / 127, logs what it was asked to run
+  stand-in/pkexec       a stand-in pkexec: ok / 126 / 127 / unkillable, logs what it was asked to run
+  stand-in/timeout      runs the real coreutils timeout (so the seam names every program)
   stand-in/curl         a stand-in for the LocalAPI event stream
   stand-in/systemctl    starts / stops the stand-in daemon (a file)
   stand-in/xdg-open     opens nothing, logs the link
@@ -91,12 +107,16 @@ tests/
 
 ## The tools seam
 
-One place (`TailscaleClient.tool()`) decides which `tailscale`, `curl`, `pkexec`,
+One place (`TailscaleClient.tool()`) decides which `tailscale`, `timeout`, `curl`, `pkexec`,
 `systemctl` and `xdg-open` run: a directory given by the owner (the suites), else
 `H2S_TAILSCALE_TOOLS` in the shell's environment (the lock-bed test), else — under the shell's
 module test runner — `tools/stand-in` next to the module, else (unset: the normal case) the
-names on PATH, tailscale's absolute path resolved once with `command -v`. With a directory in
-use a link is opened by its `xdg-open`, never by the shell's.
+names on PATH, resolved once to absolute paths with `command -v` and checked with `stat`
+(TailscaleRules.toolsProbe: owned by root and not group/other-writable, or in the Nix store —
+the found path's directory, the real file and its directory). With a directory in use a link
+is opened by its `xdg-open`, never by the shell's. (`stand-in/timeout` runs the real
+coreutils timeout; `stand-in/pkexec` has an "unkillable" mode, `stand-in/tailscale` a slow
+`up` and a hanging `status`.)
 
 ## Running the tests
 

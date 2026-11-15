@@ -36,7 +36,8 @@ TestCase {
     // ---- The scenario machinery ----
 
     // A scenario: its own directory, stand-in state and client. options: { state (the stand-in
-    // scenario), daemonDown, env {}, toolsDir, fixedNow, loginTimeoutMs, emptyTools }
+    // scenario), daemonDown, env {}, toolsDir, fixedNow, loginTimeoutMs, emptyTools, without
+    // (a copy of the stand-ins without this one), timeLimits, checkTrust }
     function scenario(name, options) {
         const dir = base + "/" + name;
         const s = { name: name, dir: dir, log: dir + "/log", pkexecLog: dir + "/pkexec.log", client: null, failures: [],
@@ -58,15 +59,18 @@ TestCase {
             if (s.options.daemonDown)
                 lines.push(": > \"$1/state/daemon-down\"");
             lines.push("echo '{\"Health\":{\"Warnings\":{}}}' > \"$1/bus.jsonl\"");
+            if (s.options.without)
+                lines.push("mkdir -p \"$1/tools\" && cp \"$3\"/* \"$1/tools/\" && rm -f \"$1/tools/$4\"");
             if (s.options.busLines > 0)
                 lines.push("i=0; while [ $i -lt " + s.options.busLines + " ]; do echo '{\"State\":6}'; i=$((i+1)); done > \"$1/bus.jsonl\"");
-            _shell.run(["sh", "-c", lines.join(" && "), "sh", dir, s.options.state ?? ""], result => {
+            _shell.run(["sh", "-c", lines.join(" && "), "sh", dir, s.options.state ?? "", standIns, s.options.without ?? ""], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
                 s.client = _clientComponent.createObject(suite, {
-                    toolsDir: s.options.emptyTools ? dir + "/empty-tools" : standIns,
+                    toolsDir: s.options.emptyTools ? dir + "/empty-tools" : (s.options.without ? dir + "/tools" : standIns),
                     environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 2000,
-                    loginTimeoutMs: s.options.loginTimeoutMs ?? 60000, fixedNow: s.options.fixedNow ?? 0
+                    loginTimeoutMs: s.options.loginTimeoutMs ?? 60000, fixedNow: s.options.fixedNow ?? 0,
+                    timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, checkTrust: s.options.checkTrust === true
                 });
                 s.client.failed.connect((what, reason) => s.failures.push({ what: what, reason: reason }));
                 s.client.running = true;
@@ -111,6 +115,22 @@ TestCase {
 
     function count(lines, pattern) {
         return (lines ?? []).filter(line => pattern.test(line)).length;
+    }
+
+    // A pkexec log line's pattern: pkexec, the stand-in timeout with its limit, the stand-in
+    // tailscale, then `rest` (tab-separated)
+    function elevatedLine(seconds, rest) {
+        const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        return new RegExp("^pkexec\\t" + escape(standIns) + "/timeout\\t-k\\t5\\t" + seconds + "\\t" + escape(standIns) + "/tailscale\\t" + rest + "$");
+    }
+
+    // A step that runs `script` (sh -c, $1 = the scenario's directory) and stores its output's
+    // first line in s[key]
+    function thenShell(s, description, script, key, action) {
+        then(s, description, () => s[key] !== undefined, () => action(s[key]), () => {
+            s[key] = undefined;
+            _shell.run(["sh", "-c", script, "sh", s.dir], result => s[key] = (result.lines[0] ?? "").trim());
+        });
     }
 
     property Timer _clock: Timer {
@@ -181,7 +201,7 @@ TestCase {
             assertEqual(running.client.suggestedId, "nMULL21CNTRL", "the bus's SuggestedExitNode taken");
             assertEqual(_entry(running).state, "activated", "running: the entry is activated");
             assertEqual(_entry(running).status, "Tailnet only", "running: \"Tailnet only\"");
-            assert(_entry(running).name.startsWith("Tailscale · "), "running: named after the tailnet: " + _entry(running).name);
+            assertEqual(_entry(running).name, "Tailscale", "running: a personal tailnet (an e-mail address): the entry is just \"Tailscale\"");
             assert(running.client.ready && running.client.cli === "present" && running.client.daemon === "running", "running: ready, CLI present, daemon running");
             assert(running.client.devices.length > 0, "running: devices listed (" + running.client.devices.length + ")");
             assert(running.client.exitNodes.count >= 2, "running: exit nodes listed");
@@ -192,6 +212,12 @@ TestCase {
         });
         then(running, "exit-node suggest answered", () => running.suggested === true, () => {
             assert(running.client.exitNodes.suggested !== null || running.client.suggestedName !== "", "suggest: the suggestion is known");
+            running.readsBefore = running.client.reads;
+        });
+        waitMs(running, 2600);
+        then(running, "the slow poll", () => true, () => {
+            assert(running.client.streamUp, "the stream still up");
+            assert(running.client.reads > running.readsBefore, "the slow poll re-reads while the stream is up too (peers' online state)");
         });
         thenLogs(running, "reads only", () => {
             assertEqual(changesIn(running).length, 0, "running: nothing changed by just watching");
@@ -211,7 +237,8 @@ TestCase {
         then(stopped, "connected", () => _entry(stopped).state === "activated" && !stopped.client.busy, () => {});
         thenLogs(stopped, "after connect", () => {
             assertEqual(count(stopped.logLines, /^up$/), 2, "connect: bare `up` plainly, denied, then as root");
-            assertEqual(count(stopped.pkexecLines, /^pkexec\t\/\S+\/tailscale\tup$/), 1, "… through pkexec by tailscale's absolute path");
+            assertEqual(count(stopped.pkexecLines, elevatedLine(60, "up")), 1, "… through pkexec: timeout 60 s around tailscale up, both by absolute path");
+            assertEqual(stopped.pkexecLines.length, 1, "… and nothing else as root");
             assertEqual(stopped.failures.length, 0, "… no failure");
         });
 
@@ -246,7 +273,7 @@ TestCase {
         });
         thenLogs(login, "after the login", () => {
             assertEqual(count(login.logLines, /^login$/), 2, "bare `login`, denied, then as root");
-            assertEqual(count(login.pkexecLines, /\tlogin$/), 1, "… through pkexec");
+            assertEqual(count(login.pkexecLines, elevatedLine(60, "login")), 1, "… through pkexec, under timeout (the login's limit: it ends by itself)");
             assertEqual(count(login.logLines, /^xdg-open https:\/\/login\.tailscale\.com\/a\/REDACTED$/), 1, "the browser opened ONCE, through the seam's xdg-open");
             assertEqual(login.client.opened, 1, "… counted once");
         });
@@ -276,7 +303,8 @@ TestCase {
         then(operator, "logged out", () => operator.client.view.phase === "logged-out" && !operator.client.busy, () => {
             assertEqual(_entry(operator).attention?.action, "Log in", "logged out: attention \"Log in\"");
             assertEqual(_entry(operator).state, "", "… off");
-            assert(_entry(operator).name.startsWith("Tailscale · "), "… the tailnet's name remembered");
+            assertEqual(_entry(operator).name, "Tailscale", "… still \"Tailscale\" (no e-mail address remembered)");
+            assertEqual(operator.client.lastTailnet, "", "… nothing e-mail-like kept as the last tailnet");
         });
         thenLogs(operator, "after logout", () => {
             assertEqual(count(operator.logLines, /^logout$/), 1, "logout: run once, plainly");
@@ -421,6 +449,111 @@ TestCase {
         const burst = scenario("burst", { state: "running", busLines: 50, env: { TS_FAKE_BUS_FILE: base + "/burst/bus.jsonl" } });
         then(burst, "50 messages read", () => burst.client.events >= 50 && !burst.client._reading && !burst.client._readTimer.running, () => {
             assert(burst.client.reads <= 3, "50 bus messages: at most 3 reads (" + burst.client.reads + ")");
+        });
+
+        // ---- A1: cancelling a login run through pkexec (a root process: it cannot be signalled) ----
+        const cancel = scenario("login-cancel-unkillable", { state: "needs-login",
+            env: { TS_FAKE_PKEXEC: "unkillable", TS_FAKE_UNKILLABLE_SECONDS: "4", TS_FAKE_LOGIN_DELAY: "1", TS_FAKE_LOGIN_RESULT: "fail" } });
+        then(cancel, "read", () => cancel.client.status !== null, () => assert(cancel.client.attend(), "attend: the login starts"));
+        then(cancel, "the elevated login waits for the browser", () => cancel.client.authUrl !== "" && cancel.client._loginElevated, () => {
+            cancel.cancelledAt = Date.now();
+            cancel.client.cancelLogin();
+        });
+        then(cancel, "not busy", () => !cancel.client.busy, () => {
+            assert(Date.now() - cancel.cancelledAt < 1000, "cancel: not busy within a second (" + (Date.now() - cancel.cancelledAt) + " ms) though the root login still runs");
+            assertEqual(cancel.client.operation + "|" + cancel.client.authUrl, "|", "… operation and the login URL cleared");
+            assert(cancel.client.connect("user"), "… connect works again (a new login starts)");
+            assertEqual(cancel.client.operation, "login", "… busy with the new one");
+            cancel.client.cancelLogin();
+            assert(!cancel.client.busy, "… cancelled at once too (a plain login: ended)");
+        });
+        waitMs(cancel, 4500);
+        thenLogs(cancel, "the old root login ended by itself", () => {
+            assertEqual(cancel.failures.length, 0, "the late exit (a failed login) changes nothing: no failure shown");
+            assertEqual(cancel.client.operation + "|" + cancel.client.authUrl, "|", "… not busy, no URL");
+            assertEqual(count(cancel.pkexecLines, elevatedLine(60, "login")), 1, "… pkexec ran once: timeout around the login, so it ends by itself");
+        });
+
+        // ---- A2: a bare `up` that waits (offline, captive portal): its URL, Disconnect ends it ----
+        const slowUp = scenario("slow-up-disconnect", { state: "stopped", env: { TS_FAKE_OPERATOR: "1", TS_FAKE_UP_DELAY: "30", TS_FAKE_UP_URL: "1" } });
+        then(slowUp, "read", () => slowUp.client.status !== null, () => assert(slowUp.client.connect("user"), "connect starts"));
+        then(slowUp, "the login URL while `up` still waits", () => slowUp.client.authUrl !== "", () => {
+            assertEqual(slowUp.client.operation, "connect", "… the connect still pending");
+            assertEqual(_entry(slowUp).state, "activating", "… the entry activating");
+            assert(slowUp.client.disconnect("user"), "Disconnect is accepted while the connect is pending");
+        });
+        then(slowUp, "disconnected", () => !slowUp.client.busy && slowUp.client.view.phase === "stopped", () => {
+            assertEqual(_entry(slowUp).state, "", "… off");
+            assertEqual(slowUp.failures.length, 0, "… no failure");
+        });
+        waitMs(slowUp, 500);
+        thenLogs(slowUp, "after the pending connect", () => {
+            assertEqual(count(slowUp.logLines, /^up$/), 1, "bare `up` once");
+            assertEqual(count(slowUp.logLines, /^down$/), 1, "… then `down` (the daemon would keep trying)");
+            assertEqual(count(slowUp.logLines, /^xdg-open https:\/\/login\.tailscale\.com\/a\/REDACTED$/), 1, "… the URL opened once (the user's connect)");
+        });
+        thenShell(slowUp, "the pending `up` ended",
+            "for p in /proc/[0-9]*; do grep -qzx \"TS_FAKE_STATE_DIR=$1/state\" \"$p/environ\" 2> /dev/null && tr '\\0' ' ' < \"$p/cmdline\" 2> /dev/null | grep -qE 'tailscale up|sleep 30' && echo \"$p\"; done | wc -l",
+            "upLeft", left => assertEqual(left, "0", "the plain `up` process (and its wait) ended, not left behind"));
+
+        // ---- A2: `up` past its time limit; a URL from the bus while it waits ----
+        const upTimeout = scenario("up-timeout", { state: "stopped", timeLimits: { up: 2 }, env: { TS_FAKE_OPERATOR: "1", TS_FAKE_UP_DELAY: "30" } });
+        then(upTimeout, "read", () => upTimeout.client.status !== null, () => {
+            upTimeout.client.environment = Object.assign({}, upTimeout.env);
+            assert(upTimeout.client.connect("user"), "connect starts");
+            upTimeout.client._onBusMessage({ BrowseToURL: "https://login.tailscale.com/a/REDACTED" });
+            assertEqual(upTimeout.client.authUrl, "https://login.tailscale.com/a/REDACTED", "a BrowseToURL from the bus shows while `up` waits");
+            assertEqual(_entry(upTimeout).status, "Connecting…", "… \"Connecting…\"");
+        });
+        then(upTimeout, "the connect given up", () => upTimeout.failures.length > 0 && !upTimeout.client.busy, () => {
+            assert(/did not connect within 2 s\. It keeps trying by itself; Disconnect stops it\./.test(upTimeout.failures[0].reason),
+                   "after its time limit: failed, saying the daemon keeps trying: " + upTimeout.failures[0].reason);
+            assertEqual(upTimeout.client.authUrl, "", "… the URL cleared");
+        });
+
+        // ---- A2: a `status --json` that hangs: stale, retried, back ----
+        const hung = scenario("status-hung", { state: "running", timeLimits: { read: 1 } });
+        then(hung, "read", () => _entry(hung).state === "activated" && !hung.client._reading, () => {}, null);
+        thenShell(hung, "the daemon stops answering", "echo 30 > \"$1/state/status-hang\"; echo ok", "hangSet", () => hung.client.refresh());
+        then(hung, "the read timed out", () => hung.client.stale, () => {
+            assertEqual(_entry(hung).state, "", "stale: the entry no longer says connected");
+            assertEqual(_entry(hung).status, "Not answering — state unknown", "… it says the state is unknown");
+            assertEqual(_entry(hung).name, "Tailscale", "… still listed");
+            assert(!hung.client._reading, "… the read no longer blocks the next ones");
+            assert(!hung.client.connect("user"), "… connect does nothing blind (the state is re-read first)");
+        });
+        thenLogs(hung, "nothing run blind", () => assertEqual(changesIn(hung).length, 0, "no `up` while the state is unknown"));
+        thenShell(hung, "the daemon answers again", "rm -f \"$1/state/status-hang\"; echo ok", "hangCleared", () => {});
+        then(hung, "back", () => !hung.client.stale && _entry(hung).state === "activated", () => {
+            assert(hung.client.readTimeouts >= 1, "retried with a backoff after " + hung.client.readTimeouts + " timeout(s)");
+        });
+
+        // ---- curl missing: said once, the slow poll instead of restarting it ----
+        const noCurl = scenario("curl-missing", { state: "running", without: "curl" });
+        then(noCurl, "read", () => noCurl.client.status !== null, () => {
+            assertEqual(_entry(noCurl).status, "Tailnet only · live updates need curl", "the entry says live updates need curl");
+            assert(noCurl.client.warnings.some(warning => warning.kind === "curl-missing"), "… and the card");
+            noCurl.readsBefore = noCurl.client.reads;
+        });
+        waitMs(noCurl, 2600);
+        then(noCurl, "polled", () => true, () => {
+            assertEqual(noCurl.client.streamStarts, 0, "no stream started (nothing that cannot start, restarted)");
+            assert(noCurl.client.reads > noCurl.readsBefore, "… the slow poll reads instead");
+        });
+
+        // ---- programs this user could replace: not trusted, nothing runs ----
+        const untrusted = scenario("untrusted", { state: "running", checkTrust: true });
+        then(untrusted, "judged", () => untrusted.client.cli !== "unknown", () => {
+            assertEqual(untrusted.client.cli, "untrusted", "the stand-ins (owned by this user, not in the Nix store) are not trusted");
+            assertEqual(_entry(untrusted).status, "Not trusted", "the entry: \"Not trusted\"");
+            assert(/not trusted/.test(_entry(untrusted).attention?.reason ?? ""), "… with the reason: " + _entry(untrusted).attention?.reason);
+            assert(!untrusted.client.connect("user"), "… connect does nothing");
+            assert(untrusted.client.ready, "… ready (nothing to read)");
+        });
+        waitMs(untrusted, 300);
+        thenLogs(untrusted, "nothing ran", () => {
+            assertEqual(untrusted.logLines.length, 0, "not trusted: nothing run at all");
+            assertEqual(untrusted.pkexecLines.length, 0, "… nothing through pkexec");
         });
 
         // ---- switched off: the stream process gone, nothing acts ----

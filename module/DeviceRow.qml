@@ -39,6 +39,7 @@ Rectangle {
                 color: root.device?.online ? Api.theme.success : Api.theme.textDisabled
             }
             Text {
+                textFormat: Text.PlainText
                 Layout.fillWidth: true
                 elide: Text.ElideRight
                 text: root.device?.name ?? ""
@@ -47,6 +48,7 @@ Rectangle {
                 color: root.device?.online ? Api.theme.textPrimary : Api.theme.textMuted
             }
             Text {
+                textFormat: Text.PlainText
                 visible: root.device?.exitNodeOption === true
                 text: root.device?.isExitNode ? "exit node in use" : "exit node"
                 font.family: Api.theme.fontFamily
@@ -54,6 +56,7 @@ Rectangle {
                 color: root.device?.isExitNode ? Api.theme.accent : Api.theme.textMuted
             }
             Text {
+                textFormat: Text.PlainText
                 text: root.device?.online ? (root._connection || "online") : ("last seen " + (root.device?.lastSeenText ?? "never"))
                 font.family: Api.theme.fontFamily
                 font.pixelSize: Api.theme.fontSizeXSmall
@@ -61,6 +64,7 @@ Rectangle {
             }
         }
         Text {
+            textFormat: Text.PlainText
             Layout.fillWidth: true
             elide: Text.ElideRight
             text: [root.device?.owner || (root.device?.tags ?? []).join(", "), root.device?.os ?? "", root.device?.sharedIn ? "shared in" : "",
@@ -84,6 +88,7 @@ Rectangle {
                     radius: Api.theme.row.radius
                     color: _copyArea.lit ? Api.theme.surfaceHover : Api.theme.surfaceSunken
                     Text {
+                        textFormat: Text.PlainText
                         id: _address
                         anchors.centerIn: parent
                         text: root._copied === parent.modelData.text ? "Copied" : parent.modelData.text
@@ -104,6 +109,7 @@ Rectangle {
             }
         }
         Text {
+            textFormat: Text.PlainText
             visible: root.showTraffic && root.device !== null && (root.device.rxBytes > 0 || root.device.txBytes > 0)
             text: "Received " + TailscaleRules.bytes(root.device?.rxBytes ?? 0) + " · sent " + TailscaleRules.bytes(root.device?.txBytes ?? 0)
             font.family: Api.theme.fontFamily

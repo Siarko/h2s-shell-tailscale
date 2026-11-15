@@ -284,7 +284,15 @@ TestCase {
                 assertEqual(contractProblems(rules.entry(hostile, hostile, hostile)).length, 0, "entry: hostile input " + JSON.stringify(hostile) + " still gives the entry");
 
             const running = rules.entry(status("running"), prefs("running"), { now: now });
-            assertEqual(running.name, "Tailscale · user@example.com", "entry: the name carries the tailnet");
+            assertEqual(running.name, "Tailscale", "entry: a personal tailnet (named by the account's e-mail address): just \"Tailscale\"");
+            const organisation = JSON.parse(fixture("status-running.json"));
+            organisation.CurrentTailnet.Name = "Example Org";
+            assertEqual(rules.entry(rules.parseStatus(organisation), prefs("running"), { now: now }).name, "Tailscale · Example Org",
+                        "entry: a named organisation tailnet: \"Tailscale · <its name>\"");
+            assertEqual(rules.entryTailnet(status("running"), {}), "", "entryTailnet: never an e-mail address");
+            assertEqual(rules.tailnetName(status("running"), {}), "user@example.com", "tailnetName (the card's): the account's tailnet as it is");
+            assertEqual(rules.entry(null, null, { daemon: "not-running", lastTailnet: "user@example.com" }).name, "Tailscale",
+                        "entry: an e-mail address remembered from before is not shown");
             same(running.detail, { iface: "tailscale0", interfaceName: "tailscale0", addresses: ["100.64.0.1", "fd7a:115c:a1e0::1"],
                                    server: "controlplane.tailscale.com", dns: ["100.100.100.100"] }, "entry: detail while up");
             assertEqual(running.status, "Tailnet only", "entry: the status line");
@@ -343,6 +351,23 @@ TestCase {
             assert(plan.kind === "needs-user" && plan.attention?.kind === "service-not-running", "plan: daemon down, for a network: needs the user");
             assertEqual(rules.planConnect(view(null, null, { cli: "missing" }), true, "user").kind, "nothing", "plan: not installed: nothing to run");
             assertEqual(rules.planConnect(view("needs-machine-auth", "running"), true, "user").kind, "nothing", "plan: waiting for approval: connect does nothing");
+            // The state unknown (not read yet, or the last read timed out): read first, never a blind `up`
+            for (const unknown of [view(null, null), view("running", "running", { stale: true })]) {
+                for (const origin of ["user", "network"]) {
+                    plan = rules.planConnect(unknown, false, origin);
+                    assert(plan.kind === "read" && plan.command === null && !plan.privileged, "plan: connect while the state is unknown (" + origin + "): read, nothing run");
+                }
+            }
+            const stale = view("running", "running", { stale: true });
+            assert(stale.phase === "unknown" && stale.state === "" && stale.status === "Not answering — state unknown",
+                   "state: a read that timed out: unknown, not \"connected\" from the last answer: " + JSON.stringify([stale.phase, stale.state, stale.status]));
+            assertEqual(rules.entry(status("running"), prefs("running"), { now: now, stale: true }).name, "Tailscale", "entry: still listed while stale");
+            assertEqual(view(null, null, { stale: true, operation: "connect" }).status, "Connecting…", "state: stale but connecting: \"Connecting…\"");
+            const untrusted = view(null, null, { cli: "untrusted", untrustedReason: "The tailscale found on PATH is not trusted" });
+            assert(untrusted.phase === "untrusted" && untrusted.status === "Not trusted" && untrusted.attention?.kind === "untrusted"
+                   && untrusted.attention.reason === "The tailscale found on PATH is not trusted" && untrusted.attention.action === "",
+                   "state: an untrusted program: \"Not trusted\", attention with the reason, no action");
+            assertEqual(rules.planConnect(untrusted, true, "user").kind, "nothing", "plan: untrusted: nothing runs");
 
             const running = view("running", "running");
             plan = rules.planDisconnect(running, false, "user");
@@ -352,6 +377,12 @@ TestCase {
             assert(plan.kind === "needs-user" && plan.attention?.action === "Disconnect", "plan: disconnect for a network, not operator: attention");
             assert(rules.planDisconnect(running, true, "network").kind === "run", "plan: disconnect for a network as the operator");
             assertEqual(rules.planDisconnect(stopped, true, "user").kind, "nothing", "plan: disconnect while off: nothing");
+            const pending = view("stopped", "stopped", { operation: "connect" });
+            plan = rules.planDisconnect(pending, true, "user", { connecting: true });
+            assert(plan.kind === "run" && plan.command.argv.join(" ") === "tailscale down", "plan: disconnect while a connect is pending: `down`, whatever the phase");
+            plan = rules.planDisconnect(pending, false, "network", { connecting: true });
+            assert(plan.kind === "needs-user" && !plan.privileged, "plan: … for a network, not operator: attention, never a prompt");
+            assertEqual(rules.planDisconnect(view(null, null), true, "user").kind, "read", "plan: disconnect while unknown: read first");
 
             plan = rules.planAttend(loggedOut, false, "user");
             assert(plan.kind === "run" && plan.privileged && plan.command.argv.join(" ") === "tailscale login", "plan: attend a login: log in");

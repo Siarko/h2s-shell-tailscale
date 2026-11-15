@@ -1,0 +1,22 @@
+#!/bin/sh
+# h2s-stand-in: a stand-in `timeout` for the module's tests — it IS coreutils' timeout: it
+# runs the first timeout(1) on PATH that is not a stand-in (nor a wrapper of one), with the
+# same arguments. It is here so that the module's tools seam names every program it runs
+# (tailscale, timeout, pkexec, curl, systemctl, xdg-open) from one directory; the stand-in
+# pkexec runs it by its absolute path as the real pkexec would run the real one.
+#
+#   TS_FAKE_TIMEOUT_LOG  a file each call's arguments are appended to (one line per call)
+[ -n "${TS_FAKE_TIMEOUT_LOG:-}" ] && printf 'timeout %s\n' "$*" >> "$TS_FAKE_TIMEOUT_LOG"
+self=$(readlink -f "$0")
+old_ifs=$IFS
+IFS=:
+for directory in $PATH; do
+    IFS=$old_ifs
+    candidate=$directory/timeout
+    [ -f "$candidate" ] && [ -x "$candidate" ] || continue
+    [ "$(readlink -f "$candidate")" = "$self" ] && continue
+    grep -q 'h2s-stand-in' "$candidate" 2> /dev/null && continue
+    exec "$candidate" "$@"
+done
+echo "stand-in timeout: no timeout(1) on PATH" >&2
+exit 125
