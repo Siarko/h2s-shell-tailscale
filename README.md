@@ -74,7 +74,7 @@ rights; the first change asks for an administrator's password.
 
 ```
 module/                 the module itself — what gets installed
-  module.json           the manifest: main, the three VPN slots, the page, a setting, facts, tests
+  module.json           the manifest: main, two VPN slots (row, card), the page, a setting, facts, tests
   qmldir                its types and singletons
   TailscaleRules.qml    pure functions: status/prefs → the VPN entry, devices, exit nodes,
                         the event bus, errors, plans, every command's argv
@@ -83,7 +83,7 @@ module/                 the module itself — what gets installed
   Main.qml              made by the shell's host: the client, the VPN provider, IPC, facts
   TailscaleRow.qml      slot network.vpn.row: the exit-node chooser, the login link
   TailscaleCard.qml     slot network.vpn.card: tailnet, account, this computer, warnings
-  TailscalePage.qml     slot network.vpn.page and the settings page "tailscale"
+  TailscalePage.qml     the settings page "tailscale" (where the card's "Settings…" leads)
   ExitNodeChooser.qml   the chooser (row and page)
   DeviceRow.qml         one device on the page
   tests/                its suites (extend the shell's TestCase: `import qs.tests`)

@@ -4,18 +4,20 @@ import Quickshell
 import qs.api
 import qs.components
 
-// Tailscale's own page: slot network.vpn.page (opened from its card's "Settings…", in the
-// core's frame: Back, title, scrolling) and the settings page "tailscale" under System →
-// Network (its manifest's settingsPages) — the same file. A plain column at the page's width,
-// scrolled by its implicitHeight. Sections: Connection, Exit node, Network, Devices,
-// Administration, About. The devices' traffic is read only while this page is on screen
+// Tailscale's own page: the settings page "tailscale" under System → Network (its manifest's
+// settingsPages), where its VPN card's "Settings…" leads (the provider's settingsPage) — the
+// left list has VPN right beside it, the way back. A plain column at the page's width,
+// scrolled by its implicitHeight. It still takes a `context` should a shell frame it as a
+// provider page (network.vpn.page), but the module no longer contributes that slot.
+// Sections: Connection, Exit node, Network, Devices, Administration, About. The devices' traffic is read only while this page is on screen
 // (`shown`, module API 1.2: client.watch() / unwatch()).
 ColumnLayout {
     id: root
     objectName: "tailscalePage"
 
     property var module: null
-    // In the VPN page's frame: { slot, vpnId, entryId, vpn, provider, otherVpnsUp, close }
+    // Only when framed as a provider page (not contributed now): { slot, vpnId, entryId, vpn,
+    // provider, otherVpnsUp, close }; as a settings page null — the client is Tailscale.client
     property var context: null
     readonly property var client: context?.provider?.client ?? Tailscale.client
     readonly property var view: client?.view ?? null

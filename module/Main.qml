@@ -18,7 +18,7 @@ QtObject {
     }
 
     // Tailscale among the shell's VPNs. providerId: the module's id (module API 1.1), so its
-    // three VPN slots are the manifest's
+    // VPN slots (the row's, the card's) are the manifest's
     property VpnProvider provider: VpnProvider {
         // The live client, for the slots' contributions (context.provider.client)
         readonly property var client: main.client
@@ -110,6 +110,14 @@ QtObject {
     }
 
     Component.onCompleted: {
+        // Its page is the settings page named by its module id, "tailscale" (the manifest's
+        // settingsPages, under Network): the card's "Settings…" goes there rather than framing
+        // a copy over the VPN page — there is no network.vpn.page slot any more. Assigned, not
+        // declared: a shell from before VpnProvider.settingsPage would refuse the whole main
+        // over an unknown property; there the page is still in the list, the card has no
+        // button.
+        if ("settingsPage" in provider)
+            provider.settingsPage = main.module?.moduleId ?? "tailscale";
         Tailscale.client = client;
         module?.setFact("connected", connected);
         module?.setFact("exitNodeInUse", exitNodeInUse);

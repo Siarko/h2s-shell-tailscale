@@ -4,6 +4,11 @@
 
 Needs the shell's module API 1.2 (the handle's `resumed()`, the pages' `shown`).
 
+- "Settings…" on Tailscale's VPN card goes to its settings page (Settings → System → Network
+  → Tailscale; the provider's `settingsPage`) instead of opening a copy of the page over the
+  VPN page: the module no longer contributes `network.vpn.page`. On a shell without
+  `VpnProvider.settingsPage` the card has no "Settings…"; the page is in the list either way.
+
 After the review of step 1:
 
 - Every command runs under coreutils' timeout (reads 15 s, changes 60 s, bare `up` 60 s, login

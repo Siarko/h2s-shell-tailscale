@@ -9,8 +9,9 @@
 # Checked: the module loads; the Tailscale entry appears among the VPNs (its IPC state) and in
 # the network popup's VPN section (screenshot); connecting as a user who is not Tailscale's
 # operator runs bare `up`, is denied and runs again through (the stand-in) pkexec; the
-# exit-node chooser under the row lists the fixture's nodes; the VPN settings page and the
-# module's own page open; and the lock still locks and unlocks with the module loaded.
+# exit-node chooser under the row lists the fixture's nodes; the VPN settings page opens, and
+# its card's "Settings…" goes to the module's settings page (settings currentPage); and the
+# lock still locks and unlocks with the module loaded.
 
 module_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P) || abort "no module repository"
 [ -f "$module_repo/module/module.json" ] || abort "no module at $module_repo/module"
@@ -128,13 +129,14 @@ move_pointer 700 175
 send_input "click left"
 sleep 1
 screenshot settings-vpn-card
-# The card's "Settings…" (the core's button, under the extras): the page in the provider frame
+# The card's "Settings…" (the core's button, under the extras): it goes to the module's settings
+# page "tailscale" (the provider's settingsPage) — the list selects it; no framed copy
+check "… the card's extras built without an error" test "$(module_errors)" = "[]"
+check "before: the VPN page is the open one" test "$(shell_ipc settings currentPage)" = network_vpn
 move_pointer 244 344
 send_input "click left"
-sleep 1
-screenshot settings-provider-page
-check "… the card's extras and the framed page built without an error" test "$(module_errors)" = "[]"
-check "the module's page opens (settings openPage tailscale: the same page as the card's \"Settings…\")" test -z "$(shell_ipc settings openPage tailscale)"
+settings_on_tailscale() { [ "$(shell_ipc settings currentPage)" = tailscale ]; }
+check_within 5 "\"Settings…\" on the card opens the settings page \"tailscale\" (the list's selected page)" settings_on_tailscale
 sleep 1.5
 screenshot settings-tailscale
 check "… built without an error or a warning" test "$(module_errors)" = "[]"

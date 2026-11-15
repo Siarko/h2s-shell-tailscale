@@ -60,7 +60,9 @@ TestCase {
         assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, qs.components, Quickshell)");
         assertEqual(module.manifest.api, "1.2", "written for module API 1.2 (resumed(), shown)");
         const slots = (module.manifest.slots ?? []).map(entry => entry.slot).sort().join(",");
-        assertEqual(slots, "network.vpn.card,network.vpn.page,network.vpn.row", "the three VPN slots in its manifest");
+        assertEqual(slots, "network.vpn.card,network.vpn.row", "the row's and the card's VPN slots in its manifest — no network.vpn.page: its page is a settings page");
+        assertEqual((module.manifest.settingsPages ?? []).map(page => page.id + ":" + page.parent).join(","), "tailscale:network",
+                    "its page: the settings page \"tailscale\" under Network");
         assert(Api.slots.some(slot => slot.name === "network.vpn.row"), "… offered by the shell");
         assertEqual(module.value("openLoginInBrowser"), true, "its setting: open the login in the browser (default on)");
 

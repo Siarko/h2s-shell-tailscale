@@ -7,8 +7,7 @@
     "main": "Main.qml",
     "slots": [
         { "slot": "network.vpn.row", "component": "TailscaleRow.qml" },
-        { "slot": "network.vpn.card", "component": "TailscaleCard.qml" },
-        { "slot": "network.vpn.page", "component": "TailscalePage.qml" }
+        { "slot": "network.vpn.card", "component": "TailscaleCard.qml" }
     ],
     "settingsPages": [
         { "id": "tailscale", "label": "Tailscale", "component": "TailscalePage.qml", "tab": "system", "parent": "network" }
