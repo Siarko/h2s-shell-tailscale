@@ -129,11 +129,36 @@ move_pointer 700 175
 send_input "click left"
 sleep 1
 screenshot settings-vpn-card
-# The card's "Settings…" (the core's button, under the extras): it goes to the module's settings
+# The card's "Settings…" (the core's button, under Disconnect): it goes to the module's settings
 # page "tailscale" (the provider's settingsPage) — the list selects it; no framed copy
 check "… the card's extras built without an error" test "$(module_errors)" = "[]"
 check "before: the VPN page is the open one" test "$(shell_ipc settings currentPage)" = network_vpn
-move_pointer 244 344
+# Found where it is, not at fixed coordinates: the shell's `settings itemRect` (in the window)
+# plus the window's place from the compositor
+settings_rect() { shell_ipc settings itemRect "$1"; }
+settings_window_at() { hyprctl -j clients | python3 -I -c '
+import json, sys
+windows = [c for c in json.load(sys.stdin) if c.get("title") == "Settings"]
+print(json.dumps(windows[0]["at"] if windows else None))'; }
+item_on_screen() { python3 -I -c 'import json,sys; r=json.loads(sys.argv[1]); sys.exit(0 if r.get("width",0) > 0 else 1)' "$(settings_rect "$1")"; }
+check_within 5 "the card's \"Settings…\" is shown (profileSettings)" item_on_screen profileSettings
+settings_button=$(settings_rect profileSettings)
+primary_button=$(settings_rect profilePrimary)
+window_at=$(settings_window_at)
+log "Settings… $settings_button, Disconnect $primary_button, window at $window_at"
+# Under the primary button (Disconnect), on its right edge
+check "… under Disconnect, right-aligned with it" python3 -I -c '
+import json, sys
+settings, primary = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+sys.exit(0 if settings["y"] >= primary["y"] + primary["height"]
+         and abs((settings["x"] + settings["width"]) - (primary["x"] + primary["width"])) <= 1 else 1)' "$settings_button" "$primary_button"
+read -r click_x click_y < <(python3 -I -c '
+import json, sys
+rect, at = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+print(at[0] + rect["x"] + rect["width"] // 2, at[1] + rect["y"] + rect["height"] // 2)' "$settings_button" "$window_at")
+move_pointer "$click_x" "$click_y"
+sleep 0.3
+screenshot settings-vpn-card-hover
 send_input "click left"
 settings_on_tailscale() { [ "$(shell_ipc settings currentPage)" = tailscale ]; }
 check_within 5 "\"Settings…\" on the card opens the settings page \"tailscale\" (the list's selected page)" settings_on_tailscale
