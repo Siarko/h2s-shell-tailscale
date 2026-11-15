@@ -1,0 +1,6 @@
+#!/bin/sh
+# A stand-in `nmcli` for the module's lock-bed test: the shell under test must never reach
+# NetworkManager. It answers nothing (as NetworkManager not running would) and logs the call.
+[ -n "${TS_FAKE_LOG:-}" ] && printf 'nmcli %s\n' "$*" >> "$TS_FAKE_LOG"
+echo "Error: NetworkManager is not running (stand-in)." >&2
+exit 8

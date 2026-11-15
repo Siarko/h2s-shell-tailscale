@@ -181,6 +181,37 @@ start=$SECONDS
 run "$work/out" "$work/err" env TS_FAKE_BUS_DELAY=0.1 TS_FAKE_BUS_END=hold TS_FAKE_BUS_HOLD=1 "$CURL" --unix-socket /s "http://x/localapi/v0/watch-ipn-bus"
 check "hold: waits, then ends" test "$status" = 0 -a $((SECONDS - start)) -ge 1
 
+echo "=== stand-in systemctl, xdg-open, nmcli ==="
+fresh
+SYSTEMCTL=$TOOLS/stand-in/systemctl
+XDG_OPEN=$TOOLS/stand-in/xdg-open
+NMCLI=$TOOLS/stand-in/nmcli
+run "$work/out" "$work/err" "$SYSTEMCTL" stop tailscaled.service
+check "systemctl stop: the daemon down (a file in the state dir)" test "$status" = 0 -a -f "$work/state/daemon-down"
+run "$work/out" "$work/err" "$TS" status --json
+check "… the stand-in tailscale says not running" grep -q "Failed to connect" "$work/err"
+run "$work/out" "$work/err" "$CURL" --unix-socket /s "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus"
+check "… the stand-in curl cannot connect (exit 7)" test "$status" = 7
+run "$work/out" "$work/err" "$SYSTEMCTL" start tailscaled.service
+check "systemctl start: up again" test "$status" = 0 -a ! -e "$work/state/daemon-down" -a "$(backend)" = Running
+run "$work/out" "$work/err" env TS_FAKE_SYSTEMCTL=fail "$SYSTEMCTL" start tailscaled.service
+check "systemctl fail: exit 1" test "$status" = 1
+check "systemctl: logged" grep -q "^systemctl start tailscaled.service$" "$work/log"
+run "$work/out" "$work/err" "$XDG_OPEN" "https://login.tailscale.com/a/REDACTED"
+check "xdg-open: opens nothing, logs the URL" test "$status" = 0 -a "$(grep -c "^xdg-open https://login.tailscale.com/a/REDACTED$" "$work/log")" = 1
+run "$work/out" "$work/err" "$NMCLI" -t device
+check "nmcli: answers nothing (exit 8)" test "$status" = 8
+run "$work/out" "$work/err" env TS_FAKE_STATE=key-expired "$TS" debug prefs
+check "key expired: prefs of a logged-in machine (an expiry is not a logout)" grep -q '"LoggedOut": false' "$work/out"
+TS_FAKE_LOGIN_DELAY=5 "$TS" logout > /dev/null 2>&1; TS_FAKE_OPERATOR=1 "$TS" logout > /dev/null 2>&1
+TS_FAKE_OPERATOR=1 TS_FAKE_LOGIN_DELAY=5 "$TS" login > /dev/null 2>&1 &
+login_pid=$!
+sleep 0.3
+kill -TERM "$login_pid"
+wait "$login_pid" 2> /dev/null
+sleep 0.2
+check "a login ended while it waits takes its sleep with it" test -z "$(pgrep -fx "sleep 5" 2> /dev/null)"
+
 echo
 echo "--- stand-ins: $passed/$((passed + failed)) passed$([ "$failed" -gt 0 ] && echo ", $failed FAILED") ---"
 [ "$failed" = 0 ]

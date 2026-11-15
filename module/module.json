@@ -1,9 +1,26 @@
 {
     "id": "tailscale",
     "name": "Tailscale",
-    "version": "0.1.0",
-    "api": "1.0",
-    "description": "Tailscale among the shell's VPNs: connect, log in, exit nodes, devices, settings. Stage T0: the rules and their tests only.",
+    "version": "0.2.0",
+    "api": "1.1",
+    "description": "Tailscale among the shell's VPNs: connect, log in and out, exit nodes, the main switches, the devices.",
+    "main": "Main.qml",
+    "slots": [
+        { "slot": "network.vpn.row", "component": "TailscaleRow.qml" },
+        { "slot": "network.vpn.card", "component": "TailscaleCard.qml" },
+        { "slot": "network.vpn.page", "component": "TailscalePage.qml" }
+    ],
+    "settingsPages": [
+        { "id": "tailscale", "label": "Tailscale", "component": "TailscalePage.qml", "tab": "system", "parent": "network" }
+    ],
+    "settings": [
+        { "key": "mod.tailscale.openLoginInBrowser", "label": "Open Tailscale's login page in the browser", "type": "bool",
+          "default": true, "global": true, "hint": "Off: the login link is only shown, to copy" }
+    ],
+    "facts": [
+        { "fact": "tailscale.connected", "label": "Tailscale connected", "type": "bool" },
+        { "fact": "tailscale.exitNode", "label": "Tailscale's exit node (\"\" none)", "type": "string" }
+    ],
     "setupHints": [
         "Install Tailscale and run its service (NixOS: services.tailscale.enable = true;).",
         "Changes ask for an administrator's password through the shell's polkit agent; making your user Tailscale's operator (offered on the module's page) asks once instead."
@@ -11,6 +28,8 @@
     "tests": [
         "tests/TailscaleStateTest.qml",
         "tests/TailscaleDevicesTest.qml",
-        "tests/TailscaleIoTest.qml"
+        "tests/TailscaleIoTest.qml",
+        "tests/TailscaleLiveTest.qml",
+        "tests/TailscaleModuleTest.qml"
     ]
 }

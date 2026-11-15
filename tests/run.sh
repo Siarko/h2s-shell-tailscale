@@ -2,7 +2,7 @@
 # Runs the module's QML suites (module/module.json "tests") headless, against a checkout of
 # h2s-shell (they extend its TestCase and run in its Quickshell).
 #
-#   tests/run.sh                 against $H2S_SHELL_DIR (default: ../h2s-shell-wt2)
+#   tests/run.sh                 against $H2S_SHELL_DIR (default: ../h2s-shell-wt)
 #   tests/run.sh --log <file>    the output also saved to <file>
 #
 # Two ways, one result:
@@ -28,8 +28,8 @@ set -uo pipefail
 
 REPOSITORY=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd -P)
 MODULE_DIR=$REPOSITORY/module
-SHELL_DIR=${H2S_SHELL_DIR:-$REPOSITORY/../h2s-shell-wt2}
-SHELL_DIR=$(cd "$SHELL_DIR" 2> /dev/null && pwd -P) || { echo "run.sh: no shell checkout at ${H2S_SHELL_DIR:-../h2s-shell-wt2} (set H2S_SHELL_DIR)" >&2; exit 2; }
+SHELL_DIR=${H2S_SHELL_DIR:-$REPOSITORY/../h2s-shell-wt}
+SHELL_DIR=$(cd "$SHELL_DIR" 2> /dev/null && pwd -P) || { echo "run.sh: no shell checkout at ${H2S_SHELL_DIR:-../h2s-shell-wt} (set H2S_SHELL_DIR)" >&2; exit 2; }
 [ -f "$SHELL_DIR/tests/TestCase.qml" ] || { echo "run.sh: $SHELL_DIR is not an h2s-shell checkout (no tests/TestCase.qml)" >&2; exit 2; }
 
 output_copy=""
@@ -38,6 +38,10 @@ if [ "${1:-}" = --log ]; then
     [ -n "$output_copy" ] || { echo "run.sh: --log needs a file" >&2; exit 2; }
     shift 2
 fi
+
+# The stand-ins first on PATH, whatever runs a program by name (the shell's Api.openUrl runs
+# xdg-open): the module itself takes them through its tools seam under the module runner
+export PATH="$REPOSITORY/tools/stand-in:$PATH"
 
 if [ -x "$SHELL_DIR/tests/run-modules.sh" ] && [ "${H2S_OWN_HARNESS:-0}" != 1 ]; then
     echo "run.sh: using the shell's tests/run-modules.sh ($SHELL_DIR)"

@@ -9,7 +9,9 @@
 #   TS_FAKE_BUS_END    eof (default: exit 0 after the last line) | die (exit 56, as a
 #                      daemon restarting cuts the stream) | hold (wait TS_FAKE_BUS_HOLD
 #                      seconds, default 30, then exit 0)
-#   TS_FAKE_DAEMON     down: exit 7, as curl does when the socket is not there
+#   TS_FAKE_DAEMON     down: exit 7, as curl does when the socket is not there; so does a
+#                      file "daemon-down" in TS_FAKE_STATE_DIR (default as the stand-in
+#                      tailscale's: ${XDG_RUNTIME_DIR:-/tmp}/ts-fake-$(id -u))
 #   TS_FAKE_LOG        a file each call's arguments are appended to
 #
 # Without --unix-socket, or for any URL but the bus, it fails as curl would (exit 7 / 22).
@@ -28,7 +30,8 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
-if [ "${TS_FAKE_DAEMON:-}" = down ] || [ -z "$socket" ]; then
+state_dir=${TS_FAKE_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/ts-fake-$(id -u)}
+if [ "${TS_FAKE_DAEMON:-}" = down ] || [ -f "$state_dir/daemon-down" ] || [ -z "$socket" ]; then
     echo "curl: (7) Failed to connect to local-tailscaled.sock port 80 after 0 ms: Couldn't connect to server" >&2
     exit 7
 fi
@@ -43,6 +46,6 @@ while IFS= read -r line; do
 done < "${TS_FAKE_BUS_FILE:-$F/bus-lines.jsonl}"
 case ${TS_FAKE_BUS_END:-eof} in
     die) echo "curl: (56) Recv failure: Connection reset by peer" >&2; exit 56 ;;
-    hold) sleep "${TS_FAKE_BUS_HOLD:-30}" ;;
+    hold) exec sleep "${TS_FAKE_BUS_HOLD:-30}" ;;
 esac
 exit 0

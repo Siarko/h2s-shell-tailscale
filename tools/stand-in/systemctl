@@ -1,0 +1,17 @@
+#!/bin/sh
+# A stand-in `systemctl` for the module's tests: it starts and stops nothing but the stand-in
+# tailscale's daemon — the file "daemon-down" in its state directory (TS_FAKE_STATE_DIR, the
+# same default as the stand-in tailscale's). Logs each call to TS_FAKE_LOG.
+#
+#   TS_FAKE_SYSTEMCTL  ok (default) | fail: exit 1 with systemd's words for a refused start
+state_dir=${TS_FAKE_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/ts-fake-$(id -u)}
+[ -n "${TS_FAKE_LOG:-}" ] && printf 'systemctl %s\n' "$*" >> "$TS_FAKE_LOG"
+if [ "${TS_FAKE_SYSTEMCTL:-ok}" = fail ]; then
+    echo "Failed to start tailscaled.service: Access denied" >&2
+    exit 1
+fi
+case "$1 ${2:-}" in
+    "start tailscaled.service" | "start tailscaled") mkdir -p "$state_dir" && rm -f "$state_dir/daemon-down" ;;
+    "stop tailscaled.service" | "stop tailscaled") mkdir -p "$state_dir" && : > "$state_dir/daemon-down" ;;
+    *) echo "stand-in systemctl: '$*' not replayed" >&2; exit 2 ;;
+esac

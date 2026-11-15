@@ -11,7 +11,9 @@
 #                        running | stopped | starting | needs-login | needs-machine-auth |
 #                        exit-node | exit-node-offline | key-expiring | key-expired |
 #                        health-warnings | update-available | rich | not-running
-#   TS_FAKE_DAEMON       "down": the daemon is not running (every daemon command fails)
+#   TS_FAKE_DAEMON       "down": the daemon is not running (every daemon command fails);
+#                        so is it while the state dir holds a file "daemon-down" (the stand-in
+#                        systemctl removes it on `start tailscaled.service`)
 #   TS_FAKE_OPERATOR     1: the caller may change (operator); 0 (default, as on the machine
 #                        the fixtures come from): changes are denied with the real text.
 #                        Also allowed: TS_FAKE_ROOT=1 (set by the stand-in pkexec), or a
@@ -36,6 +38,8 @@ scenario=${TS_FAKE_STATE:-}
 [ -z "$scenario" ] && [ -f "$STATE_DIR/scenario" ] && scenario=$(cat "$STATE_DIR/scenario")
 [ -z "$scenario" ] && scenario=running
 [ "${TS_FAKE_DAEMON:-}" = down ] && scenario=not-running
+# The daemon stopped by a test (a file, so that a stand-in systemctl can start it again)
+[ -f "$STATE_DIR/daemon-down" ] && scenario=not-running
 
 save_scenario() { printf '%s\n' "$1" > "$STATE_DIR/scenario"; scenario=$1; }
 
@@ -81,7 +85,9 @@ status_fixture() {
 prefs_base() {
     case $scenario in
         stopped) echo "$F/prefs-stopped.json" ;;
-        needs-login | login-pending | key-expired) echo "$F/prefs-logged-out.json" ;;
+        needs-login | login-pending) echo "$F/prefs-logged-out.json" ;;
+        # An expired key is not a logout: the prefs stay those of a logged-in machine
+        key-expired) echo "$F/prefs-running.json" ;;
         exit-node | exit-node-offline) echo "$F/prefs-exit-node.json" ;;
         rich) echo "$F/prefs-rich.json" ;;
         *) echo "$F/prefs-running.json" ;;
@@ -139,7 +145,12 @@ exit_node_id() { # the argument of --exit-node → a node id, or "" when no node
 login_flow() {
     save_scenario login-pending
     printf '\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/REDACTED\n\n' >&2
-    sleep "${TS_FAKE_LOGIN_DELAY:-2}"
+    # Killable while it waits (the module ends a login that takes too long): the sleep goes too
+    sleep "${TS_FAKE_LOGIN_DELAY:-2}" &
+    sleeper=$!
+    trap 'kill "$sleeper" 2> /dev/null; exit 143' TERM INT HUP
+    wait "$sleeper"
+    trap - TERM INT HUP
     if [ "${TS_FAKE_LOGIN_RESULT:-}" = fail ]; then
         save_scenario needs-login
         echo "backend error: example login failure" >&2

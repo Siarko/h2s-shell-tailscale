@@ -1,0 +1,6 @@
+#!/bin/sh
+# A stand-in `xdg-open` for the module's tests: it opens nothing, it logs what it was asked to
+# open (a line "xdg-open <url>" in TS_FAKE_LOG) and exits 0.
+[ -n "${TS_FAKE_LOG:-}" ] && printf 'xdg-open %s\n' "$*" >> "$TS_FAKE_LOG"
+[ $# -eq 1 ] || { echo "stand-in xdg-open: one argument" >&2; exit 1; }
+exit 0
