@@ -1,0 +1,4 @@
+Access denied: prefs write access denied
+
+Use 'sudo tailscale set --exit-node=peer3'.
+To not require root, use 'sudo tailscale set --operator=$USER' once.

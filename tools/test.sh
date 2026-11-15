@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# Checks the stand-ins (tools/stand-in: tailscale, pkexec, curl) do what the next stage's
+# end-to-end tests will count on. Each is run by its absolute path, never through PATH — so
+# the real tailscale (or pkexec, or curl) can never be the one that runs — with a private
+# state directory, and nothing reaches a daemon or the network.
+#
+#   tools/test.sh     prints PASS / FAIL lines; exit 0 when all passed, 1 otherwise
+set -uo pipefail
+
+TOOLS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd -P)
+FIXTURES=$(cd "$TOOLS/../fixtures" && pwd -P)
+TS=$TOOLS/stand-in/tailscale
+PKEXEC=$TOOLS/stand-in/pkexec
+CURL=$TOOLS/stand-in/curl
+work=$(mktemp -d "${TMPDIR:-/tmp}/ts-standin.XXXXXX") || exit 2
+trap 'rm -rf "$work"' EXIT
+passed=0
+failed=0
+
+pass() { passed=$((passed + 1)); echo "  PASS: $1"; }
+fail() { failed=$((failed + 1)); echo "  FAIL: $1"; }
+check() { # check <description> <command…>: passes when the command succeeds
+    local description=$1
+    shift
+    if "$@"; then pass "$description"; else fail "$description"; fi
+}
+
+# A fresh state for each scenario; TS_FAKE_* from the caller are dropped
+fresh() {
+    rm -rf "$work/state" "$work/log" "$work/pkexec.log"
+    mkdir -p "$work/state"
+    unset TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT
+    export TS_FAKE_STATE_DIR=$work/state TS_FAKE_LOG=$work/log TS_FAKE_PKEXEC_LOG=$work/pkexec.log
+    export TS_FAKE_LOGIN_DELAY=0 TS_FAKE_USER=tester TS_FAKE_FIXTURES=$FIXTURES
+}
+
+backend() { "$TS" status --json | sed -n 's/^  "BackendState": "\(.*\)",$/\1/p'; }
+pref() { "$TS" debug prefs | sed -n "s/^  \"$1\": \\(.*\\),\$/\\1/p"; }
+run() { # run <stdout file> <stderr file> <command…> → the exit status in $status
+    local out=$1 err=$2
+    shift 2
+    "$@" > "$out" 2> "$err"
+    status=$?
+}
+
+echo "=== stand-in tailscale ==="
+fresh
+check "status --json replays the running fixture" cmp -s <("$TS" status --json) "$FIXTURES/status-running.json"
+check "debug prefs replays the running prefs" cmp -s <("$TS" debug prefs) "$FIXTURES/prefs-running.json"
+check "exit-node list replays its fixture" cmp -s <("$TS" exit-node list) "$FIXTURES/exit-node-list.txt"
+check "exit-node suggest replays its fixture" cmp -s <("$TS" exit-node suggest) "$FIXTURES/exit-node-suggest.txt"
+check "version works" grep -q '^1.104.4$' <("$TS" version)
+
+# Read-only: every change denied with the real text, nothing changed
+run "$work/out" "$work/err" "$TS" set --exit-node=peer4
+check "read-only: set exits 1" test "$status" = 1
+check "read-only: the real denial text" grep -q "^Access denied: prefs write access denied$" "$work/err"
+check "read-only: the advice names the command as typed" grep -qF "Use 'sudo tailscale set --exit-node=peer4'." "$work/err"
+check "read-only: nothing changed" test "$(pref ExitNodeID)" = '""'
+run "$work/out" "$work/err" "$TS" switch --list
+check "read-only: switch --list denied (profiles access denied)" grep -q "^Access denied: profiles access denied$" "$work/err"
+run "$work/out" "$work/err" "$TS" logout
+check "read-only: logout denied" grep -q "^Access denied: logout access denied$" "$work/err"
+run "$work/out" "$work/err" "$TS" down
+check "read-only: down denied, still running" test "$status" = 1 -a "$(backend)" = Running
+
+# Operator: changes go through and show in status / prefs
+export TS_FAKE_OPERATOR=1
+run "$work/out" "$work/err" "$TS" set --accept-routes=false --shields-up --hostname=box
+check "operator: set succeeds" test "$status" = 0
+check "operator: RouteAll follows" test "$(pref RouteAll)" = false
+check "operator: ShieldsUp follows" test "$(pref ShieldsUp)" = true
+check "operator: Hostname follows" test "$(pref Hostname)" = '"box"'
+run "$work/out" "$work/err" "$TS" set --exit-node=100.64.0.4
+check "operator: an exit node by address" test "$status" = 0 -a "$(pref ExitNodeID)" = '"nPEER4CNTRL"'
+check "operator: status shows the exit node" grep -q '"ExitNodeStatus"' <("$TS" status --json)
+run "$work/out" "$work/err" "$TS" set --exit-node=
+check "operator: no exit node" test "$(pref ExitNodeID)" = '""' -a "$(backend)" = Running
+run "$work/out" "$work/err" "$TS" set --exit-node=nowhere
+check "operator: an unknown exit node is an error" test "$status" = 1
+run "$work/out" "$work/err" "$TS" set --nonsense
+check "operator: an unknown flag is Go's flag error" grep -q "flag provided but not defined: --nonsense" "$work/err"
+run "$work/out" "$work/err" "$TS" set --ssh=maybe
+check "operator: a bad boolean is refused" test "$status" = 2
+run "$work/out" "$work/err" "$TS" down
+check "operator: down → Stopped, WantRunning false" test "$(backend)" = Stopped -a "$(pref WantRunning)" = false
+run "$work/out" "$work/err" "$TS" up
+check "operator: bare up → Running again" test "$status" = 0 -a "$(backend)" = Running -a "$(pref WantRunning)" = true
+run "$work/out" "$work/err" "$TS" up --accept-routes
+check "up with a flag → the revert error" test "$status" = 1
+check "up with a flag: the real revert text" cmp -s "$work/err" "$FIXTURES/stderr-up-accidental-revert.txt"
+run "$work/out" "$work/err" "$TS" up --timeout=5s
+check "up with any flag (even --timeout) → the revert error" grep -q "requires mentioning all" "$work/err"
+check "switch --list --json replays its fixture" cmp -s <("$TS" switch --list --json) "$FIXTURES/switch-list.json"
+check "switch --list replays the table" cmp -s <("$TS" switch --list) "$FIXTURES/switch-list.txt"
+check "switch to another account" grep -q "^Success.$" <("$TS" switch c3d4)
+run "$work/out" "$work/err" "$TS" switch zz99
+check "switch to an unknown account fails with the source's text" grep -q 'No profile named "zz99"' "$work/err"
+
+# Logging out, logging in: the URL first, then success after the delay
+run "$work/out" "$work/err" "$TS" logout
+check "logout → NeedsLogin, LoggedOut" test "$(backend)" = NeedsLogin -a "$(pref LoggedOut)" = true
+TS_FAKE_LOGIN_DELAY=1 "$TS" login > "$work/out" 2> "$work/err" &
+login_pid=$!
+sleep 0.4
+check "login: the auth URL is printed before success" grep -q "https://login.tailscale.com/a/REDACTED" "$work/err"
+check "login: meanwhile status says NeedsLogin with an AuthURL" grep -q '"AuthURL": "https://' <("$TS" status --json)
+wait "$login_pid"
+check "login: then Success." grep -q "^Success.$" "$work/err"
+check "login: then Running, logged in" test "$(backend)" = Running -a "$(pref LoggedOut)" = false
+run "$work/out" "$work/err" "$TS" logout
+run "$work/out" "$work/err" env TS_FAKE_LOGIN_RESULT=fail "$TS" login
+check "a failing login ends in an error, still logged out" test "$status" = 1 -a "$(backend)" = NeedsLogin
+run "$work/out" "$work/err" "$TS" login --force-reauth
+check "login with a flag is refused by the stand-in" test "$status" = 2
+
+# Becoming the operator: allowed after `set --operator=<the user>` (done as root)
+fresh
+run "$work/out" "$work/err" env TS_FAKE_ROOT=1 "$TS" set --operator=tester
+check "set --operator as root succeeds" test "$status" = 0
+check "prefs show the operator" test "$(pref OperatorUser)" = '"tester"'
+run "$work/out" "$work/err" "$TS" set --shields-up
+check "as the operator, set needs no root" test "$status" = 0
+run "$work/out" "$work/err" env TS_FAKE_USER=someone "$TS" set --shields-up
+check "another user is still denied" test "$status" = 1
+
+# Daemon down
+fresh
+run "$work/out" "$work/err" env TS_FAKE_DAEMON=down "$TS" status --json
+check "daemon down: status fails with the real text" test "$status" = 1
+check "daemon down: the text" cmp -s "$work/err" "$FIXTURES/stderr-not-running.txt"
+check "daemon down: version still works" env TS_FAKE_DAEMON=down "$TS" version > /dev/null
+
+# Scenarios
+for scenario in stopped starting needs-login needs-machine-auth exit-node exit-node-offline key-expiring key-expired health-warnings update-available rich; do
+    check "scenario $scenario replays its fixture" cmp -s <(TS_FAKE_STATE=$scenario "$TS" status --json) "$FIXTURES/status-$scenario.json"
+done
+check "scenario rich: prefs-rich" cmp -s <(TS_FAKE_STATE=rich "$TS" debug prefs) "$FIXTURES/prefs-rich.json"
+
+# Others the module runs
+check "ping replays pongs" grep -q "^pong from" <("$TS" ping --c=3 --timeout=5s laptop)
+run "$work/out" "$work/err" env TS_FAKE_PING=timeout "$TS" ping --c=3 old-desktop
+check "ping timeout: exit 1, no reply" test "$status" = 1
+check "netcheck replays JSON" cmp -s <("$TS" netcheck --format=json) "$FIXTURES/netcheck.json"
+run "$work/out" "$work/err" "$TS" file cp /tmp/a "/tmp/with space" laptop:
+check "file cp with a target: ok" test "$status" = 0
+check "file cp: paths arrive as separate arguments" grep -qF "file cp /tmp/a /tmp/with space laptop:" "$work/log"
+run "$work/out" "$work/err" "$TS" file cp /tmp/a laptop
+check "file cp without the colon fails" test "$status" = 1
+run "$work/out" "$work/err" "$TS" file get /tmp/inbox
+check "file get denied read-only" grep -q "^Access denied: file access denied$" "$work/err"
+check "debug watch-ipn replays the pretty bus" cmp -s <("$TS" debug watch-ipn --initial) "$FIXTURES/bus-pretty.txt"
+check "serve status --json" grep -q '{}' <("$TS" serve status --json)
+check "lock status" grep -q "NOT enabled" <("$TS" lock status)
+check "every call was logged" test "$(wc -l < "$work/log")" -gt 10
+
+echo "=== stand-in pkexec ==="
+fresh
+run "$work/out" "$work/err" "$PKEXEC" "$TS" set --shields-up
+check "ok: runs the program as root (the change goes through)" test "$status" = 0 -a "$(pref ShieldsUp)" = true
+check "ok: logs the argv" grep -qP "^pkexec\t$TS\tset\t--shields-up$" "$work/pkexec.log"
+run "$work/out" "$work/err" env TS_FAKE_PKEXEC=dismiss "$PKEXEC" "$TS" down
+check "dismiss: exit 126, nothing run" test "$status" = 126 -a "$(backend)" = Running
+run "$work/out" "$work/err" env TS_FAKE_PKEXEC=no-agent "$PKEXEC" "$TS" down
+check "no-agent: exit 127" test "$status" = 127
+run "$work/out" "$work/err" "$PKEXEC" tailscale down
+check "a relative program name is refused (127)" test "$status" = 127 -a "$(backend)" = Running
+
+echo "=== stand-in curl ==="
+fresh
+check "the bus lines, as scripted" cmp -s <("$CURL" -sN --unix-socket /var/run/tailscale/tailscaled.sock "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus?mask=11414") "$FIXTURES/bus-lines.jsonl"
+run "$work/out" "$work/err" env TS_FAKE_BUS_END=die "$CURL" --unix-socket /s "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus"
+check "die: the lines, then exit 56" test "$status" = 56 -a "$(wc -l < "$work/out")" = "$(wc -l < "$FIXTURES/bus-lines.jsonl")"
+run "$work/out" "$work/err" env TS_FAKE_DAEMON=down "$CURL" --unix-socket /s "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus"
+check "daemon down: exit 7" test "$status" = 7
+run "$work/out" "$work/err" "$CURL" "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus"
+check "without --unix-socket: exit 7" test "$status" = 7
+run "$work/out" "$work/err" "$CURL" --unix-socket /s "http://local-tailscaled.sock/localapi/v0/status"
+check "another URL: exit 22" test "$status" = 22
+start=$SECONDS
+run "$work/out" "$work/err" env TS_FAKE_BUS_DELAY=0.1 TS_FAKE_BUS_END=hold TS_FAKE_BUS_HOLD=1 "$CURL" --unix-socket /s "http://x/localapi/v0/watch-ipn-bus"
+check "hold: waits, then ends" test "$status" = 0 -a $((SECONDS - start)) -ge 1
+
+echo
+echo "--- stand-ins: $passed/$((passed + failed)) passed$([ "$failed" -gt 0 ] && echo ", $failed FAILED") ---"
+[ "$failed" = 0 ]

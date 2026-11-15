@@ -1,0 +1,51 @@
+{
+  "ControlURL": "https://controlplane.tailscale.com",
+  "RouteAll": true,
+  "ExitNodeID": "nMULL21CNTRL",
+  "ExitNodeIP": "",
+  "InternalExitNodePrior": "",
+  "ExitNodeAllowLANAccess": false,
+  "CorpDNS": true,
+  "RunSSH": false,
+  "RunWebClient": false,
+  "WantRunning": true,
+  "LoggedOut": false,
+  "ShieldsUp": false,
+  "AdvertiseTags": null,
+  "Hostname": "self",
+  "NotepadURLs": false,
+  "AdvertiseRoutes": [
+    "0.0.0.0/0",
+    "::/0",
+    "192.168.50.0/24"
+  ],
+  "AdvertiseServices": null,
+  "Sync": null,
+  "NoSNAT": false,
+  "NoStatefulFiltering": true,
+  "NetfilterMode": 2,
+  "AutoUpdate": {
+    "Check": true,
+    "Apply": null
+  },
+  "AppConnector": {
+    "Advertise": false
+  },
+  "PostureChecking": false,
+  "NetfilterKind": "",
+  "RemoteConfig": false,
+  "DriveShares": null,
+  "Config": {
+    "PrivateNodeKey": "privkey:0000000000000000000000000000000000000000000000000000000000000000",
+    "OldPrivateNodeKey": "privkey:0000000000000000000000000000000000000000000000000000000000000000",
+    "UserProfile": {
+      "ID": 10001,
+      "LoginName": "user1@example.com",
+      "DisplayName": "Example User 1",
+      "ProfilePicURL": ""
+    },
+    "NetworkLockKey": "nlpriv:00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "NodeID": "nSELFCNTRL"
+  },
+  "OperatorUser": "alice"
+}

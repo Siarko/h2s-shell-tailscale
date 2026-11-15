@@ -1,0 +1,100 @@
+{
+	"Version": "1.104.4",
+	"State": 6,
+	"Prefs": {
+		"ControlURL": "https://controlplane.tailscale.com",
+		"RouteAll": true,
+		"ExitNodeID": "",
+		"CorpDNS": true,
+		"WantRunning": true,
+		"LoggedOut": false,
+		"ShieldsUp": false,
+		"AdvertiseRoutes": null,
+		"Config": {
+			"PrivateNodeKey": "privkey:0000000000000000000000000000000000000000000000000000000000000000",
+			"UserProfile": {
+				"ID": 10001,
+				"LoginName": "user1@example.com",
+				"DisplayName": "Example User 1"
+			}
+		}
+	}
+}
+{
+	"Health": {
+		"Warnings": {
+			"update-available": {
+				"WarnableCode": "update-available",
+				"Severity": "low",
+				"Title": "Update available",
+				"Text": "An update from version 1.104.4 to 1.106.0 is available.",
+				"ImpactsConnectivity": false
+			}
+		}
+	}
+}
+{
+	"SuggestedExitNode": "nMULL21CNTRL"
+}
+{
+	"ClientVersion": {
+		"RunningLatest": false,
+		"LatestVersion": "1.106.0"
+	}
+}
+{
+	"State": 4
+}
+{
+	"State": 2
+}
+{
+	"BrowseToURL": "https://login.tailscale.com/a/REDACTED"
+}
+{
+	"LoginFinished": {}
+}
+{
+	"State": 5
+}
+{
+	"State": 6
+}
+{
+	"ErrMessage": "example: the coordination server did not answer"
+}
+{
+	"OutgoingFiles": [
+		{
+			"ID": "f1",
+			"Name": "notes.txt",
+			"PeerID": "nPEER11CNTRL",
+			"Started": "2026-11-15T10:00:00Z",
+			"DeclaredSize": 1024,
+			"Sent": 512,
+			"Finished": false,
+			"Succeeded": false
+		}
+	]
+}
+{
+	"FilesWaiting": {}
+}
+{
+	"Engine": {
+		"RBytes": 1000,
+		"WBytes": 2000,
+		"NumLive": 2,
+		"LiveDERPs": 1
+	}
+}
+{
+	"Health": {
+		"Warnings": {}
+	}
+}
+{
+	"SomethingNewer": {
+		"Field": "with a } brace and a \"quote\" in a string"
+	}
+}

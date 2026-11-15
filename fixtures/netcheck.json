@@ -1,0 +1,27 @@
+{
+  "UDP": true,
+  "IPv6": false,
+  "IPv4": true,
+  "IPv6CanSend": false,
+  "OSHasIPv6": true,
+  "ICMPv4": false,
+  "MappingVariesByDestIP": false,
+  "HairPinning": null,
+  "UPnP": false,
+  "PMP": false,
+  "PCP": false,
+  "PreferredDERP": 4,
+  "RegionLatency": {
+    "1": 98000000,
+    "4": 21500000,
+    "9": 145000000
+  },
+  "RegionV4Latency": {
+    "1": 98000000,
+    "4": 21500000
+  },
+  "RegionV6Latency": {},
+  "GlobalV4": "198.51.100.77:41641",
+  "GlobalV6": "",
+  "CaptivePortal": null
+}

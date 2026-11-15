@@ -1,0 +1,4 @@
+Access denied: logout access denied
+
+Use 'sudo tailscale logout'.
+To not require root, use 'sudo tailscale set --operator=$USER' once.

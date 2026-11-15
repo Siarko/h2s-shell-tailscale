@@ -1,0 +1,16 @@
+{
+    "id": "tailscale",
+    "name": "Tailscale",
+    "version": "0.1.0",
+    "api": "1.0",
+    "description": "Tailscale among the shell's VPNs: connect, log in, exit nodes, devices, settings. Stage T0: the rules and their tests only.",
+    "setupHints": [
+        "Install Tailscale and run its service (NixOS: services.tailscale.enable = true;).",
+        "Changes ask for an administrator's password through the shell's polkit agent; making your user Tailscale's operator (offered on the module's page) asks once instead."
+    ],
+    "tests": [
+        "tests/TailscaleStateTest.qml",
+        "tests/TailscaleDevicesTest.qml",
+        "tests/TailscaleIoTest.qml"
+    ]
+}

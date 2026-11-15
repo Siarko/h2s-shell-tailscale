@@ -1,0 +1,16 @@
+[
+  {
+    "id": "a1b2",
+    "nickname": "",
+    "tailnet": "example-tailnet.ts.net",
+    "account": "user1@example.com",
+    "selected": true
+  },
+  {
+    "id": "c3d4",
+    "nickname": "work",
+    "tailnet": "example.org",
+    "account": "user1@example.org",
+    "selected": false
+  }
+]

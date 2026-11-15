@@ -1,0 +1,112 @@
+{
+  "Version": "1.104.4",
+  "TUN": true,
+  "BackendState": "NeedsMachineAuth",
+  "HaveNodeKey": true,
+  "AuthURL": "",
+  "TailscaleIPs": [
+    "100.64.0.1",
+    "fd7a:115c:a1e0::1"
+  ],
+  "Self": {
+    "ID": "nSELFCNTRL",
+    "PublicKey": "nodekey:self",
+    "HostName": "self",
+    "DNSName": "self.example-tailnet.ts.net.",
+    "OS": "linux",
+    "UserID": 10001,
+    "TailscaleIPs": [
+      "100.64.0.1",
+      "fd7a:115c:a1e0::1"
+    ],
+    "AllowedIPs": [
+      "100.64.0.1/32",
+      "fd7a:115c:a1e0::1/128"
+    ],
+    "Addrs": [
+      "198.51.100.1:41641",
+      "198.51.100.1:41641"
+    ],
+    "CurAddr": "",
+    "Relay": "zzz",
+    "PeerRelay": "",
+    "RxBytes": 0,
+    "TxBytes": 0,
+    "Created": "2026-01-01T00:00:00Z",
+    "LastWrite": "0001-01-01T00:00:00Z",
+    "LastSeen": "0001-01-01T00:00:00Z",
+    "LastHandshake": "0001-01-01T00:00:00Z",
+    "Online": true,
+    "ExitNode": false,
+    "ExitNodeOption": false,
+    "Active": false,
+    "PeerAPIURL": [
+      "http://100.64.0.1:40000"
+    ],
+    "TaildropTarget": 0,
+    "NoFileSharingReason": "",
+    "InNetworkMap": true,
+    "InMagicSock": false,
+    "InEngine": false,
+    "NodeID": 101,
+    "KeyExpiry": "2027-05-01T00:00:00Z",
+    "CapMap": {
+      "default-auto-update": null,
+      "https://tailscale.com/cap/file-sharing": null,
+      "https://tailscale.com/cap/is-admin": null,
+      "https://tailscale.com/cap/is-owner": null,
+      "https://tailscale.com/cap/ssh": null,
+      "https://tailscale.com/cap/tailnet-lock": null,
+      "probe-udp-lifetime": null,
+      "services/start": null,
+      "ssh-behavior-v1": null,
+      "ssh-env-vars": null,
+      "store-appc-routes": null,
+      "tailnet-display-name": null,
+      "tailnet.maxKeyDuration": null
+    },
+    "Capabilities": [
+      "HTTPS://TAILSCALE.COM/s/DEPRECATED-NODE-CAPS#see-https://github.com/tailscale/tailscale/issues/11508",
+      "default-auto-update",
+      "https://tailscale.com/cap/file-sharing",
+      "https://tailscale.com/cap/is-admin",
+      "https://tailscale.com/cap/is-owner",
+      "https://tailscale.com/cap/ssh",
+      "https://tailscale.com/cap/tailnet-lock",
+      "probe-udp-lifetime",
+      "services/start",
+      "ssh-behavior-v1",
+      "ssh-env-vars",
+      "store-appc-routes",
+      "tailnet-display-name",
+      "tailnet.maxKeyDuration"
+    ]
+  },
+  "Health": [
+    "Tailscale is waiting for an administrator to approve this device"
+  ],
+  "MagicDNSSuffix": "example-tailnet.ts.net",
+  "CurrentTailnet": {
+    "Name": "user@example.com",
+    "StableID": "T000EXAMPLE",
+    "MagicDNSSuffix": "example-tailnet.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "CertDomains": null,
+  "ExtraRecords": [
+    {
+      "Name": "extra.example-tailnet.ts.net.",
+      "Value": "100.64.0.250"
+    }
+  ],
+  "Peer": {},
+  "User": {
+    "10001": {
+      "ID": 10001,
+      "LoginName": "user1@example.com",
+      "DisplayName": "Example User 1",
+      "ProfilePicURL": ""
+    }
+  },
+  "ClientVersion": null
+}

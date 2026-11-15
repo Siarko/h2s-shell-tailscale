@@ -1,0 +1,48 @@
+#!/bin/sh
+# A stand-in `curl` for the module's end-to-end tests of the LocalAPI event stream
+# (GET /localapi/v0/watch-ipn-bus over tailscaled's unix socket). It connects to nothing:
+# it prints scripted bus lines.
+#
+#   TS_FAKE_FIXTURES   the fixtures directory (default ../../fixtures from this script)
+#   TS_FAKE_BUS_FILE   the lines to print (default $TS_FAKE_FIXTURES/bus-lines.jsonl)
+#   TS_FAKE_BUS_DELAY  seconds between lines (default 0)
+#   TS_FAKE_BUS_END    eof (default: exit 0 after the last line) | die (exit 56, as a
+#                      daemon restarting cuts the stream) | hold (wait TS_FAKE_BUS_HOLD
+#                      seconds, default 30, then exit 0)
+#   TS_FAKE_DAEMON     down: exit 7, as curl does when the socket is not there
+#   TS_FAKE_LOG        a file each call's arguments are appended to
+#
+# Without --unix-socket, or for any URL but the bus, it fails as curl would (exit 7 / 22).
+here=$(cd "$(dirname "$0")" && pwd)
+F=${TS_FAKE_FIXTURES:-$here/../../fixtures}
+[ -n "${TS_FAKE_LOG:-}" ] && printf 'curl %s\n' "$*" >> "$TS_FAKE_LOG"
+socket=""
+url=""
+while [ $# -gt 0 ]; do
+    case $1 in
+        --unix-socket) socket=${2:-}; shift ;;
+        --unix-socket=*) socket=${1#--unix-socket=} ;;
+        -H | --header | -m | --max-time | -X | --request | -o | --output) shift ;;
+        -*) ;;
+        *) url=$1 ;;
+    esac
+    shift
+done
+if [ "${TS_FAKE_DAEMON:-}" = down ] || [ -z "$socket" ]; then
+    echo "curl: (7) Failed to connect to local-tailscaled.sock port 80 after 0 ms: Couldn't connect to server" >&2
+    exit 7
+fi
+case $url in
+    */localapi/v0/watch-ipn-bus*) ;;
+    *) echo "curl: (22) The requested URL returned error: 404" >&2; exit 22 ;;
+esac
+delay=${TS_FAKE_BUS_DELAY:-0}
+while IFS= read -r line; do
+    printf '%s\n' "$line"
+    [ "$delay" != 0 ] && sleep "$delay"
+done < "${TS_FAKE_BUS_FILE:-$F/bus-lines.jsonl}"
+case ${TS_FAKE_BUS_END:-eof} in
+    die) echo "curl: (56) Recv failure: Connection reset by peer" >&2; exit 56 ;;
+    hold) sleep "${TS_FAKE_BUS_HOLD:-30}" ;;
+esac
+exit 0

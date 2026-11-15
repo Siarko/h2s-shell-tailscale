@@ -1,0 +1,4 @@
+Access denied: profiles access denied
+
+Use 'sudo tailscale switch --list'.
+To not require root, use 'sudo tailscale set --operator=$USER' once.

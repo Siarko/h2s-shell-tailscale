@@ -1,0 +1,327 @@
+#!/bin/sh
+# A stand-in `tailscale` CLI for the module's end-to-end tests: a small state machine over
+# the redacted fixtures. It never touches a real tailscaled or the network. Put
+# tools/stand-in first on PATH (or name it by absolute path where the module takes one).
+#
+# Environment:
+#   TS_FAKE_FIXTURES     the fixtures directory (default: ../../fixtures from this script)
+#   TS_FAKE_STATE_DIR    where the state lives between calls (default:
+#                        ${XDG_RUNTIME_DIR:-/tmp}/ts-fake-$(id -u)); one directory per test
+#   TS_FAKE_STATE        force a scenario for this call (else the state dir's, else running):
+#                        running | stopped | starting | needs-login | needs-machine-auth |
+#                        exit-node | exit-node-offline | key-expiring | key-expired |
+#                        health-warnings | update-available | rich | not-running
+#   TS_FAKE_DAEMON       "down": the daemon is not running (every daemon command fails)
+#   TS_FAKE_OPERATOR     1: the caller may change (operator); 0 (default, as on the machine
+#                        the fixtures come from): changes are denied with the real text.
+#                        Also allowed: TS_FAKE_ROOT=1 (set by the stand-in pkexec), or a
+#                        `set --operator=<user>` done earlier for TS_FAKE_USER (default $USER)
+#   TS_FAKE_LOGIN_DELAY  seconds `login` / `up` wait after printing the auth URL (default 2)
+#   TS_FAKE_LOGIN_RESULT "fail": the login ends with an error instead of success
+#   TS_FAKE_BUS_DELAY    seconds between the objects `debug watch-ipn` prints (default 0)
+#   TS_FAKE_PING         "timeout": ping gets no reply
+#   TS_FAKE_LOG          a file each call's arguments are appended to (one line per call)
+#
+# State dir files: scenario (the status fixture's name), prefs (key=value overrides of the
+# prefs fixture), resume (the scenario `up` returns to).
+set -eu
+
+here=$(cd "$(dirname "$0")" && pwd)
+F=${TS_FAKE_FIXTURES:-$here/../../fixtures}
+STATE_DIR=${TS_FAKE_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/ts-fake-$(id -u)}
+mkdir -p "$STATE_DIR"
+[ -n "${TS_FAKE_LOG:-}" ] && printf '%s\n' "$*" >> "$TS_FAKE_LOG"
+
+scenario=${TS_FAKE_STATE:-}
+[ -z "$scenario" ] && [ -f "$STATE_DIR/scenario" ] && scenario=$(cat "$STATE_DIR/scenario")
+[ -z "$scenario" ] && scenario=running
+[ "${TS_FAKE_DAEMON:-}" = down ] && scenario=not-running
+
+save_scenario() { printf '%s\n' "$1" > "$STATE_DIR/scenario"; scenario=$1; }
+
+# key=value overrides of the prefs, the last one of a key wins
+set_pref() { printf '%s=%s\n' "$1" "$2" >> "$STATE_DIR/prefs"; }
+get_pref() { [ -f "$STATE_DIR/prefs" ] && sed -n "s/^$1=//p" "$STATE_DIR/prefs" | tail -n 1; return 0; }
+
+need_daemon() {
+    if [ "$scenario" = not-running ]; then
+        cat "$F/stderr-not-running.txt" >&2
+        exit 1
+    fi
+}
+
+can_write() {
+    [ "${TS_FAKE_ROOT:-0}" = 1 ] && return 0
+    [ "${TS_FAKE_OPERATOR:-0}" = 1 ] && return 0
+    operator=$(get_pref OperatorUser)
+    [ -n "$operator" ] && [ "$operator" = "${TS_FAKE_USER:-${USER:-}}" ] && return 0
+    return 1
+}
+
+# The real denial: LocalAPI's 403 text, then the CLI's advice with the command as typed
+denied() {
+    what=$1
+    shift
+    printf "Access denied: %s\n\nUse 'sudo tailscale %s'.\nTo not require root, use 'sudo tailscale set --operator=\$USER' once.\n" "$what" "$*" >&2
+    exit 1
+}
+need_write() { # $1 the denial text, then the command as typed
+    what=$1
+    shift
+    can_write || denied "$what" "$@"
+}
+
+status_fixture() {
+    case $scenario in
+        login-pending) echo "$F/status-needs-login.json" ;;
+        *) echo "$F/status-$scenario.json" ;;
+    esac
+}
+
+prefs_base() {
+    case $scenario in
+        stopped) echo "$F/prefs-stopped.json" ;;
+        needs-login | login-pending | key-expired) echo "$F/prefs-logged-out.json" ;;
+        exit-node | exit-node-offline) echo "$F/prefs-exit-node.json" ;;
+        rich) echo "$F/prefs-rich.json" ;;
+        *) echo "$F/prefs-running.json" ;;
+    esac
+}
+
+json_string() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
+# The prefs fixture with the overrides applied (one "Key": value per line in the fixtures)
+print_prefs() {
+    base=$(prefs_base)
+    script=""
+    for key in RouteAll CorpDNS ShieldsUp ExitNodeAllowLANAccess RunSSH RunWebClient WantRunning LoggedOut; do
+        value=$(get_pref "$key")
+        [ -n "$value" ] && script="$script s/^\\(  \"$key\": \\)[a-z]*/\\1$value/;"
+    done
+    value=$(get_pref ExitNodeID)
+    [ -f "$STATE_DIR/prefs" ] && grep -q '^ExitNodeID=' "$STATE_DIR/prefs" \
+        && script="$script s/^\\(  \"ExitNodeID\": \\)\"[^\"]*\"/\\1\"$value\"/;"
+    if grep -q '^Hostname=' "$STATE_DIR/prefs" 2> /dev/null; then
+        value=$(json_string "$(get_pref Hostname)")
+        script="$script s/^\\(  \"Hostname\": \\)\"[^\"]*\"/\\1\"$value\"/;"
+    fi
+    operator=$(get_pref OperatorUser)
+    if [ -n "$operator" ]; then
+        # The fixtures have no OperatorUser line (Go omits it while empty): add one
+        grep -q '"OperatorUser"' "$base" \
+            && script="$script s/^\\(  \"OperatorUser\": \\)\"[^\"]*\"/\\1\"$operator\"/;" \
+            || script="$script s/^\\(  \"Hostname\": .*\\)$/\\1\\n  \"OperatorUser\": \"$operator\",/;"
+    fi
+    sed "$script" "$base"
+}
+
+bool_flag() { # --name or --name=true|false → true|false; anything else: Go's flag error
+    case $1 in
+        *=true | *=1) echo true ;;
+        *=false | *=0) echo false ;;
+        *=*) echo "invalid boolean value \"${1#*=}\" for ${1%%=*}: parse error" >&2; exit 2 ;;
+        *) echo true ;;
+    esac
+}
+
+bool_pref() { value=$(bool_flag "$2") || exit 2; set_pref "$1" "$value"; }
+
+exit_node_id() { # the argument of --exit-node → a node id, or "" when no node matches
+    case $1 in
+        "") echo "" ;;
+        peer4 | 100.64.0.4 | peer4.example-tailnet.ts.net | peer4.example-tailnet.ts.net.) echo nPEER4CNTRL ;;
+        peer10 | 100.64.0.10 | peer10.example-tailnet.ts.net | peer10.example-tailnet.ts.net.) echo nPEER10CNTRL ;;
+        auto:any) echo nPEER4CNTRL ;;
+        *) echo "?" ;;
+    esac
+}
+
+login_flow() {
+    save_scenario login-pending
+    printf '\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/REDACTED\n\n' >&2
+    sleep "${TS_FAKE_LOGIN_DELAY:-2}"
+    if [ "${TS_FAKE_LOGIN_RESULT:-}" = fail ]; then
+        save_scenario needs-login
+        echo "backend error: example login failure" >&2
+        exit 1
+    fi
+    set_pref LoggedOut false
+    set_pref WantRunning true
+    save_scenario running
+    printf 'Success.\n' >&2
+}
+
+command=${1:-}
+[ $# -gt 0 ] && shift
+case $command in
+    version)
+        printf '1.104.4\n  tailscale commit: 0000000000000000000000000000000000000000\n  long version: 1.104.4-stand-in\n' ;;
+    status)
+        need_daemon
+        case " $* " in
+            *" --json "* | *" --json=true "*) cat "$(status_fixture)" ;;
+            *) echo "# stand-in: only status --json is replayed" ;;
+        esac ;;
+    ip)
+        need_daemon
+        printf '100.64.0.1\nfd7a:115c:a1e0::1\n' ;;
+    debug)
+        need_daemon
+        case ${1:-} in
+            prefs) print_prefs ;;
+            watch-ipn)
+                while IFS= read -r line; do
+                    printf '%s\n' "$line"
+                    [ "$line" = "}" ] && [ "${TS_FAKE_BUS_DELAY:-0}" != 0 ] && sleep "$TS_FAKE_BUS_DELAY"
+                done < "$F/bus-pretty.txt"
+                ;;
+            *) echo "stand-in: debug ${1:-} not replayed" >&2; exit 2 ;;
+        esac ;;
+    exit-node)
+        need_daemon
+        case ${1:-} in
+            list) cat "$F/exit-node-list.txt" ;;
+            suggest) cat "$F/exit-node-suggest.txt" ;;
+            *) echo "stand-in: exit-node ${1:-} not replayed" >&2; exit 2 ;;
+        esac ;;
+    switch)
+        need_daemon
+        need_write "profiles access denied" switch "$@"
+        case ${1:-} in
+            --list)
+                case " $* " in
+                    *" --json "*) cat "$F/switch-list.json" ;;
+                    *) cat "$F/switch-list.txt" ;;
+                esac ;;
+            remove)
+                case ${2:-} in
+                    a1b2) printf 'Already on account "user1@example.com"\n' ;;
+                    c3d4) : ;;
+                    *) printf 'No profile named "%s"\n' "${2:-}" >&2; exit 1 ;;
+                esac ;;
+            a1b2) printf 'Already on account "user1@example.com"\n' ;;
+            c3d4) printf 'Switching to account "user1@example.org"\nSuccess.\n' ;;
+            *) printf 'No profile named "%s"\n' "${1:-}" >&2; exit 1 ;;
+        esac ;;
+    set)
+        need_daemon
+        need_write "prefs write access denied" set "$@"
+        [ $# -gt 0 ] || { echo "usage: tailscale set [flags]" >&2; exit 2; }
+        for argument in "$@"; do
+            case $argument in
+                --accept-routes | --accept-routes=*) bool_pref RouteAll "$argument" ;;
+                --accept-dns | --accept-dns=*) bool_pref CorpDNS "$argument" ;;
+                --shields-up | --shields-up=*) bool_pref ShieldsUp "$argument" ;;
+                --exit-node-allow-lan-access | --exit-node-allow-lan-access=*) bool_pref ExitNodeAllowLANAccess "$argument" ;;
+                --ssh | --ssh=*) bool_pref RunSSH "$argument" ;;
+                --webclient | --webclient=*) bool_pref RunWebClient "$argument" ;;
+                --advertise-exit-node | --advertise-exit-node=* | --update-check | --update-check=* | --auto-update | --auto-update=*)
+                    bool_flag "$argument" > /dev/null ;;
+                --advertise-routes=*) : ;;
+                --hostname=*) set_pref Hostname "${argument#--hostname=}" ;;
+                --operator=*) set_pref OperatorUser "${argument#--operator=}" ;;
+                --exit-node=*)
+                    value=${argument#--exit-node=}
+                    id=$(exit_node_id "$value")
+                    if [ "$id" = "?" ]; then
+                        printf 'invalid value "%s" for --exit-node: no node found in netmap with IP or name (stand-in)\n' "$value" >&2
+                        exit 1
+                    fi
+                    set_pref ExitNodeID "$id"
+                    case $scenario in
+                        running | exit-node | exit-node-offline) [ -n "$id" ] && save_scenario exit-node || save_scenario running ;;
+                    esac ;;
+                *)
+                    printf 'flag provided but not defined: %s\n' "${argument%%=*}" >&2
+                    exit 2 ;;
+            esac
+        done ;;
+    up)
+        need_daemon
+        need_write "prefs write access denied" up "$@"
+        if [ $# -gt 0 ]; then
+            # Any flag defeats the bare-`up` path: the real CLI then demands every
+            # non-default setting (the module must never get here)
+            cat "$F/stderr-up-accidental-revert.txt" >&2
+            exit 1
+        fi
+        case $scenario in
+            needs-login | login-pending | key-expired) login_flow ;;
+            needs-machine-auth)
+                printf '\nTo approve your machine, visit (as admin):\n\n\thttps://login.tailscale.com/admin/machines\n\n' >&2
+                sleep "${TS_FAKE_LOGIN_DELAY:-2}" ;;
+            stopped)
+                set_pref WantRunning true
+                resume=$(cat "$STATE_DIR/resume" 2> /dev/null || echo running)
+                save_scenario "$resume" ;;
+            *) set_pref WantRunning true ;;
+        esac ;;
+    login)
+        need_daemon
+        need_write "prefs write access denied" login "$@"
+        [ $# -gt 0 ] && { echo "stand-in: the module passes no flags to login" >&2; exit 2; }
+        login_flow ;;
+    logout)
+        need_daemon
+        need_write "logout access denied" logout "$@"
+        set_pref LoggedOut true
+        set_pref WantRunning false
+        save_scenario needs-login ;;
+    down)
+        need_daemon
+        need_write "prefs write access denied" down "$@"
+        case $scenario in
+            stopped | needs-login | login-pending | key-expired | needs-machine-auth) ;;
+            *) printf '%s\n' "$scenario" > "$STATE_DIR/resume" ;;
+        esac
+        set_pref WantRunning false
+        save_scenario stopped ;;
+    ping)
+        need_daemon
+        target=""
+        for argument in "$@"; do
+            case $argument in -*) ;; *) target=$argument ;; esac
+        done
+        [ -n "$target" ] || { echo "usage: tailscale ping <hostname-or-IP>" >&2; exit 2; }
+        if [ "${TS_FAKE_PING:-}" = timeout ]; then
+            sed '$d' "$F/ping-timeout.txt"
+            echo "no reply" >&2
+            exit 1
+        fi
+        cat "$F/ping-direct.txt" ;;
+    netcheck)
+        need_daemon
+        cat "$F/netcheck.json" ;;
+    file)
+        need_daemon
+        case ${1:-} in
+            cp)
+                shift
+                [ "${1:-}" = --targets ] && { printf '100.64.0.11\tlaptop\n100.64.0.12\tphone\n'; exit 0; }
+                last=""
+                for argument in "$@"; do last=$argument; done
+                case $last in
+                    *:) [ $# -ge 2 ] || { echo "usage: tailscale file cp <files...> <target>:" >&2; exit 2; } ;;
+                    *) echo "final argument to 'tailscale file cp' must end in colon" >&2; exit 1 ;;
+                esac ;;
+            get)
+                need_write "file access denied" file "$@" ;;
+            *) echo "usage: tailscale file <cp|get> ..." >&2; exit 2 ;;
+        esac ;;
+    serve | funnel)
+        need_daemon
+        case ${1:-} in
+            status) echo "{}" ;;
+            *) need_write "serve config denied" "$command" "$@" ;;
+        esac ;;
+    lock)
+        need_daemon
+        [ "${1:-}" = status ] && { echo "Tailnet lock is NOT enabled."; exit 0; }
+        echo "stand-in: lock ${1:-} not replayed" >&2; exit 2 ;;
+    cert)
+        need_daemon
+        need_write "cert access denied" cert "$@" ;;
+    *)
+        echo "stand-in: '$command $*' not replayed" >&2
+        exit 2 ;;
+esac

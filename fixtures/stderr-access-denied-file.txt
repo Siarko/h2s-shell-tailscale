@@ -1,0 +1,4 @@
+Access denied: file access denied
+
+Use 'sudo tailscale file get /tmp/inbox'.
+To not require root, use 'sudo tailscale set --operator=$USER' once.

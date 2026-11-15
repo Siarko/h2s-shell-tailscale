@@ -1,0 +1,3 @@
+ID    Tailnet                 Account
+a1b2  example-tailnet.ts.net  user1@example.com*
+c3d4  example.org             user1@example.org

@@ -1,0 +1,24 @@
+#!/bin/sh
+# A stand-in `pkexec` for the module's end-to-end tests: it asks nobody and runs nothing as
+# root. It logs what it was asked to run, then answers as pkexec does:
+#
+#   TS_FAKE_PKEXEC      ok (default): runs the program, with TS_FAKE_ROOT=1 so the stand-in
+#                       tailscale behaves as for root | dismiss: exit 126 (the prompt was
+#                       dismissed, or the password refused) | no-agent: exit 127
+#   TS_FAKE_PKEXEC_LOG  a file each call's argv is appended to (one line, arguments
+#                       separated by tabs)
+#
+# Like the module's rule (TailscaleRules.privileged) it insists on an absolute path for the
+# program: the module never relies on pkexec resolving a name.
+[ -n "${TS_FAKE_PKEXEC_LOG:-}" ] && { printf '%s' "pkexec"; for argument in "$@"; do printf '\t%s' "$argument"; done; printf '\n'; } >> "$TS_FAKE_PKEXEC_LOG"
+case ${1:-} in
+    "") echo "pkexec --version | --help | [--user username] PROGRAM [ARGUMENTS...]" >&2; exit 127 ;;
+    /*) ;;
+    *) echo "stand-in pkexec: '$1' is not an absolute path" >&2; exit 127 ;;
+esac
+case ${TS_FAKE_PKEXEC:-ok} in
+    ok) TS_FAKE_ROOT=1 exec "$@" ;;
+    dismiss) echo "Error executing command as another user: Request dismissed" >&2; exit 126 ;;
+    no-agent) echo "Error executing command as another user: No authentication agent found." >&2; exit 127 ;;
+    *) echo "stand-in pkexec: unknown TS_FAKE_PKEXEC=$TS_FAKE_PKEXEC" >&2; exit 127 ;;
+esac

@@ -1,0 +1,721 @@
+{
+  "Version": "1.104.4",
+  "TUN": true,
+  "BackendState": "Running",
+  "HaveNodeKey": true,
+  "AuthURL": "",
+  "TailscaleIPs": [
+    "100.64.0.1",
+    "fd7a:115c:a1e0::1"
+  ],
+  "Self": {
+    "ID": "nSELFCNTRL",
+    "PublicKey": "nodekey:self",
+    "HostName": "self",
+    "DNSName": "self.example-tailnet.ts.net.",
+    "OS": "linux",
+    "UserID": 10001,
+    "TailscaleIPs": [
+      "100.64.0.1",
+      "fd7a:115c:a1e0::1"
+    ],
+    "AllowedIPs": [
+      "100.64.0.1/32",
+      "fd7a:115c:a1e0::1/128"
+    ],
+    "CurAddr": "",
+    "Relay": "fra",
+    "PeerRelay": "",
+    "RxBytes": 0,
+    "TxBytes": 0,
+    "Created": "2026-01-01T00:00:00Z",
+    "LastWrite": "0001-01-01T00:00:00Z",
+    "LastSeen": "0001-01-01T00:00:00Z",
+    "LastHandshake": "0001-01-01T00:00:00Z",
+    "Online": true,
+    "ExitNode": false,
+    "ExitNodeOption": false,
+    "Active": false,
+    "TaildropTarget": 1,
+    "NoFileSharingReason": "",
+    "InNetworkMap": true,
+    "InMagicSock": true,
+    "InEngine": false,
+    "NodeID": 101,
+    "KeyExpiry": "2027-05-01T00:00:00Z"
+  },
+  "Health": [],
+  "MagicDNSSuffix": "example-tailnet.ts.net",
+  "CurrentTailnet": {
+    "Name": "example-tailnet.ts.net",
+    "StableID": "T000EXAMPLE",
+    "MagicDNSSuffix": "example-tailnet.ts.net",
+    "MagicDNSEnabled": true
+  },
+  "CertDomains": [
+    "self.example-tailnet.ts.net"
+  ],
+  "ExitNodeStatus": {
+    "ID": "nMULL21CNTRL",
+    "Online": true,
+    "TailscaleIPs": [
+      "100.64.0.21/32",
+      "fd7a:115c:a1e0::15/128"
+    ]
+  },
+  "Peer": {
+    "nodekey:peer11": {
+      "ID": "nPEER11CNTRL",
+      "PublicKey": "nodekey:peer11",
+      "HostName": "laptop",
+      "DNSName": "laptop.example-tailnet.ts.net.",
+      "OS": "linux",
+      "UserID": 10001,
+      "TailscaleIPs": [
+        "100.64.0.11",
+        "fd7a:115c:a1e0::b"
+      ],
+      "AllowedIPs": [
+        "100.64.0.11/32",
+        "fd7a:115c:a1e0::b/128"
+      ],
+      "CurAddr": "198.51.100.11:41641",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 7340032,
+      "TxBytes": 1258291,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": true,
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 111,
+      "KeyExpiry": "2027-05-01T00:00:00Z"
+    },
+    "nodekey:peer12": {
+      "ID": "nPEER12CNTRL",
+      "PublicKey": "nodekey:peer12",
+      "HostName": "phone",
+      "DNSName": "phone.example-tailnet.ts.net.",
+      "OS": "android",
+      "UserID": 10001,
+      "TailscaleIPs": [
+        "100.64.0.12",
+        "fd7a:115c:a1e0::c"
+      ],
+      "AllowedIPs": [
+        "100.64.0.12/32",
+        "fd7a:115c:a1e0::c/128"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": false,
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 112,
+      "KeyExpiry": "2027-05-01T00:00:00Z"
+    },
+    "nodekey:peer13": {
+      "ID": "nPEER13CNTRL",
+      "PublicKey": "nodekey:peer13",
+      "HostName": "nas",
+      "DNSName": "nas.example-tailnet.ts.net.",
+      "OS": "linux",
+      "UserID": 10002,
+      "TailscaleIPs": [
+        "100.64.0.13",
+        "fd7a:115c:a1e0::d"
+      ],
+      "AllowedIPs": [
+        "100.64.0.13/32",
+        "fd7a:115c:a1e0::d/128",
+        "192.168.1.0/24",
+        "0.0.0.0/0",
+        "::/0"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 1610612736,
+      "TxBytes": 20971520,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": true,
+      "Active": true,
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 113,
+      "KeyExpiry": "2027-05-01T00:00:00Z",
+      "PrimaryRoutes": [
+        "192.168.1.0/24"
+      ],
+      "Tags": [
+        "tag:server",
+        "tag:nas"
+      ]
+    },
+    "nodekey:peer14": {
+      "ID": "nPEER14CNTRL",
+      "PublicKey": "nodekey:peer14",
+      "HostName": "build",
+      "DNSName": "build.example-tailnet.ts.net.",
+      "OS": "linux",
+      "UserID": 10001,
+      "TailscaleIPs": [
+        "100.64.0.14",
+        "fd7a:115c:a1e0::e"
+      ],
+      "AllowedIPs": [
+        "100.64.0.14/32",
+        "fd7a:115c:a1e0::e/128"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "198.51.100.200:7777:1",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": true,
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 114,
+      "KeyExpiry": "2027-05-01T00:00:00Z"
+    },
+    "nodekey:peer15": {
+      "ID": "nPEER15CNTRL",
+      "PublicKey": "nodekey:peer15",
+      "HostName": "old-desktop",
+      "DNSName": "old-desktop.example-tailnet.ts.net.",
+      "OS": "windows",
+      "UserID": 10001,
+      "TailscaleIPs": [
+        "100.64.0.15",
+        "fd7a:115c:a1e0::f"
+      ],
+      "AllowedIPs": [
+        "100.64.0.15/32",
+        "fd7a:115c:a1e0::f/128"
+      ],
+      "CurAddr": "",
+      "Relay": "",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "2026-11-12T09:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": false,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": false,
+      "TaildropTarget": 5,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 115,
+      "KeyExpiry": "2026-10-01T00:00:00Z",
+      "Expired": true
+    },
+    "nodekey:peer16": {
+      "ID": "nPEER16CNTRL",
+      "PublicKey": "nodekey:peer16",
+      "HostName": "printer",
+      "DNSName": "printer.other-tailnet.ts.net.",
+      "OS": "linux",
+      "UserID": 20001,
+      "TailscaleIPs": [
+        "100.64.0.16",
+        "fd7a:115c:a1e0::10"
+      ],
+      "AllowedIPs": [
+        "100.64.0.16/32",
+        "fd7a:115c:a1e0::10/128"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": false,
+      "TaildropTarget": 9,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 116,
+      "KeyExpiry": "2027-05-01T00:00:00Z"
+    },
+    "nodekey:peer17": {
+      "ID": "nPEER17CNTRL",
+      "PublicKey": "nodekey:peer17",
+      "HostName": "guest",
+      "DNSName": "guest.another-tailnet.ts.net.",
+      "OS": "macOS",
+      "UserID": 20002,
+      "TailscaleIPs": [
+        "100.64.0.17",
+        "fd7a:115c:a1e0::11"
+      ],
+      "AllowedIPs": [
+        "100.64.0.17/32",
+        "fd7a:115c:a1e0::11/128"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": false,
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 117,
+      "KeyExpiry": "2027-05-01T00:00:00Z",
+      "ShareeNode": true
+    },
+    "nodekey:peer18": {
+      "ID": "nPEER18CNTRL",
+      "PublicKey": "nodekey:peer18",
+      "HostName": "exit-home",
+      "DNSName": "exit-home.example-tailnet.ts.net.",
+      "OS": "linux",
+      "UserID": 10001,
+      "TailscaleIPs": [
+        "100.64.0.18",
+        "fd7a:115c:a1e0::12"
+      ],
+      "AllowedIPs": [
+        "100.64.0.18/32",
+        "fd7a:115c:a1e0::12/128",
+        "0.0.0.0/0",
+        "::/0"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "2026-11-15T10:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": false,
+      "ExitNode": false,
+      "ExitNodeOption": true,
+      "Active": false,
+      "TaildropTarget": 5,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 118,
+      "KeyExpiry": "2027-05-01T00:00:00Z"
+    },
+    "nodekey:peer19": {
+      "ID": "nPEER19CNTRL",
+      "PublicKey": "nodekey:peer19",
+      "HostName": "lab",
+      "DNSName": "lab.example-tailnet.ts.net.",
+      "OS": "linux",
+      "UserID": 10001,
+      "TailscaleIPs": [
+        "100.64.0.19",
+        "fd7a:115c:a1e0::13"
+      ],
+      "AllowedIPs": [
+        "100.64.0.19/32",
+        "fd7a:115c:a1e0::13/128",
+        "10.20.0.0/16",
+        "fd00:99::/64"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": false,
+      "Active": false,
+      "TaildropTarget": 1,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 119,
+      "KeyExpiry": "2027-05-01T00:00:00Z",
+      "PrimaryRoutes": [
+        "10.20.0.0/16",
+        "fd00:99::/64"
+      ]
+    },
+    "nodekey:peer21": {
+      "ID": "nMULL21CNTRL",
+      "PublicKey": "nodekey:peer21",
+      "HostName": "se-sto-wg-021",
+      "DNSName": "se-sto-wg-021.mullvad.ts.net.",
+      "OS": "linux",
+      "UserID": 30001,
+      "TailscaleIPs": [
+        "100.64.0.21",
+        "fd7a:115c:a1e0::15"
+      ],
+      "AllowedIPs": [
+        "100.64.0.21/32",
+        "fd7a:115c:a1e0::15/128",
+        "0.0.0.0/0",
+        "::/0"
+      ],
+      "CurAddr": "198.51.100.21:51820",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 1048576,
+      "TxBytes": 524288,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": true,
+      "ExitNodeOption": true,
+      "Active": true,
+      "TaildropTarget": 4,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 121,
+      "KeyExpiry": "2027-05-01T00:00:00Z",
+      "Location": {
+        "Country": "Sweden",
+        "CountryCode": "SE",
+        "City": "Stockholm",
+        "CityCode": "STO",
+        "Priority": 100
+      },
+      "Tags": [
+        "tag:mullvad-exit-node"
+      ]
+    },
+    "nodekey:peer22": {
+      "ID": "nMULL22CNTRL",
+      "PublicKey": "nodekey:peer22",
+      "HostName": "se-sto-wg-022",
+      "DNSName": "se-sto-wg-022.mullvad.ts.net.",
+      "OS": "linux",
+      "UserID": 30001,
+      "TailscaleIPs": [
+        "100.64.0.22",
+        "fd7a:115c:a1e0::16"
+      ],
+      "AllowedIPs": [
+        "100.64.0.22/32",
+        "fd7a:115c:a1e0::16/128",
+        "0.0.0.0/0",
+        "::/0"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": true,
+      "Active": false,
+      "TaildropTarget": 4,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 122,
+      "KeyExpiry": "2027-05-01T00:00:00Z",
+      "Location": {
+        "Country": "Sweden",
+        "CountryCode": "SE",
+        "City": "Stockholm",
+        "CityCode": "STO",
+        "Priority": 50
+      },
+      "Tags": [
+        "tag:mullvad-exit-node"
+      ]
+    },
+    "nodekey:peer23": {
+      "ID": "nMULL23CNTRL",
+      "PublicKey": "nodekey:peer23",
+      "HostName": "se-got-wg-023",
+      "DNSName": "se-got-wg-023.mullvad.ts.net.",
+      "OS": "linux",
+      "UserID": 30001,
+      "TailscaleIPs": [
+        "100.64.0.23",
+        "fd7a:115c:a1e0::17"
+      ],
+      "AllowedIPs": [
+        "100.64.0.23/32",
+        "fd7a:115c:a1e0::17/128",
+        "0.0.0.0/0",
+        "::/0"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": true,
+      "Active": false,
+      "TaildropTarget": 4,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 123,
+      "KeyExpiry": "2027-05-01T00:00:00Z",
+      "Location": {
+        "Country": "Sweden",
+        "CountryCode": "SE",
+        "City": "Gothenburg",
+        "CityCode": "GOT",
+        "Priority": 0
+      },
+      "Tags": [
+        "tag:mullvad-exit-node"
+      ]
+    },
+    "nodekey:peer24": {
+      "ID": "nMULL24CNTRL",
+      "PublicKey": "nodekey:peer24",
+      "HostName": "de-fra-wg-024",
+      "DNSName": "de-fra-wg-024.mullvad.ts.net.",
+      "OS": "linux",
+      "UserID": 30001,
+      "TailscaleIPs": [
+        "100.64.0.24",
+        "fd7a:115c:a1e0::18"
+      ],
+      "AllowedIPs": [
+        "100.64.0.24/32",
+        "fd7a:115c:a1e0::18/128",
+        "0.0.0.0/0",
+        "::/0"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "2026-11-12T09:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": false,
+      "ExitNode": false,
+      "ExitNodeOption": true,
+      "Active": false,
+      "TaildropTarget": 4,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 124,
+      "KeyExpiry": "2027-05-01T00:00:00Z",
+      "Location": {
+        "Country": "Germany",
+        "CountryCode": "DE",
+        "City": "Frankfurt",
+        "CityCode": "FRA",
+        "Priority": 10
+      },
+      "Tags": [
+        "tag:mullvad-exit-node"
+      ]
+    },
+    "nodekey:peer25": {
+      "ID": "nMULL25CNTRL",
+      "PublicKey": "nodekey:peer25",
+      "HostName": "us-nyc-wg-025",
+      "DNSName": "us-nyc-wg-025.mullvad.ts.net.",
+      "OS": "linux",
+      "UserID": 30001,
+      "TailscaleIPs": [
+        "100.64.0.25",
+        "fd7a:115c:a1e0::19"
+      ],
+      "AllowedIPs": [
+        "100.64.0.25/32",
+        "fd7a:115c:a1e0::19/128",
+        "0.0.0.0/0",
+        "::/0"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": true,
+      "Active": false,
+      "TaildropTarget": 4,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 125,
+      "KeyExpiry": "2027-05-01T00:00:00Z",
+      "Location": {
+        "Country": "USA",
+        "CountryCode": "US",
+        "City": "New York City",
+        "CityCode": "NYC",
+        "Priority": 5
+      },
+      "Tags": [
+        "tag:mullvad-exit-node"
+      ]
+    },
+    "nodekey:peer26": {
+      "ID": "nMULL26CNTRL",
+      "PublicKey": "nodekey:peer26",
+      "HostName": "us-lax-wg-026",
+      "DNSName": "us-lax-wg-026.mullvad.ts.net.",
+      "OS": "linux",
+      "UserID": 30001,
+      "TailscaleIPs": [
+        "100.64.0.26",
+        "fd7a:115c:a1e0::1a"
+      ],
+      "AllowedIPs": [
+        "100.64.0.26/32",
+        "fd7a:115c:a1e0::1a/128",
+        "0.0.0.0/0",
+        "::/0"
+      ],
+      "CurAddr": "",
+      "Relay": "fra",
+      "PeerRelay": "",
+      "RxBytes": 0,
+      "TxBytes": 0,
+      "Created": "2026-01-01T00:00:00Z",
+      "LastWrite": "0001-01-01T00:00:00Z",
+      "LastSeen": "0001-01-01T00:00:00Z",
+      "LastHandshake": "0001-01-01T00:00:00Z",
+      "Online": true,
+      "ExitNode": false,
+      "ExitNodeOption": true,
+      "Active": false,
+      "TaildropTarget": 4,
+      "NoFileSharingReason": "",
+      "InNetworkMap": true,
+      "InMagicSock": true,
+      "InEngine": false,
+      "NodeID": 126,
+      "KeyExpiry": "2027-05-01T00:00:00Z",
+      "Location": {
+        "Country": "USA",
+        "CountryCode": "US",
+        "City": "Los Angeles",
+        "CityCode": "LAX",
+        "Priority": 5
+      },
+      "Tags": [
+        "tag:mullvad-exit-node"
+      ]
+    }
+  },
+  "User": {
+    "10001": {
+      "ID": 10001,
+      "LoginName": "user1@example.com",
+      "DisplayName": "Example User 1",
+      "ProfilePicURL": ""
+    },
+    "10002": {
+      "ID": 10002,
+      "LoginName": "tagged-devices",
+      "DisplayName": "Tagged Devices",
+      "ProfilePicURL": ""
+    },
+    "20001": {
+      "ID": 20001,
+      "LoginName": "friend@example.org",
+      "DisplayName": "Example Friend",
+      "ProfilePicURL": ""
+    }
+  },
+  "ClientVersion": null
+}
