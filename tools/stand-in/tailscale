@@ -10,7 +10,8 @@
 #   TS_FAKE_STATE        force a scenario for this call (else the state dir's, else running):
 #                        running | stopped | starting | needs-login | needs-machine-auth |
 #                        exit-node | exit-node-offline | key-expiring | key-expired |
-#                        health-warnings | update-available | rich | not-running
+#                        health-warnings | update-available | rich | sharing | serve |
+#                        not-running ("serve": status-serve.json, HTTPS + Funnel enabled)
 #   TS_FAKE_DAEMON       "down": the daemon is not running (every daemon command fails);
 #                        so is it while the state dir holds a file "daemon-down" (the stand-in
 #                        systemctl removes it on `start tailscaled.service`)
@@ -50,6 +51,34 @@
 #   the state dir's sent/; the inbox (receiving) is the stand-in curl's files/
 #   SSH_CLIENT           from a 100.x address: `set --ssh=<change>` asks for the lose-ssh risk
 #                        and, with no terminal, aborts (as the real CLI)
+#   TS_FAKE_CERT_DELAY   seconds `cert` takes to "issue" (after its checks, before writing)
+#   TS_FAKE_CERT_NOT_AFTER  the expiry written into the stand-in cert (default
+#                        "Feb 14 12:00:00 2027 GMT"); the stand-in openssl reads it back
+#
+# Serve and Funnel (step 5), as cli/serve_v2.go with the daemon's checks (ipn/localapi/serve.go,
+# ipnlocal setServeConfigLocked). State dir file "serve.json": the ServeConfig the daemon holds
+# (absent: none, `{}`), printed verbatim by `serve status --json`, rewritten (in Go's
+# MarshalIndent shape: sorted keys, omitempty) by every change the stand-in makes. A test may
+# seed it with raw JSON: it is parsed into a table (T <port> <HTTPS|HTTP|TCPForward|TerminateTLS>
+# <value> / W <host:port> <mount> <Path|Proxy|Text> <value> / F <host:port> <true|false>,
+# tab-separated); a seeded config holding anything else (Services, Foreground, Redirect,
+# AcceptAppCaps, ProxyProtocol, unknown fields, …) is still printed verbatim, but a change to it
+# is refused: exit 2 "stand-in: serve.json holds … not replayed; changes not replayed" (`reset`
+# still replaces it). Changes need write access (the denial "sending serve config: Access
+# denied: serve config denied"); a config with a Path handler needs root (TS_FAKE_ROOT=1); Funnel
+# on with ShieldsUp is refused. `serve`/`funnel` without --bg (foreground), with --service, --tun,
+# --accept-app-caps, --proxy-protocol or a unix: target are refused: exit 2 "not replayed".
+# State dir files read by `status --json` (and so by serve, funnel and cert):
+#   caps          extra capability names, one per line, added to Self's CapMap (as `"<name>":
+#                 null`): "https" (HTTPS certs: serve over HTTPS), "funnel", and
+#                 "https://tailscale.com/cap/funnel-ports?ports=443,8443" (the Funnel ports)
+#   cert-domains  one domain per line: status's CertDomains (else the fixture's, null in all
+#                 but status-serve.json); `cert` issues only for these
+# `cert [--cert-file=F] [--key-file=K] [--min-validity=D] <domain>` writes stand-in PEM text
+# ("STAND-IN <domain> notAfter=<date>") to F (0644) and K (0600), atomically (a temp file in the
+# same directory, renamed), default <domain>.crt / .key in the working directory.
+# State dir file "lock.json": what `lock status --json` prints (absent: lock-disabled.json, as
+# the real CLI prints with tailnet lock off); `lock status` prints its text form.
 #
 # Sharing (step 3): `set --advertise-routes` / `--advertise-exit-node` compose as set.go's
 # calcAdvertiseRoutesForSet (each alone keeps the other half of AdvertiseRoutes), routes are
@@ -63,6 +92,7 @@
 # State dir files: scenario (the status fixture's name), prefs (key=value overrides of the
 # prefs fixture), resume (the scenario `up` returns to), profiles and current (the accounts:
 # see profiles_init), login-from (the account a pending `login` started from).
+# shellcheck disable=SC2016 # the awk programs are single-quoted on purpose
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -110,7 +140,8 @@ denied() {
         rm -f "$STATE_DIR/on-deny"
         sh -c "$hook" sh "$STATE_DIR"
     fi
-    printf "Access denied: %s\n\nUse 'sudo tailscale %s'.\nTo not require root, use 'sudo tailscale set --operator=\$USER' once.\n" "$what" "$*" >&2
+    # deny_prefix: the CLI's own wrapping of the LocalAPI error ("sending serve config: ")
+    printf "%sAccess denied: %s\n\nUse 'sudo tailscale %s'.\nTo not require root, use 'sudo tailscale set --operator=\$USER' once.\n" "${deny_prefix:-}" "$what" "$*" >&2
     exit 1
 }
 need_write() { # $1 the denial text, then the command as typed
@@ -173,6 +204,45 @@ print_status() {
                 for (i = 1; i <= m; i++) print "      " (i > 1 ? "," : "") "\"" sub_list[i] "\""; print "    ]," }
             in_allowed = 0; self_done = 1; next }
         !exit_done && /^    "ExitNodeOption": / { exit_done = 1; if (exit4 && exit6) { print "    \"ExitNodeOption\": true,"; next } }
+        { print }' | status_extras
+}
+
+# The state dir's "caps" (one capability per line) into Self's CapMap — the first "CapMap" —,
+# its "cert-domains" (one per line) as the top-level CertDomains
+status_extras() {
+    caps=""
+    [ -f "$STATE_DIR/caps" ] && caps=$(grep -v '^[[:space:]]*$' "$STATE_DIR/caps" | tr '\n' '\001')
+    domains=""
+    has_domains=0
+    if [ -f "$STATE_DIR/cert-domains" ]; then
+        has_domains=1
+        domains=$(grep -v '^[[:space:]]*$' "$STATE_DIR/cert-domains" | tr '\n' '\001')
+    fi
+    awk -v caps="$caps" -v domains="$domains" -v has_domains="$has_domains" '
+        function nonempty(list, out,   all, m, k, j) {
+            m = split(list, all, "\001"); j = 0
+            for (k = 1; k <= m; k++) if (all[k] != "") out[++j] = all[k]
+            return j
+        }
+        BEGIN { ncaps = nonempty(caps, cap); ndomains = nonempty(domains, domain) }
+        function print_domains(   k) {
+            if (ndomains == 0) { print "  \"CertDomains\": null,"; return }
+            print "  \"CertDomains\": ["
+            for (k = 1; k <= ndomains; k++) print "    \"" domain[k] "\"" (k < ndomains ? "," : "")
+            print "  ],"
+        }
+        !caps_done && /"CapMap": \{\}/ && ncaps > 0 {
+            caps_done = 1; indent = $0; sub(/".*/, "", indent)
+            print indent "\"CapMap\": {"
+            for (k = 1; k <= ncaps; k++) print indent "  \"" cap[k] "\": null" (k < ncaps ? "," : "")
+            print indent "}" ($0 ~ /,[[:space:]]*$/ ? "," : ""); next }
+        !caps_done && /"CapMap": \{[[:space:]]*$/ {
+            caps_done = 1; print; indent = $0; sub(/".*/, "", indent)
+            for (k = 1; k <= ncaps; k++) print indent "  \"" cap[k] "\": null,"
+            next }
+        has_domains && /^  "CertDomains": null/ { print_domains(); next }
+        has_domains && /^  "CertDomains": \[/ { print_domains(); skip = 1; next }
+        skip { if ($0 ~ /^  \]/) skip = 0; next }
         { print }'
 }
 
@@ -185,6 +255,7 @@ prefs_base() {
         exit-node | exit-node-offline) echo "$F/prefs-exit-node.json" ;;
         rich) echo "$F/prefs-rich.json" ;;
         sharing) echo "$F/prefs-sharing.json" ;;
+        # serve (status-serve.json: HTTPS and Funnel enabled) keeps the running prefs
         *) echo "$F/prefs-running.json" ;;
     esac
 }
@@ -499,6 +570,792 @@ set_checks() {
     fi
 }
 
+# ---- Serve and Funnel (step 5) ----
+
+SERVE_JSON=$STATE_DIR/serve.json
+
+# serve.json → the table (see the header); a first line "!<what>" when it holds anything the
+# table cannot (the config is then printed, never changed)
+SERVE_PARSE='
+function ws() { while (i <= n && index(" \t\r\n", substr(s, i, 1)) > 0) i++ }
+function fail(why) { if (bad == "") bad = why; i = n + 1 }
+function jstr(   c, out, h) {
+    i++; out = ""
+    while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == "\"") { i++; return out }
+        if (c == "\\") {
+            c = substr(s, i + 1, 1); i += 2
+            if (c == "u") {
+                h = tolower(substr(s, i, 4)); i += 4
+                if (h == "003c") out = out "<"; else if (h == "003e") out = out ">"; else if (h == "0026") out = out "&"
+                else { fail("a \\u" h " escape"); return out }
+            } else if (c == "\"" || c == "\\" || c == "/") out = out c
+            else { fail("a \\" c " escape"); return out }
+            continue
+        }
+        out = out c; i++
+    }
+    fail("an unterminated string"); return out
+}
+function value(path,   c, k, lit, idx) {
+    ws()
+    if (i > n) { fail("truncated JSON"); return }
+    c = substr(s, i, 1)
+    if (c == "{") {
+        i++; ws()
+        if (substr(s, i, 1) == "}") { i++; leaf(path, "{}", ""); return }
+        while (i <= n) {
+            ws()
+            if (substr(s, i, 1) != "\"") { fail("invalid JSON"); return }
+            k = jstr(); ws()
+            if (substr(s, i, 1) != ":") { fail("invalid JSON"); return }
+            i++; value(path SUBSEP k); ws()
+            c = substr(s, i, 1); i++
+            if (c == "}") return
+            if (c != ",") { fail("invalid JSON"); return }
+        }
+        return
+    }
+    if (c == "[") {
+        i++; ws(); idx = 0
+        if (substr(s, i, 1) == "]") { i++; leaf(path, "[]", ""); return }
+        while (i <= n) {
+            value(path SUBSEP "#" idx++); ws()
+            c = substr(s, i, 1); i++
+            if (c == "]") return
+            if (c != ",") { fail("invalid JSON"); return }
+        }
+        return
+    }
+    if (c == "\"") { leaf(path, "s", jstr()); return }
+    lit = ""
+    while (i <= n && index("abcdefghijklmnopqrstuvwxyz0123456789.+-E", substr(s, i, 1)) > 0) { lit = lit substr(s, i, 1); i++ }
+    if (lit == "") { fail("invalid JSON"); return }
+    leaf(path, "l", lit)
+}
+function leaf(path, type, v,   m, p, k, name) {
+    m = split(substr(path, 2), p, SUBSEP)
+    if (m == 0 || (m == 1 && type == "{}")) return
+    if (v ~ /[\t\n]/) { fail("a value with a tab or newline"); return }
+    if (p[1] == "TCP" && m == 3 && p[2] ~ /^[0-9]+$/) {
+        if ((p[3] == "HTTPS" || p[3] == "HTTP") && type == "l" && (v == "true" || v == "false")) {
+            if (v == "true") lines = lines "T\t" p[2] "\t" p[3] "\ttrue\n"
+            return
+        }
+        if ((p[3] == "TCPForward" || p[3] == "TerminateTLS") && type == "s") {
+            lines = lines "T\t" p[2] "\t" p[3] "\t" v "\n"; return
+        }
+    }
+    if (p[1] == "Web" && m == 5 && p[3] == "Handlers" && (p[5] == "Path" || p[5] == "Proxy" || p[5] == "Text") && type == "s") {
+        lines = lines "W\t" p[2] "\t" p[4] "\t" p[5] "\t" v "\n"; return
+    }
+    if (p[1] == "AllowFunnel" && m == 2 && type == "l" && (v == "true" || v == "false")) {
+        lines = lines "F\t" p[2] "\t" v "\n"; return
+    }
+    name = p[1]
+    for (k = 2; k <= m; k++) name = name "." p[k]
+    fail(name)
+}
+{ s = s $0 "\n" }
+END {
+    n = length(s); i = 1
+    value("")
+    ws()
+    if (bad == "" && i <= n) bad = "invalid JSON"
+    if (bad != "") print "!" bad
+    printf "%s", lines
+}'
+
+# The table → serve.json as Go marshals the ServeConfig (MarshalIndent, two spaces; map keys
+# sorted as strings; empty maps omitted; `{}` when nothing is left)
+SERVE_PRINT='
+function esc(v,   o, c, k) {
+    o = ""
+    for (k = 1; k <= length(v); k++) {
+        c = substr(v, k, 1)
+        if (c == "\"") o = o "\\\""; else if (c == "\\") o = o "\\\\"
+        else if (c == "<") o = o "\\u003c"; else if (c == ">") o = o "\\u003e"; else if (c == "&") o = o "\\u0026"
+        else o = o c
+    }
+    return "\"" o "\""
+}
+function add(list, item) { return list == "" ? item : list SUBSEP item }
+function sorted(list, arr,   m, a, b, t) {
+    m = split(list, arr, SUBSEP)
+    for (a = 2; a <= m; a++) { t = arr[a]; for (b = a - 1; b >= 1 && (arr[b] "") > (t ""); b--) arr[b + 1] = arr[b]; arr[b + 1] = t }
+    return m
+}
+BEGIN { FS = "\t" }
+$1 == "T" { if (!($2 in tport)) { tport[$2] = 1; tlist = add(tlist, $2) } tf[$2, $3] = $4 }
+$1 == "W" {
+    if (!($2 in whost)) { whost[$2] = 1; wlist = add(wlist, $2) }
+    if (!(($2, $3) in wmount)) { wmount[$2, $3] = 1; mlist[$2] = add(mlist[$2], $3) }
+    wk[$2, $3] = $4; wv[$2, $3] = $5
+}
+$1 == "F" { if (!($2 in fhost)) { fhost[$2] = 1; flist = add(flist, $2) } fv[$2] = $3 }
+END {
+    out = ""
+    if (tlist != "") {
+        sec = "  \"TCP\": {\n"
+        m = sorted(tlist, ports)
+        for (a = 1; a <= m; a++) {
+            p = ports[a]; body = ""
+            if (tf[p, "HTTPS"] == "true") body = body (body == "" ? "" : ",\n") "      \"HTTPS\": true"
+            if (tf[p, "HTTP"] == "true") body = body (body == "" ? "" : ",\n") "      \"HTTP\": true"
+            if (tf[p, "TCPForward"] != "") body = body (body == "" ? "" : ",\n") "      \"TCPForward\": " esc(tf[p, "TCPForward"])
+            if (tf[p, "TerminateTLS"] != "") body = body (body == "" ? "" : ",\n") "      \"TerminateTLS\": " esc(tf[p, "TerminateTLS"])
+            sec = sec "    \"" p "\": " (body == "" ? "{}" : "{\n" body "\n    }") (a < m ? "," : "") "\n"
+        }
+        out = out (out == "" ? "" : ",\n") sec "  }"
+    }
+    if (wlist != "") {
+        sec = "  \"Web\": {\n"
+        m = sorted(wlist, hosts)
+        for (a = 1; a <= m; a++) {
+            h = hosts[a]
+            sec = sec "    " esc(h) ": {\n      \"Handlers\": {\n"
+            mm = sorted(mlist[h], mounts)
+            for (b = 1; b <= mm; b++) {
+                sec = sec "        " esc(mounts[b]) ": {\n          \"" wk[h, mounts[b]] "\": " esc(wv[h, mounts[b]]) "\n        }" (b < mm ? "," : "") "\n"
+            }
+            sec = sec "      }\n    }" (a < m ? "," : "") "\n"
+        }
+        out = out (out == "" ? "" : ",\n") sec "  }"
+    }
+    if (flist != "") {
+        sec = "  \"AllowFunnel\": {\n"
+        m = sorted(flist, fh)
+        for (a = 1; a <= m; a++) sec = sec "    " esc(fh[a]) ": " fv[fh[a]] (a < m ? "," : "") "\n"
+        out = out (out == "" ? "" : ",\n") sec "  }"
+    }
+    if (out == "") print "{}"
+    else print "{\n" out "\n}"
+}'
+
+serve_table() { [ -f "$SERVE_JSON" ] && awk "$SERVE_PARSE" "$SERVE_JSON"; return 0; }
+serve_save() { # the table on stdin → serve.json (a temp file renamed, as the daemon replaces it)
+    awk "$SERVE_PRINT" > "$SERVE_JSON.new"
+    mv "$SERVE_JSON.new" "$SERVE_JSON"
+}
+# Edits of $table (one awk over it, -v name=value pairs first)
+tab_edit() { table=$(printf '%s\n' "$table" | awk -F '\t' -v OFS='\t' "$@" | grep -v '^$' || true); }
+tab_has() { printf '%s\n' "$table" | awk -F '\t' "$@" | grep -q .; }
+
+# Status fields (st: the status JSON, read once per command)
+st_field() { printf '%s\n' "$st" | sed -n "s/^  \"$1\": \"\\(.*\\)\",\$/\\1/p" | head -n 1; }
+self_dns() { printf '%s\n' "$st" | sed -n 's/^    "DNSName": "\(.*\)",$/\1/p' | head -n 1 | sed 's/\.$//'; }
+self_caps() {
+    printf '%s\n' "$st" | awk '
+        !done && /^    "CapMap": \{/ { on = 1; if ($0 ~ /\}/) exit; next }
+        on && /^    \}/ { exit }
+        on && /^      "/ { line = $0; sub(/^      "/, "", line); sub(/".*/, "", line); print line }'
+}
+has_cap() { self_caps | grep -qxF "$1"; }
+status_ips() { printf '%s\n' "$st" | awk '/^  "TailscaleIPs": \[/ { on = 1; next } on && /^  \]/ { exit } on { gsub(/[ ",]/, ""); print }' | paste -sd , -; }
+cert_domains() {
+    printf '%s\n' "$st" | awk '/^  "CertDomains": \[/ { on = 1; next } on && /^  \]/ { exit } on { gsub(/^ *"|",? *$/, ""); print }'
+}
+
+# getLocalClientStatusWithoutPeers: anything but Running or Starting ends the CLI (status.go's
+# isRunningOrStarting texts)
+need_running() {
+    state=$(st_field BackendState)
+    case $state in
+        Running | Starting) return 0 ;;
+        Stopped) echo "Tailscale is stopped." >&2 ;;
+        NeedsLogin)
+            auth=$(st_field AuthURL)
+            echo "Logged out." >&2
+            [ -n "$auth" ] && echo "Log in at: $auth" >&2 ;;
+        NeedsMachineAuth) echo "Machine is not yet approved by tailnet admin." >&2 ;;
+        *) echo "unexpected state: $state" >&2 ;;
+    esac
+    exit 1
+}
+
+# The CLI's two failure shapes of runServeCombined: "error: <err>" and the help hint, or a
+# plain error (main prints it); both exit 1
+help_hint() { printf 'try `tailscale %s --help` for usage info\n' "$command" >&2; exit 1; }
+serve_fail() { printf 'error: %s\n\n' "$1" >&2; help_hint; }
+
+# filepath.Clean / path.Clean for absolute paths
+clean_path() {
+    printf '%s\n' "$1" | awk '{
+        n = split($0, part, "/"); depth = 0
+        for (k = 1; k <= n; k++) {
+            if (part[k] == "" || part[k] == ".") continue
+            if (part[k] == "..") { if (depth > 0) depth--; continue }
+            keep[++depth] = part[k]
+        }
+        out = ""
+        for (k = 1; k <= depth; k++) out = out "/" keep[k]
+        print (out == "" ? "/" : out) }'
+}
+
+is_port() { # a decimal that strconv.ParseUint(…, 10, 16) takes
+    case $1 in "" | *[!0-9]*) return 1 ;; esac
+    [ "${#1}" -le 5 ] && [ "$(printf '%s' "$1" | sed 's/^0*//; s/^$/0/')" -le 65535 ]
+}
+port_number() { printf '%s' "$1" | sed 's/^0*//; s/^$/0/'; }
+
+# ipn.ExpandProxyTargetValue for the targets the module uses: prints the target or the error
+# (status 1)
+expand_target() { # <target> <supported schemes, space-separated> <default scheme>
+    target=$1
+    [ -n "$target" ] || { echo "empty target"; return 1; }
+    if is_port "$target"; then echo "$3://127.0.0.1:$(port_number "$target")"; return 0; fi
+    has_scheme=true
+    case $target in
+        *://*) ;;
+        *) target="$3://$target"; has_scheme=false ;;
+    esac
+    scheme=$(printf '%s' "${target%%://*}" | tr '[:upper:]' '[:lower:]')
+    rest=${target#*://}
+    hostport=${rest%%/*}
+    tail=${rest#"$hostport"}
+    case " $2 " in
+        *" $scheme "*) ;;
+        *) echo "must be a URL starting with one of the supported schemes: [$2]"; return 1 ;;
+    esac
+    case $hostport in
+        \[*\]:*) host=${hostport%%]*}; host=${host#[}; port=${hostport##*]:} ;;
+        \[*\]) host=${hostport#[}; host=${host%]}; port="" ;;
+        *:*) host=${hostport%:*}; port=${hostport##*:} ;;
+        *) host=$hostport; port="" ;;
+    esac
+    case $host in
+        localhost | 127.0.0.1 | ::1)
+            [ -n "$port" ] || { printf 'port required for localhost target "%s"\n' "$target"; return 1; } ;;
+        *)
+            printf '%s' "$host" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$|^[0-9a-fA-F:.]+$' \
+                || { printf 'invalid hostname or IP address "%s"\n' "$host"; return 1; }
+            $has_scheme || { printf 'non-localhost target "%s" must include a scheme\n' "$target"; return 1; } ;;
+    esac
+    if [ -z "$port" ]; then echo "$scheme://$hostport$tail"; return 0; fi
+    { is_port "$port" && [ "$(port_number "$port")" != 0 ]; } || { printf 'invalid port "%s"\n' "$port"; return 1; }
+    case $host in *:*) host="[$host]" ;; esac
+    echo "$scheme://$host:$(port_number "$port")$tail"
+}
+
+# messageForPort: what a successful `serve`/`funnel` prints (stdout)
+serve_message() { # <port> <the flag's type: https|http|tcp|tls-terminated-tcp>
+    printf '%s\n' "$table" | awk -F '\t' -v port="$1" -v stype="$2" -v host="$host" -v hp="$host:$1" \
+        -v cmd="$command" -v ips="$(status_ips)" '
+        $1 == "T" && $2 == port { t[$3] = $4; has_t = 1 }
+        $1 == "W" && $2 == hp { if (!($3 in seen)) { seen[$3] = 1; mounts[++nm] = $3 } wk[$3] = $4; wv[$3] = $5 }
+        $1 == "F" && $2 == hp { funnel = $3 }
+        END {
+            scheme = t["HTTP"] == "true" ? "http" : "https"
+            pp = ":" port
+            if ((scheme == "http" && port == 80) || (scheme == "https" && port == 443)) pp = ""
+            out = (funnel == "true" ? "Available on the internet:" : "Available within your tailnet:") "\n\n"
+            for (a = 2; a <= nm; a++) { m = mounts[a]
+                for (b = a - 1; b >= 1 && (length(mounts[b]) > length(m) || (length(mounts[b]) == length(m) && mounts[b] > m)); b--) mounts[b + 1] = mounts[b]
+                mounts[b + 1] = m }
+            if (nm > 0) {
+                for (a = 1; a <= nm; a++) {
+                    m = mounts[a]; k = wk[m]; d = wv[m]
+                    kind = k == "Path" ? "path" : (k == "Proxy" ? "proxy" : "text")
+                    if (k == "Text") d = "\"" (length(d) <= 20 ? d : substr(d, 1, 17) "...") "\""
+                    out = out scheme "://" host pp m "\n" sprintf("|-- %-5s %s\n\n", kind, d)
+                }
+            } else if (has_t) {
+                out = out "|-- tcp://" host ":" port (t["TerminateTLS"] != "" ? " (TLS terminated)" : "") "\n"
+                n = split(ips, ip, ",")
+                for (a = 1; a <= n; a++) out = out "|-- tcp://" (ip[a] ~ /:/ ? "[" ip[a] "]" : ip[a]) ":" port "\n"
+                out = out "|--> tcp://" t["TCPForward"] "\n\n"
+            }
+            out = out toupper(substr(cmd, 1, 1)) substr(cmd, 2) " started and running in the background.\n"
+            out = out "To disable the proxy, run: tailscale " cmd " --" stype "=" port " off"
+            print out
+        }'
+}
+
+# `serve status` / `funnel status` without --json (runServeStatus: printFunnelStatus, then the
+# trees)
+serve_status_text() {
+    if printf '%s\n' "$table" | grep -q '^!'; then
+        echo "# stand-in: the text status of this serve.json is not replayed (--json is)"
+        return 0
+    fi
+    printf '%s\n' "$table" | awk -F '\t' -v host="$host" -v ips="$(status_ips)" '
+        function add(list, item) { return list == "" ? item : list SUBSEP item }
+        function sorted(list, arr, numeric,   m, a, b, t) {
+            m = split(list, arr, SUBSEP)
+            for (a = 2; a <= m; a++) { t = arr[a]
+                for (b = a - 1; b >= 1 && (numeric ? arr[b] + 0 > t + 0 : (arr[b] "") > (t "")); b--) arr[b + 1] = arr[b]
+                arr[b + 1] = t }
+            return m
+        }
+        $1 == "T" { if (!($2 in tport)) { tport[$2] = 1; tlist = add(tlist, $2) } tf[$2, $3] = $4 }
+        $1 == "W" { if (!($2 in whost)) { whost[$2] = 1; wlist = add(wlist, $2) }
+                    if (!(($2, $3) in wm)) { wm[$2, $3] = 1; mlist[$2] = add(mlist[$2], $3) }
+                    wk[$2, $3] = $4; wv[$2, $3] = $5 }
+        $1 == "F" { if (!($2 in fhost)) { fhost[$2] = 1; flist = add(flist, $2) } fv[$2] = $3; if ($3 == "true") funnel_on = 1 }
+        END {
+            if (funnel_on) {
+                printf "\n# Funnel on:\n"
+                m = sorted(flist, fh, 0)
+                for (a = 1; a <= m; a++) { if (fv[fh[a]] != "true") continue
+                    p = fh[a]; sub(/.*:/, "", p); sni = fh[a]; sub(/:[0-9]+$/, "", sni)
+                    is_tcp = (p in tport) && tf[p, "HTTPS"] != "true" && tf[p, "HTTP"] != "true"
+                    printf "#     - %s%s%s\n", (is_tcp ? "tcp://" : "https://"), sni, (is_tcp || p != 443 ? ":" p : "") }
+                printf "\n"
+            }
+            if (tlist == "" && wlist == "" && flist == "") { print "No serve config"; exit }
+            n = split(ips, ip, ","); any_tcp = 0
+            m = sorted(tlist, ports, 1)
+            for (a = 1; a <= m; a++) { p = ports[a]; if (tf[p, "TCPForward"] == "") continue
+                any_tcp = 1; hp = host ":" p; fs = fv[hp] == "true" ? "Funnel on" : "tailnet only"
+                if (tf[p, "TerminateTLS"] != "") printf "|-- tcp://%s (TLS-terminated TCP, %s)\n", hp, fs
+                else printf "|-- tcp://%s (%s)\n", hp, fs
+                for (b = 1; b <= n; b++) printf "|-- tcp://%s:%s\n", (ip[b] ~ /:/ ? "[" ip[b] "]" : ip[b]), p
+                printf "|--> tcp://%s\n", tf[p, "TCPForward"] }
+            if (any_tcp) printf "\n"
+            m = sorted(wlist, hosts, 0)
+            for (a = 1; a <= m; a++) { hp = hosts[a]; p = hp; sub(/.*:/, "", p); h = hp; sub(/:[0-9]+$/, "", h)
+                scheme = tf[p, "HTTP"] == "true" ? "http" : "https"
+                pp = ((scheme == "http" && p == 80) || (scheme == "https" && p == 443)) ? "" : ":" p
+                fs = fv[hp] == "true" ? "Funnel on" : "tailnet only"
+                if (scheme == "http") { short = h; sub(/\..*/, "", short); printf "%s://%s%s (%s)\n", scheme, short, pp, fs }
+                printf "%s://%s%s (%s)\n", scheme, h, pp, fs
+                mm = split(mlist[hp], mounts, SUBSEP)
+                for (b = 2; b <= mm; b++) { t = mounts[b]
+                    for (c = b - 1; c >= 1 && length(mounts[c]) > length(t); c--) mounts[c + 1] = mounts[c]
+                    mounts[c + 1] = t }
+                max = length(mounts[mm])
+                for (b = 1; b <= mm; b++) { k = wk[hp, mounts[b]]; d = wv[hp, mounts[b]]
+                    kind = k == "Path" ? "path" : (k == "Proxy" ? "proxy" : "text")
+                    if (k == "Text") d = "\"" (length(d) <= 20 ? d : substr(d, 1, 17) "...") "\""
+                    pad = sprintf("%" (max - length(mounts[b]) + 0) "s", "")
+                    if (max == length(mounts[b])) pad = ""
+                    printf "|-- %s%s %-5s %s\n", mounts[b], pad, kind, d }
+                printf "\n" }
+        }'
+}
+
+serve_usage() {
+    printf 'USAGE\n  tailscale %s <target>\n  tailscale %s status [--json]\n  tailscale %s reset\n' "$command" "$command" "$command" >&2
+    exit 0
+}
+
+# `serve|funnel <flags> <target>|off` (runServeCombined)
+serve_set() {
+    bg=false yes=false https=0 http=0 tcp=0 tlstcp=0 set_path="" set_path_given=false
+    while [ $# -gt 0 ]; do
+        case $1 in --*) option=${1#--} ;; -?*) option=${1#-} ;; *) break ;; esac
+        [ "$option" = "" ] && { shift; break; } # "--": the end of the flags
+        name=${option%%=*}
+        case $option in *=*) value=${option#*=} ;; *) value="" ;; esac
+        case $name in
+            bg | yes)
+                if [ "$option" = "$name" ]; then value=true; fi
+                case $value in
+                    1 | t | T | true | TRUE | True) value=true ;;
+                    0 | f | F | false | FALSE | False) value=false ;;
+                    *) printf 'invalid boolean value "%s" for -%s: parse error\n' "$value" "$name" >&2; exit 2 ;;
+                esac
+                if [ "$name" = bg ]; then bg=$value; else yes=$value; fi ;;
+            https | http | tcp | tls-terminated-tcp | set-path)
+                if [ "$option" = "$name" ]; then
+                    [ $# -ge 2 ] || { printf 'flag needs an argument: -%s\n' "$name" >&2; exit 2; }
+                    value=$2
+                    shift
+                fi
+                [ "$name" = http ] && [ "$command" = funnel ] && { printf 'flag provided but not defined: -%s\n' "$name" >&2; exit 2; }
+                if [ "$name" = set-path ]; then
+                    set_path=$value
+                    set_path_given=true
+                else
+                    case $value in "" | *[!0-9]*) printf 'invalid value "%s" for flag -%s: parse error\n' "$value" "$name" >&2; exit 2 ;; esac
+                    value=$(port_number "$value")
+                    case $name in
+                        https) https=$value ;;
+                        http) http=$value ;;
+                        tcp) tcp=$value ;;
+                        tls-terminated-tcp) tlstcp=$value ;;
+                    esac
+                fi ;;
+            service | tun | accept-app-caps | proxy-protocol)
+                if [ "$name" = tun ] || [ "$command" = serve ] || [ "$name" = proxy-protocol ]; then
+                    printf 'stand-in: %s --%s not replayed\n' "$command" "$name" >&2
+                    exit 2
+                fi
+                printf 'flag provided but not defined: -%s\n' "$name" >&2; exit 2 ;;
+            *) printf 'flag provided but not defined: -%s\n' "$name" >&2; exit 2 ;;
+        esac
+        shift
+    done
+    # validateArgs
+    [ $# -eq 0 ] && serve_usage
+    if [ $# -gt 2 ]; then printf 'Error: invalid number of arguments (%d)\n' "$#" >&2; help_hint; fi
+    last=""
+    for argument in "$@"; do last=$argument; done
+    turn_off=false
+    [ "$last" = off ] && turn_off=true
+    if [ $# -eq 2 ] && [ $turn_off = false ]; then echo "Error: invalid argument format" >&2; help_hint; fi
+    target=$1
+
+    st=$(print_status)
+    if [ "$command" = funnel ]; then
+        # verifyFunnelEnabled (its status first: not running ends it), then CheckFunnelAccess —
+        # for port 443, whatever port was asked (as the real CLI)
+        need_running
+        has_cap https || { echo "Funnel not available; HTTPS must be enabled. See https://tailscale.com/s/https." >&2; exit 1; }
+        has_cap funnel || { echo 'Funnel not available; "funnel" node attribute not set. See https://tailscale.com/s/no-funnel.' >&2; exit 1; }
+        ports_cap=$(self_caps | grep '^https://tailscale.com/cap/funnel-ports' | head -n 1 || true)
+        allowed=""
+        case $ports_cap in "https://tailscale.com/cap/funnel-ports?ports="?*) allowed=${ports_cap#*\?ports=} ;; esac
+        port_ok=false
+        old_ifs=$IFS
+        IFS=,
+        for range in $allowed; do
+            case $range in
+                *-*) first=${range%%-*}; end=${range#*-}
+                     is_port "$first" && is_port "$end" && [ "$first" -le 443 ] && [ "$end" -ge 443 ] && port_ok=true ;;
+                443) port_ok=true ;;
+            esac
+        done
+        IFS=$old_ifs
+        if [ $port_ok = false ]; then
+            if [ -n "$allowed" ]; then echo "port 443 is not allowed for funnel; allowed ports are: $allowed" >&2
+            else echo "port 443 is not allowed for funnel" >&2; fi
+            exit 1
+        fi
+    fi
+    # cleanURLPath
+    mount=/
+    if [ -n "$set_path" ]; then
+        case $set_path in /*) mount=$set_path ;; *) mount=/$set_path ;; esac
+        cleaned=$(clean_path "$mount")
+        if [ "$mount" != "$cleaned" ] && [ "$mount" != "$cleaned/" ]; then
+            printf 'failed to clean the mount point: invalid mount point "%s"\n' "$mount" >&2
+            exit 1
+        fi
+    fi
+    # srvTypeAndPortFromFlags
+    count=0 stype=https port=443
+    for pair in "http $http" "https $https" "tcp $tcp" "tls-terminated-tcp $tlstcp"; do
+        # shellcheck disable=SC2086 # split on purpose: "<type> <port>"
+        set -- $pair
+        if [ "$2" != 0 ]; then
+            [ "$2" -gt 65535 ] && serve_fail "port number $2 is too high for https flag"
+            count=$((count + 1)) stype=$1 port=$2
+        fi
+    done
+    [ $count -gt 1 ] && serve_fail "cannot serve multiple types for a single mount point"
+    table=$(serve_table)
+    need_running
+    host=$(self_dns)
+    hp=$host:$port
+    # enableFeatureInteractive("serve", https): without the capability control answers with a
+    # text and a link and the CLI exits 0, changing nothing (the not-waiting path)
+    if [ $turn_off = false ] && [ "$stype" = https ] && ! has_cap https; then
+        printf '\nServe is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=REDACTED\n\n'
+        exit 0
+    fi
+    if [ $bg = false ] && [ $turn_off = false ]; then
+        echo "stand-in: foreground $command not replayed (the module always passes --bg)" >&2
+        exit 2
+    fi
+    if printf '%s\n' "$table" | grep -q '^!'; then
+        printf 'stand-in: serve.json holds %s, not replayed; changes not replayed\n' "$(printf '%s\n' "$table" | sed -n 's/^!//p')" >&2
+        exit 2
+    fi
+    msg=""
+    case $stype in
+        https | http)
+            if [ $turn_off = true ]; then
+                # removeWebServe
+                if tab_has -v p="$port" '$1 == "T" && $2 == p' && ! tab_has -v p="$port" '$1 == "T" && $2 == p && ($3 == "HTTPS" || $3 == "HTTP")'; then
+                    serve_fail "failed to remove web serve: cannot remove web handler; currently serving TCP"
+                fi
+                if [ $set_path_given = true ]; then
+                    tab_has -v hp="$hp" -v m="$mount" '$1 == "W" && $2 == hp && $3 == m' \
+                        || serve_fail "failed to remove web serve: handler does not exist"
+                    remove_mount=$mount
+                else
+                    tab_has -v hp="$hp" '$1 == "W" && $2 == hp' || serve_fail "failed to remove web serve: handler does not exist"
+                    remove_mount=""
+                    mounts=$(printf '%s\n' "$table" | awk -F '\t' -v hp="$hp" '$1 == "W" && $2 == hp && !seen[$3]++' | wc -l | tr -d ' ')
+                    if [ "$mounts" -gt 1 ] && [ $yes = false ] && [ -t 0 ] && [ -t 1 ]; then
+                        # prompt.YesNo(…, true): asked only on a terminal (else: yes)
+                        printf 'Are you sure you want to delete %s handlers under port %s? [Y/n] ' "$mounts" "$port"
+                        read -r answer || answer=""
+                        case $(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]') in
+                            "" | y | yes | sure) ;;
+                            *) remove_mount="-" ;;
+                        esac
+                    fi
+                fi
+                if [ "$remove_mount" != "-" ]; then
+                    # RemoveWebHandler(…, cleanupFunnel): the last mount takes the listener and Funnel
+                    tab_edit -v hp="$hp" -v m="$remove_mount" '!($1 == "W" && $2 == hp && (m == "" || $3 == m))'
+                    if ! tab_has -v hp="$hp" '$1 == "W" && $2 == hp'; then
+                        tab_edit -v hp="$hp" -v p="$port" '!($1 == "T" && $2 == p) && !($1 == "F" && $2 == hp)'
+                    fi
+                fi
+            else
+                # applyWebServe
+                case $target in
+                    text:*)
+                        kind=Text value=${target#text:}
+                        [ -n "$value" ] || serve_fail "failed apply web serve: unable to serve; text cannot be an empty string" ;;
+                    /*)
+                        kind=Path value=$(clean_path "$target")
+                        [ -e "$value" ] || serve_fail "failed apply web serve: invalid path"
+                        if [ -d "$value" ]; then case $mount in */) ;; *) mount=$mount/ ;; esac; fi ;;
+                    unix:*) echo "stand-in: unix: targets not replayed" >&2; exit 2 ;;
+                    *)
+                        kind=Proxy
+                        value=$(expand_target "$target" "http https https+insecure unix" http) \
+                            || serve_fail "failed apply web serve: $value" ;;
+                esac
+                if tab_has -v p="$port" '$1 == "T" && $2 == p' && ! tab_has -v p="$port" '$1 == "T" && $2 == p && ($3 == "HTTPS" || $3 == "HTTP")'; then
+                    serve_fail "failed apply web serve: cannot serve web; already serving TCP"
+                fi
+                [ "$stype" = https ] && listener=HTTPS || listener=HTTP
+                # SetWebHandler: the listener replaced, the mount (and its twin with or without
+                # the trailing slash) replaced
+                tab_edit -v p="$port" -v hp="$hp" -v m="$mount" '
+                    function trim(x) { sub(/\/$/, "", x); return x }
+                    !($1 == "T" && $2 == p) && !($1 == "W" && $2 == hp && trim($3) == trim(m))'
+                table=$(printf '%s\nT\t%s\t%s\ttrue\nW\t%s\t%s\t%s\t%s' "$table" "$port" "$listener" "$hp" "$mount" "$kind" "$value" | grep -v '^$')
+            fi ;;
+        tcp | tls-terminated-tcp)
+            if [ $turn_off = true ]; then
+                tab_has -v p="$port" '$1 == "T" && $2 == p' || serve_fail "failed to remove TCP serve: serve config does not exist"
+                if tab_has -v p="$port" '$1 == "T" && $2 == p && ($3 == "HTTPS" || $3 == "HTTP")'; then
+                    serve_fail "failed to remove TCP serve: unable to remove; serving web, not TCP forwarding on serve port $port"
+                fi
+                tab_edit -v p="$port" '!($1 == "T" && $2 == p)'
+            else
+                [ -n "$set_path" ] && { printf 'error: cannot mount a path for TCP serve\n\n' >&2; help_hint; }
+                case $target in unix:*) echo "stand-in: unix: targets not replayed" >&2; exit 2 ;; esac
+                url=$(expand_target "$target" "tcp unix" tcp) || serve_fail "failed to apply TCP serve: unable to expand target: $url"
+                forward=${url#tcp://}
+                forward=${forward%%/*}
+                case $forward in
+                    *\]:* | [!\[]*:*) ;;
+                    *) serve_fail "failed to apply TCP serve: TCP target \"$target\" must include a port" ;;
+                esac
+                if tab_has -v p="$port" '$1 == "T" && $2 == p && ($3 == "HTTPS" || $3 == "HTTP")'; then
+                    serve_fail "failed to apply TCP serve: cannot serve TCP; already serving web on $port for $host"
+                fi
+                tab_edit -v p="$port" '!($1 == "T" && $2 == p)'
+                table=$(printf '%s\nT\t%s\tTCPForward\t%s' "$table" "$port" "$forward" | grep -v '^$')
+                [ "$stype" = tls-terminated-tcp ] && table=$(printf '%s\nT\t%s\tTerminateTLS\t%s' "$table" "$port" "$host")
+            fi ;;
+    esac
+    if [ $turn_off = false ]; then
+        # applyFunnel: `funnel` turns it on for host:port, `serve` takes it away
+        if [ "$command" = funnel ]; then
+            tab_edit -v hp="$hp" '!($1 == "F" && $2 == hp)'
+            table=$(printf '%s\nF\t%s\ttrue' "$table" "$hp" | grep -v '^$')
+        elif tab_has -v hp="$hp" '$1 == "F" && $2 == hp'; then
+            printf 'Removing Funnel for %s:%s\n' "$host" "$hp" >&2
+            tab_edit -v hp="$hp" '!($1 == "F" && $2 == hp)'
+        fi
+        msg=$(serve_message "$port" "$stype")
+    fi
+    serve_commit
+    [ -n "$msg" ] && printf '%s\n' "$msg"
+    return 0
+}
+
+# SetServeConfig: the LocalAPI's checks (write access, root for a Path handler), the daemon's
+# (no Funnel under shields-up), then the config replaced. The CLI wraps each error in
+# "sending serve config: "
+serve_commit() {
+    deny_prefix="sending serve config: "
+    need_write "serve config denied" "$serve_argv"
+    if [ "${TS_FAKE_ROOT:-0}" != 1 ] && tab_has '$1 == "W" && $4 == "Path"'; then
+        echo "sending serve config: 401 Unauthorized: must be root, or be an operator and able to run 'sudo tailscale' to serve a path or Unix socket" >&2
+        exit 1
+    fi
+    # (prefs_value leaves the comma of a non-string value)
+    if tab_has '$1 == "F" && $3 == "true"' && [ "$(prefs_value ShieldsUp | sed 's/,$//')" = true ]; then
+        echo "sending serve config: updating config: Unable to turn on Funnel while shields-up is enabled" >&2
+        exit 1
+    fi
+    printf '%s\n' "$table" | serve_save
+}
+
+serve_command() {
+    serve_argv="$command $*"
+    case ${1:-} in
+        status)
+            shift
+            json=false
+            for argument in "$@"; do
+                case $argument in
+                    --json | -json | --json=true | --json=1) json=true ;;
+                    --json=false | --json=0) json=false ;;
+                    *) printf 'flag provided but not defined: -%s\n' "${argument#--}" >&2; exit 2 ;;
+                esac
+            done
+            if [ $json = true ]; then
+                if [ -f "$SERVE_JSON" ]; then cat "$SERVE_JSON"; else echo "{}"; fi
+            else
+                table=$(serve_table)
+                st=$(print_status)
+                host=$(self_dns)
+                serve_status_text
+            fi ;;
+        reset)
+            shift
+            [ $# -eq 0 ] || { printf 'USAGE\n  tailscale %s reset\n' "$command" >&2; exit 0; }
+            table=""
+            serve_commit
+            ;;
+        drain | clear | advertise | get-config | set-config)
+            [ "$command" = serve ] || { serve_set "$@"; return; }
+            echo "stand-in: serve $1 not replayed" >&2
+            exit 2 ;;
+        *) serve_set "$@" ;;
+    esac
+}
+
+# ---- cert (step 5) ----
+
+# atomicfile.WriteFile: a temp file in the same directory (created 0600), the mode set, renamed
+write_if_changed() { # <file> <contents> <mode> → "changed" / "unchanged", or fails like Go
+    [ "$1" = - ] && { echo unchanged; return 0; } # the caller prints it
+    if [ -f "$1" ] && [ "$(cat "$1"; printf x)" = "$2x" ]; then echo unchanged; return 0; fi
+    dir=$(dirname "$1")
+    base=$(basename "$1")
+    tmp=$( (umask 077 && mktemp "$dir/$base.tmp.XXXXXX") 2> /dev/null) \
+        || { printf 'open %s: no such file or directory\n' "$1" >&2; return 1; }
+    if ! { printf "%s" "$2" > "$tmp" && chmod "$3" "$tmp" && mv -f "$tmp" "$1"; }; then rm -f "$tmp"; return 1; fi
+    echo changed
+}
+
+cert_command() {
+    cert_file="" key_file="" cert_given=false key_given=false
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --cert-file=* | -cert-file=*) cert_file=${1#*=}; cert_given=true ;;
+            --key-file=* | -key-file=*) key_file=${1#*=}; key_given=true ;;
+            --min-validity=* | -min-validity=*)
+                printf '%s' "${1#*=}" | grep -Eq '^([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))+$|^0$' \
+                    || { printf 'invalid value "%s" for flag -min-validity: parse error\n' "${1#*=}" >&2; exit 2; } ;;
+            --serve-demo* | -serve-demo*) echo "stand-in: cert --serve-demo not replayed" >&2; exit 2 ;;
+            --) shift; break ;;
+            -*) name=${1#-}; name=${name#-}; printf 'flag provided but not defined: -%s\n' "${name%%=*}" >&2; exit 2 ;;
+            *) break ;;
+        esac
+        shift
+    done
+    st=$(print_status)
+    if [ $# -ne 1 ]; then
+        domains=$(cert_domains)
+        if [ "$(st_field BackendState)" != Running ]; then hint="Tailscale is not running."
+        elif [ -z "$domains" ]; then hint="HTTPS cert support is not enabled/configured for your tailnet."
+        elif [ "$(printf '%s\n' "$domains" | wc -l)" -eq 1 ]; then hint="For domain, use \"$domains\"."
+        else hint="Valid domain options: [$(printf '%s\n' "$domains" | sed 's/.*/"&"/' | paste -sd ' ' -)]."; fi
+        printf 'Usage: tailscale cert [flags] <domain>\n%s\n' "$hint" >&2
+        exit 1
+    fi
+    domain=${1%.}
+    if [ $cert_given = false ] && [ $key_given = false ]; then
+        base=$(printf '%s' "$domain" | sed 's/^\*\./wildcard_./')
+        cert_file=$base.crt
+        key_file=$base.key
+    fi
+    need_write "cert access denied" cert "$@"
+    domains=$(cert_domains)
+    [ -n "$domains" ] || { echo "500 Internal Server Error: your Tailscale account does not support getting TLS certs" >&2; exit 1; }
+    case $domain in
+        \*.*) echo "500 Internal Server Error: wildcard certificates are not enabled for this node" >&2; exit 1 ;;
+    esac
+    if ! printf '%s\n' "$domains" | grep -qxF "$domain"; then
+        printf '500 Internal Server Error: invalid domain "%s"; must be one of [%s]\n' "$domain" \
+            "$(printf '%s\n' "$domains" | sed 's/.*/"&"/' | paste -sd ' ' -)" >&2
+        exit 1
+    fi
+    [ "${TS_FAKE_CERT_DELAY:-0}" != 0 ] && pause "$TS_FAKE_CERT_DELAY"
+    not_after=${TS_FAKE_CERT_NOT_AFTER:-Feb 14 12:00:00 2027 GMT}
+    cert_pem=$(printf -- '-----BEGIN CERTIFICATE-----\nSTAND-IN %s notAfter=%s\n-----END CERTIFICATE-----\nx' "$domain" "$not_after")
+    cert_pem=${cert_pem%x}
+    key_pem=$(printf -- '-----BEGIN EC PRIVATE KEY-----\nSTAND-IN key for %s\n-----END EC PRIVATE KEY-----\nx' "$domain")
+    key_pem=${key_pem%x}
+    if [ -n "$cert_file" ]; then
+        result=$(write_if_changed "$cert_file" "$cert_pem" 644) || exit 1
+        case $cert_file in -) printf '%s' "$cert_pem" ;; esac
+        if [ "$cert_file" != - ]; then
+            if [ "$result" = changed ]; then echo "Wrote public cert to $cert_file"; else echo "Public cert unchanged at $cert_file"; fi
+        fi
+    fi
+    if [ -n "$key_file" ]; then
+        result=$(write_if_changed "$key_file" "$key_pem" 600) || exit 1
+        case $key_file in -) printf '%s' "$key_pem" ;; esac
+        if [ "$key_file" != - ]; then
+            if [ "$result" = changed ]; then echo "Wrote private key to $key_file"; else echo "Private key unchanged at $key_file"; fi
+        fi
+    fi
+}
+
+# ---- lock status (step 5) ----
+
+lock_json() { if [ -f "$STATE_DIR/lock.json" ]; then cat "$STATE_DIR/lock.json"; else cat "$F/lock-disabled.json"; fi; }
+
+# printTailnetLockStatus's text, from the JSON form
+lock_text() {
+    lock_json | awk '
+        function str(line) { sub(/^[^:]*: *"/, "", line); sub(/",? *$/, "", line); return line }
+        /^  "Enabled": / { enabled = ($0 ~ /true/) }
+        /^  "PublicKey": / { public = str($0) }
+        /^  "NodeKey": / { nodekey = str($0) }
+        /^  "NodeKeySigned": / { signed = ($0 ~ /true/) }
+        /^  "NodeKeySignature": \{/ { in_sig = 1 }
+        in_sig && /^    "SigKind": / { sigkind = str($0) }
+        in_sig && /^    "KeyID": / { sigkey = str($0) }
+        in_sig && /^  \}/ { in_sig = 0 }
+        /^  "TrustedKeys": \[/ { section = "trusted"; next }
+        /^  "FilteredPeers": \[/ { section = "filtered"; next }
+        /^  "[A-Za-z]/ { section = "" }
+        section == "trusted" && /^    \{/ { nk++; purpose[nk] = ""; stableid[nk] = "" }
+        section == "trusted" && /^      "Votes": / { v = $0; gsub(/[^0-9]/, "", v); votes[nk] = v }
+        section == "trusted" && /^      "Public": / { key[nk] = str($0) }
+        section == "trusted" && /^        "purpose": / { purpose[nk] = str($0) }
+        section == "trusted" && /^        "authkey_stableid": / { stableid[nk] = str($0) }
+        section == "filtered" && /^    \{/ { np++; ips[np] = "" }
+        section == "filtered" && /^      "ID": / { pid[np] = str($0) }
+        section == "filtered" && /^      "DNSName": / { pname[np] = str($0) }
+        section == "filtered" && /^      "NodeKey": / { pkey[np] = str($0) }
+        section == "filtered" && /^        "/ { ip = $0; gsub(/[ ",]/, "", ip); ips[np] = ips[np] (ips[np] == "" ? "" : ",") ip }
+        END {
+            print (enabled ? "Tailnet Lock is ENABLED." : "Tailnet Lock is NOT enabled.")
+            print ""
+            if (enabled && nodekey != "" && public != "") {
+                if (signed) {
+                    print "This node is accessible under Tailnet Lock. Node signature:"
+                    print "SigKind: " sigkind
+                    print "KeyID: " sigkey
+                } else {
+                    print "This node is LOCKED OUT by Tailnet Lock, and action is required to establish connectivity."
+                    printf "Run the following command on a node with a trusted key:\n\ttailscale lock sign %s %s\n", nodekey, public
+                }
+                print ""
+            }
+            if (public != "") { print "This node'"'"'s tailnet-lock key: " public; print "" }
+            if (enabled && nk > 0) {
+                print "Trusted signing keys:"
+                for (k = 1; k <= nk; k++) {
+                    line = "\t" key[k] "\t" votes[k] "\t" (key[k] == public ? "(self)" : "")
+                    if (purpose[k] == "pre-auth key") line = line (stableid[k] != "" ? "(pre-auth key " stableid[k] ")" : "(pre-auth key)")
+                    print line
+                }
+            }
+            if (enabled && np > 0) {
+                print ""
+                print "The following nodes are locked out by tailnet lock and cannot connect to other nodes:"
+                for (k = 1; k <= np; k++) print "\t" pname[k] "\t" ips[k] "\t" pid[k] "\t" pkey[k]
+            }
+        }'
+}
+
 command=${1:-}
 [ $# -gt 0 ] && shift
 case $command in
@@ -772,17 +1629,28 @@ case $command in
         esac ;;
     serve | funnel)
         need_daemon
-        case ${1:-} in
-            status) echo "{}" ;;
-            *) need_write "serve config denied" "$command" "$@" ;;
-        esac ;;
+        serve_command "$@" ;;
     lock)
         need_daemon
-        [ "${1:-}" = status ] && { echo "Tailnet lock is NOT enabled."; exit 0; }
+        if [ "${1:-}" = status ]; then
+            shift
+            json=false
+            while [ $# -gt 0 ]; do
+                case $1 in
+                    --json | -json | --json=1 | -json=1) json=true ;;
+                    --json=* | -json=*) printf 'unrecognised version: %s\n' "${1#*=}" >&2; exit 1 ;;
+                    -*) name=${1#-}; printf 'flag provided but not defined: -%s\n' "${name#-}" >&2; exit 2 ;;
+                    *) echo "tailscale lock status: unexpected argument" >&2; exit 1 ;;
+                esac
+                shift
+            done
+            if [ $json = true ]; then lock_json; else lock_text; fi
+            exit 0
+        fi
         echo "stand-in: lock ${1:-} not replayed" >&2; exit 2 ;;
     cert)
         need_daemon
-        need_write "cert access denied" cert "$@" ;;
+        cert_command "$@" ;;
     *)
         echo "stand-in: '$command $*' not replayed" >&2
         exit 2 ;;

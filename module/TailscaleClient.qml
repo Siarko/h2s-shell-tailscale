@@ -172,6 +172,11 @@ QtObject {
     readonly property TaildropClient taildrop: TaildropClient {
         client: root
     }
+    // Step 5: serve and Funnel, certificates, tailnet lock (status), an exit node per network
+    readonly property ServeClient serve: ServeClient { client: root }
+    readonly property CertClient cert: CertClient { client: root }
+    readonly property LockClient tailnetLock: LockClient { client: root }
+    readonly property NetworkExitClient networkExit: NetworkExitClient { client: root }
 
     // Counters, for the tests and the IPC state
     property int reads: 0
@@ -213,14 +218,19 @@ QtObject {
         "exit-node": "Changing the exit node…", "setting": "Changing a setting…", "operator": "Making you the operator…",
         "start": "Starting the service…", "accounts": "Reading the accounts…", "accounts-auto": "Reading the accounts…",
         "account": "Changing the account…", "sharing": "Changing what this computer offers…",
-        "taildrop-save": "Saving received files…"
+        "taildrop-save": "Saving received files…", "serve": "Changing what this computer shares…",
+        "cert": "Getting a certificate…"
     })
 
     // THE provider entry (TailscaleRules.entry, with the attention an action found, the
     // operation's own status line, and curl's absence said once)
     readonly property var entry: {
         const base = TailscaleRules.entry(status, prefs, facts);
-        const held = pendingAttention !== null && base.attention === null
+        // Locked out by tailnet lock (step 5): lasting, the user must act (admin console)
+        // — only while connected: attention on an entry that is down would replace its Connect
+        const locked = base.attention === null && pendingAttention === null && view.phase === "running" ? tailnetLock.attention : null;
+        const held = locked !== null ? { reason: locked.reason, action: locked.action }
+            : pendingAttention !== null && base.attention === null
             ? { reason: pendingAttention.reason, action: pendingAttention.action } : base.attention;
         const label = _operationLabels[operation] ?? "";
         let line = label !== "" ? label : base.status;
@@ -702,6 +712,11 @@ QtObject {
     }
 
     function attend() {
+        // Locked out by tailnet lock: the admin console, where a trusted device signs this one
+        if (view.attention === null && pendingAttention === null && view.phase === "running" && tailnetLock.attention !== null) {
+            const url = TailscaleRules.adminMachineUrl(status, prefs);
+            return openUrl(url !== "" ? url : TailscaleRules.adminMachinesUrl);
+        }
         const kind = _planView.attention?.kind ?? "";
         const operationName = kind === "service-not-running" ? "start" : kind === "exit-node-offline" ? "exit-node"
             : (kind === "login" || kind === "key-expired") ? "login" : (view.phase === "running" ? "disconnect" : "connect");
@@ -1641,6 +1656,7 @@ QtObject {
     function resumed() {
         if (!running)
             return;
+        tailnetLock.read();
         if (fixedNow <= 0)
             now = Date.now();
         _readLan();

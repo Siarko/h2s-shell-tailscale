@@ -117,7 +117,7 @@ Singleton {
     //             send is stopped long before by TaildropClient (no bus progress for 2 minutes)
     //   save      each LocalAPI request of the save script (one received file each)
     //   killAfter timeout(1)'s -k: KILL this long after TERM, for a program that ignores TERM
-    readonly property var timeLimits: ({ read: 15, change: 60, up: 60, login: 600, diagnose: 30, ping: 10, send: 21600, save: 600, killAfter: 5 })
+    readonly property var timeLimits: ({ read: 15, change: 60, up: 60, login: 600, diagnose: 30, ping: 10, send: 21600, save: 600, cert: 180, killAfter: 5 })
     // An account (profile) id from `switch --list`: never starting with "-", which the CLI
     // would read as a flag
     readonly property var accountIdPattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
@@ -295,7 +295,7 @@ Singleton {
         const result = {
             ok: false, error: "", backendState: "", haveNodeKey: false, authUrl: "", addresses: [], self: null,
             health: [], tailnet: null, magicDnsSuffix: "", peers: [], users: _dict(), clientVersion: null,
-            exitNodeStatus: null, tun: true, version: "", peersCut: false
+            exitNodeStatus: null, tun: true, version: "", peersCut: false, certDomains: []
         };
         const parsed = _parseJson(input);
         if (!_isObject(parsed.value)) {
@@ -312,6 +312,8 @@ Singleton {
         result.tun = _bool(_get(raw, "TUN"), true);
         result.self = _node(_get(raw, "Self"), "");
         result.health = _strings(_get(raw, "Health"), 64);
+        // The names this computer may get a TLS certificate for (step 5: certificates, HTTPS)
+        result.certDomains = _strings(_get(raw, "CertDomains"), 8).map(name => _dnsName(name));
         const tailnet = _get(raw, "CurrentTailnet");
         result.magicDnsSuffix = _dnsName(_get(raw, "MagicDNSSuffix")).replace(/^\.+/, "");
         if (_isObject(tailnet)) {
@@ -1946,7 +1948,10 @@ Singleton {
         const code = typeof exitCode === "number" ? exitCode : Number(exitCode);
         if (code === 0)
             return { kind: "", message: "" };
-        if (/^\s*Access denied:/m.test(text) || /\baccess denied\b/i.test(text))
+        if (/^\s*Access denied:/m.test(text) || /\baccess denied\b/i.test(text)
+                // A serve config holding a path (set by root before) needs root even from the operator
+                // (ipn/localapi/serve.go): the module itself never adds one
+                || /must be root, or be an operator and able to run/.test(text))
             return { kind: "denied", message: "Tailscale refused: only an administrator or its operator may change it." };
         if (/Failed to connect to local Tailscale daemon/i.test(text) || /tailscaled\.sock[^\n]*(no such file|connection refused)/i.test(text)
                 || /tailscaled[^\n]*not running/i.test(text) || /is Tailscale running\?/i.test(text))

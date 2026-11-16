@@ -52,6 +52,13 @@ QtObject {
         return TailscaleRules.withoutAddresses(String(text ?? "")).replace(/^[\s-]+/, "");
     }
 
+    // The shell's networks (module API 1.3), for the exit node per network
+    property Binding _networks: Binding {
+        target: main.client.networkExit
+        property: "networks"
+        value: Api.networks ?? []
+    }
+
     property Connections _failures: Connections {
         target: main.client
         function onFailed(what, reason) {
@@ -213,6 +220,61 @@ QtObject {
         // Saves the waiting files — only ever without a prompt (the operator, as this user)
         function saveReceived(): void {
             main.client.taildrop.save("ipc");
+        }
+
+        // Step 5, serve and Funnel — counts and states, never names or URLs: { read, entries,
+        // types [https | http | tcp | …], whats [proxy | tcp | path | text | …], ports, funnel [bool],
+        // funnelOn, urls (count), connected, https, magicDns, funnelAllowed, canFunnel, message }
+        function serve(): string {
+            const share = main.client.serve;
+            const ready = share.ready;
+            return JSON.stringify({
+                read: share.config !== null, entries: share.entries.length, types: share.entries.map(entry => entry.type),
+                whats: share.entries.map(entry => entry.what), ports: share.entries.map(entry => entry.port),
+                funnel: share.entries.map(entry => entry.funnel), funnelOn: share.config?.funnelOn ?? false,
+                urls: share.entries.reduce((sum, entry) => sum + entry.urls.length, 0), connected: ready.connected, https: ready.https,
+                magicDns: ready.magicDns, funnelAllowed: ready.funnelAllowed, canFunnel: ready.canFunnel, message: share.message !== ""
+            });
+        }
+
+        function readServe(): void {
+            main.client.serve.read();
+        }
+
+        // As the page's controls, under the same rule as setHostname (no prompt from a script):
+        // HTTPS on `port` to the local port `localPort`; Funnel on or off for the entry on `port`
+        function sharePort(port: int, localPort: int): void {
+            if (main._ipcMayChange())
+                main.client.serve.add({ kind: "proxy", port: port, localPort: localPort, path: "" }, main._ipcOrigin());
+        }
+
+        function setFunnel(port: int, on: bool): void {
+            const entry = main.client.serve.entries.find(item => item.port === port && item.type === "https" && item.mount === "/");
+            if (entry && main._ipcMayChange())
+                main.client.serve.setFunnel(entry.key, on, main._ipcOrigin());
+        }
+
+        // Tailnet lock and the per-network exit node: states only
+        function tailnetLock(): string {
+            const lock = main.client.tailnetLock.lock;
+            return JSON.stringify({ read: lock !== null, enabled: lock?.enabled ?? false, signed: lock?.signed ?? null,
+                                    lockedOut: lock?.lockedOut ?? false, trustedKeys: lock?.trustedKeys ?? 0 });
+        }
+
+        function readTailnetLock(): void {
+            main.client.tailnetLock.read();
+        }
+
+        function networkExit(): string {
+            const exit = main.client.networkExit;
+            return JSON.stringify({ rows: exit.rows.length, networks: exit.networks.length, active: exit.networks.filter(network => network.active).length,
+                                    decision: exit.decision.kind, runs: exit.runs, canChange: main.client.canChange });
+        }
+
+        // Marks a network (by its id) with a choice: "none", "auto" or a node's stable id
+        function setNetworkExit(networkId: string, choice: string): void {
+            const node = main.client.exitNodes.own.find(option => option.id === choice);
+            main.client.networkExit.setChoice(networkId, choice === "" ? null : choice, node?.name ?? "", "");
         }
 
         // Diagnostics need no privileges; their state without addresses or names

@@ -1,0 +1,11 @@
+{
+  "TCP": {
+    "2222": {
+      "TCPForward": "127.0.0.1:22"
+    },
+    "5432": {
+      "TCPForward": "127.0.0.1:5432",
+      "TerminateTLS": "self.example-tailnet.ts.net"
+    }
+  }
+}

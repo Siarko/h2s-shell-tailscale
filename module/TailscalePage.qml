@@ -466,6 +466,15 @@ ColumnLayout {
         need: root.need
         onToggled: root._free && root.client.setAllowLan(!checked)
     }
+    // Step 5: another VPN up beside the exit node (both want all traffic; Tailscale's wins)
+    Hint {
+        visible: root._running && root.view?.exitNode !== null && (Api.vpnsUp ?? []).some(vpn => vpn.provider !== (root.module?.moduleId ?? "tailscale"))
+        text: "Another VPN is on too. The exit node takes all traffic."
+    }
+    NetworkExitTable {
+        Layout.fillWidth: true
+        client: root.client
+    }
 
     // ── Network ──
     SectionTitle {
@@ -515,6 +524,24 @@ ColumnLayout {
         Layout.fillWidth: true
         client: root.client
         need: root.need
+    }
+
+    // ── Serve and Funnel, certificates, tailnet lock (step 5) ──
+    ServeSection {
+        Layout.fillWidth: true
+        client: root.client
+        need: root.need
+        shown: root.shown
+    }
+    CertSection {
+        Layout.fillWidth: true
+        client: root.client
+        shown: root.shown
+    }
+    LockSection {
+        Layout.fillWidth: true
+        client: root.client
+        shown: root.shown
     }
 
     // ── Devices ──

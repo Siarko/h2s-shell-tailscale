@@ -5,7 +5,7 @@ listed among the shell's VPNs (connect, disconnect, log in and out, exit nodes),
 its own for the main switches, the accounts, this device, sharing this computer (exit node, routes,
 SSH server, web interface), Taildrop (sending files, saving received ones), the devices and diagnostics. The plan is the shell's
 `docs/plans/tailscale.md`; the module system it plugs into is `docs/plans/modules.md`. It needs
-module API 1.2 (the VPN slots, the handle's `resumed()`, the pages' `shown`).
+module API 1.3 (the VPN slots, the handle's `resumed()`, the pages' `shown`; since 1.3 the networks and the VPNs up).
 
 ## What works (delivery step 1)
 
@@ -206,7 +206,44 @@ pasting paths and dropping files work without them.
 seam); `sh`, `find`, `mv`, `mktemp`, `rm`, `test`, `cat` are found through PATH, like the module's
 other small helpers.
 
-Not yet: serve and funnel, a bar widget of its own (delivery steps 5–6 of the plan's §8).
+## What works (delivery step 5)
+
+- **Serve and Funnel** (a collapsed section): the current config (`serve status --json` — any user
+  may read it: LocalAPI GET serve-config needs read access only), each entry with where it listens,
+  what it serves, "Public" when Funnel is on, its links to copy. Share a local port over HTTPS
+  (`serve --bg --yes --https=<443|8443|10000> [--set-path=/x] http://127.0.0.1:<port>`; `funnel` in
+  place of `serve` for the internet), a TCP forward (`serve --bg --yes --tcp=<port>
+  tcp://127.0.0.1:<port>`), Funnel on or off per HTTPS entry (the entry's own handler sent again with
+  `funnel` or `serve` — the CLI's only way), remove one (`serve --bg --yes --https=<port>
+  --set-path=<mount> off`), stop all (`serve reset`, behind the delete button). Every change is
+  planned again from prefs and the config read under the change lock (another account since the
+  click: "Changed meanwhile"). Shown when unmet, with the admin console: connected, MagicDNS, HTTPS
+  certificates, the `funnel` attribute and a port its `funnel-ports` capability lists, shields up off.
+- **Certificates** (collapsed): for this computer's MagicDNS name (status's CertDomains, never
+  typed), the operator only, as you: `tailscale cert --cert-file=… --key-file=… <name>` into
+  `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/tailscale/certs` (700, not a link; key 600, certificate
+  644, as the CLI writes them). The paths to copy and the end date (openssl, when installed). Not
+  renewed by itself.
+- **Tailnet lock**: status only (`lock status --json`, any user may): off, on and signed, or locked
+  out — then the entry asks for you while connected ("Open admin console"); the keys to copy and the
+  trusted keys' count. Initialising, signing, adding or removing keys and disabling the lock are the
+  tailnet's administration and not offered.
+- **Exit node by network** (in Exit node): mark networks (the shell's saved Wi-Fi and Ethernet
+  networks, module API 1.3) with no exit node, automatic (`auto:any`) or one of this tailnet's exit
+  nodes. When the marked networks that are up change, the module sets or clears the exit node once;
+  a choice made by hand afterwards stays until the networks change. Two marked networks up that
+  disagree: nothing. Only for the operator (an automatic change never asks for a password); not the
+  operator: "Needs the operator". Offering an exit node blocks using one, as in step 3.
+- **Another VPN** up beside the exit node: one line (both want all traffic; Tailscale's wins). The
+  shell says which VPNs are up, not whether one is a full tunnel: the line shows for any.
+
+**Left out, with the reason** (tailscale 1.104.4's source): serving files and folders — `tailscaled`
+(root) opens them at request time, following links (ipnlocal serveFileOrDirectory), and the daemon
+asks for root or a sudo-capable operator for any config holding one (ipn/localapi/serve.go): existing
+ones are listed and may be removed, never added. Unix sockets, Tailscale Services, foreground
+`serve`: counted, not managed. Funnel over TCP. Certificate renewal. Changing the tailnet lock.
+
+Not yet: a bar widget of its own (delivery step 6 of the plan's §8).
 
 ## What needs root (asked through pkexec, answered by the shell's polkit agent)
 
@@ -216,7 +253,7 @@ again as `pkexec <timeout> -k 5 <limit> <tailscale> …` — only after a click:
 LAN, routes, DNS, shields up, hostname, nickname, operator; since step 3: offering the exit node and routes,
 SSH, the web interface, app connector, NAT, stateful filtering, peer relay, posture, update checks and
 automatic updates), `switch <id>`, `switch remove
-<id>`, and the read `switch --list --json`. Taildrop (step 4) never runs through pkexec: it is the operator's, as you. Never through pkexec: `status --json`,
+<id>`, and the read `switch --list --json`. Since step 5: serve and Funnel changes (`serve …`, `funnel …`, `serve reset`), after a click. Certificates and the exit node by network never run through pkexec (the operator only, as you). Taildrop (step 4) never runs through pkexec: it is the operator's, as you. Never through pkexec: `status --json`,
 `debug prefs`, `exit-node suggest`, the bus, `netcheck`, `dns status`, `debug derp-map`,
 `version`, `ping` (any user may), the two IP-forwarding files in /proc, and `systemctl start tailscaled.service` (systemd asks
 polkit itself).
@@ -235,6 +272,7 @@ states, never the networks), `advertiseRoute <network>`, `removeRoute <network>`
 <true|false>`, `setSsh <true|false>` (under the same rule as `setHostname`), `readForwarding`;
 `profiles` also says `namePending` and `nameNote`.
 Since step 4: `taildrop` (counts and states: targets, the send's per-file outcomes, waiting count, saves — no names, paths or addresses), `sendFile <device id> <absolute path>` (the operator only, as you: never a prompt), `cancelSend`, `saveReceived` (the operator only: never a prompt).
+Since step 5: `serve` (counts and states: entries, types, ports, Funnel per entry, what is missing — no names or links), `readServe`, `sharePort <port> <local port>`, `setFunnel <port> <true|false>` (under the rule of `setHostname`), `tailnetLock` (read, enabled, signed, locked out, trusted keys), `readTailnetLock`, `networkExit` (rows, networks, decision, runs), `setNetworkExit <network id> <none|auto|node id>`.
 
 
 ## Trying it in a development shell
@@ -272,6 +310,10 @@ module/                 the module itself — what gets installed
   TaildropRules.qml     pure: targets, paths, the bus's file fields, safe names, the save script
   TaildropClient.qml    Taildrop's live side, on the client's runner and operation lock
   TaildropSection.qml   the page's Taildrop (send, received files, folder, conflicts, auto-save)
+  Serve{Rules,Client,Section}.qml        serve and Funnel (step 5)
+  Cert{Rules,Client,Section}.qml         certificates
+  Lock{Rules,Client,Section}.qml         tailnet lock (status)
+  NetworkExit{Rules,Client,Table}.qml    the exit node by network
   tests/                its suites (extend the shell's TestCase: `import qs.tests`)
 fixtures/               redacted real outputs and synthetic ones (see fixtures/README.md)
 tools/

@@ -1,0 +1,59 @@
+{
+  "TCP": {
+    "80": {
+      "HTTP": true
+    }
+  },
+  "Web": {
+    "self.example-tailnet.ts.net:80": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:8080"
+        },
+        "/old": {
+          "Redirect": "https://self.example-tailnet.ts.net/"
+        }
+      }
+    }
+  },
+  "Services": {
+    "svc:example": {
+      "TCP": {
+        "443": {
+          "HTTPS": true
+        },
+        "5432": {
+          "TCPForward": "127.0.0.1:5432"
+        }
+      },
+      "Web": {
+        "example.example-tailnet.ts.net:443": {
+          "Handlers": {
+            "/": {
+              "Proxy": "http://127.0.0.1:9000"
+            }
+          }
+        }
+      }
+    }
+  },
+  "Foreground": {
+    "0000000000000001": {
+      "TCP": {
+        "10000": {
+          "HTTPS": true
+        }
+      },
+      "Web": {
+        "self.example-tailnet.ts.net:10000": {
+          "Handlers": {
+            "/": {
+              "Proxy": "http://127.0.0.1:5000"
+            }
+          }
+        }
+      }
+    }
+  },
+  "FutureField": 1
+}

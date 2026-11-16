@@ -1,0 +1,30 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    },
+    "8443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "self.example-tailnet.ts.net:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:3000"
+        }
+      }
+    },
+    "self.example-tailnet.ts.net:8443": {
+      "Handlers": {
+        "/": {
+          "Text": "hello"
+        }
+      }
+    }
+  },
+  "AllowFunnel": {
+    "self.example-tailnet.ts.net:443": true,
+    "self.example-tailnet.ts.net:8443": false
+  }
+}

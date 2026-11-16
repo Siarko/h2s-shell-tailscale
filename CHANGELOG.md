@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.6.0 — unreleased (delivery step 5: serve and Funnel, certificates, tailnet lock, an exit node per network)
+
+Needs the shell's module API 1.3 (`Api.networks`, `Api.vpnsUp`: the saved networks and the VPNs up, new
+for the exit node per network). The new live suite asks for 60 s (its three scenarios run one after another).
+
+- Serve (a collapsed section): what this computer shares, read with `serve status --json` (any user
+  may) when the section is open on screen and after each change — each entry with where it listens,
+  what it serves, "Public" when Funnel is on, its links to copy. Share a local port over HTTPS
+  (443, 8443 or 10000, an optional path) or as a TCP forward; Funnel on or off per HTTPS entry;
+  remove one; stop all (`serve reset`, behind the delete button). Every change is planned again
+  from prefs and the config read under the change lock; through pkexec when denied (a click only).
+  Files and folders are never added (tailscaled serves them as root); ones already there are
+  listed and can be removed. What is missing is said with the admin console's link: connect,
+  MagicDNS, HTTPS certificates, the Funnel attribute, shields up.
+- Certificates (collapsed): "Get certificate" for this computer's MagicDNS name, the operator
+  only, as the user, into `<data home>/h2s-shell/tailscale/certs` (700; key 600 as the CLI
+  writes it); the files to copy, the end date (openssl, when installed). No renewal.
+- Tailnet lock: on or off, signed or locked out, the keys to copy, the trusted keys' count. A
+  locked-out device raises attention on the entry while connected ("Open admin console"). Nothing
+  changes the lock.
+- Exit node by network: a table in the Exit node section; when the marked networks that are up
+  change, the exit node is set or cleared once (a choice made by hand afterwards stays). Only for
+  the operator (an automatic change never prompts). A line when another VPN is up beside the exit
+  node.
+- `errorKind`: the daemon's "must be root, or be an operator and able to run 'sudo tailscale'"
+  (a serve config holding a path) counts as denied. `parseStatus` keeps `certDomains`. Time limit
+  `cert` (180 s).
+- IPC: `serve`, `readServe`, `sharePort <port> <local port>`, `setFunnel <port> <true|false>`,
+  `tailnetLock`, `readTailnetLock`, `networkExit`, `setNetworkExit <network id> <choice>`.
+- Stand-ins: serve and Funnel (status, add, remove, reset, the CLI's and daemon's refusals), `cert`,
+  `lock status --json`, an `openssl` for the end date.
+
 ## 0.5.0 — unreleased (delivery step 4: Taildrop)
 
 Needs the shell's module API 1.2 (no core change: the dialogs are QtQuick.Dialogs, notifications

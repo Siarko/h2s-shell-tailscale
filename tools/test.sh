@@ -30,7 +30,7 @@ fresh() {
     rm -rf "$work/state" "$work/log" "$work/pkexec.log"
     mkdir -p "$work/state"
     unset SSH_CLIENT
-    unset TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT TS_FAKE_UP_DELAY TS_FAKE_UP_URL TS_FAKE_STATUS_HANG
+    unset TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT TS_FAKE_UP_DELAY TS_FAKE_UP_URL TS_FAKE_STATUS_HANG TS_FAKE_CERT_DELAY TS_FAKE_CERT_NOT_AFTER
     export TS_FAKE_STATE_DIR=$work/state TS_FAKE_LOG=$work/log TS_FAKE_PKEXEC_LOG=$work/pkexec.log
     export TS_FAKE_LOGIN_DELAY=0 TS_FAKE_USER=tester TS_FAKE_FIXTURES=$FIXTURES
 }
@@ -213,6 +213,202 @@ check "debug watch-ipn replays the pretty bus" cmp -s <("$TS" debug watch-ipn --
 check "serve status --json" grep -q '{}' <("$TS" serve status --json)
 check "lock status" grep -q "NOT enabled" <("$TS" lock status)
 check "every call was logged" test "$(wc -l < "$work/log")" -gt 10
+
+echo "=== stand-in tailscale: serve, funnel (step 5) ==="
+# Valid JSON (perl's JSON::PP, part of perl; without perl the check passes on a brace)
+valid_json() { if command -v perl > /dev/null; then perl -MJSON::PP -e 'local $/; JSON::PP->new->decode(<STDIN>)' 2> /dev/null; else grep -q '^[{[]'; fi; }
+serve_json() { "$TS" serve status --json; }
+fresh
+check "serve status --json with nothing served: {}" test "$(serve_json)" = "{}"
+check "serve status (text) with nothing served" grep -qx "No serve config" <("$TS" serve status)
+check "funnel status --json: the same config" test "$("$TS" funnel status --json)" = "{}"
+run "$work/out" "$work/err" env TS_FAKE_DAEMON=down "$TS" serve status --json
+check "serve status: the daemon down → its text" test "$status" = 1 -a "$(head -c 6 "$work/err")" = "Failed"
+# Running, but HTTPS not enabled: the CLI prints control's text and link and exits 0, unchanged
+run "$work/out" "$work/err" env TS_FAKE_OPERATOR=1 "$TS" serve --bg --yes --https=443 3000
+check "HTTPS not enabled: exit 0 with the enable link" test "$status" = 0
+check "… the enable link on stdout" grep -q "https://login.tailscale.com/f/serve?node=REDACTED" "$work/out"
+check "… nothing changed" test "$(serve_json)" = "{}"
+run "$work/out" "$work/err" env TS_FAKE_OPERATOR=1 "$TS" funnel --bg 3000
+check "funnel without HTTPS: NodeCanFunnel's text, exit 1" test "$status" = 1 -a "$(cat "$work/err")" = "Funnel not available; HTTPS must be enabled. See https://tailscale.com/s/https."
+printf 'https\n' > "$work/state/caps"
+check "caps file: added to Self's CapMap" grep -q '^      "https": null,$' <("$TS" status --json)
+check "… status still valid JSON" valid_json < <("$TS" status --json)
+run "$work/out" "$work/err" env TS_FAKE_OPERATOR=1 "$TS" funnel --bg 3000
+check "funnel without the funnel attribute: its text" grep -qxF 'Funnel not available; "funnel" node attribute not set. See https://tailscale.com/s/no-funnel.' "$work/err"
+printf 'https\nfunnel\nhttps://tailscale.com/cap/funnel-ports?ports=8443,10000-10010\n' > "$work/state/caps"
+run "$work/out" "$work/err" env TS_FAKE_OPERATOR=1 "$TS" funnel --bg --https=8443 3000
+check "funnel ports without 443: refused for 443 (whatever port was asked, as the CLI)" grep -qx "port 443 is not allowed for funnel; allowed ports are: 8443,10000-10010" "$work/err"
+check "… exit 1, nothing changed" test "$status" = 1 -a "$(serve_json)" = "{}"
+rm -f "$work/state/caps"
+
+# The scenario "serve": status-serve.json (HTTPS, Funnel on 443, 8443, 10000; a cert domain)
+fresh
+printf 'serve\n' > "$work/state/scenario"
+check "scenario serve replays status-serve.json" cmp -s <("$TS" status --json) "$FIXTURES/status-serve.json"
+check "scenario serve: the running prefs" cmp -s <("$TS" debug prefs) "$FIXTURES/prefs-running.json"
+run "$work/out" "$work/err" "$TS" serve --bg --https=443 3000
+check "serve as a non-operator: the CLI-wrapped denial" grep -qx "sending serve config: Access denied: serve config denied" "$work/err"
+check "… the advice with the command as typed" grep -qF "Use 'sudo tailscale serve --bg --https=443 3000'." "$work/err"
+check "… exit 1, nothing changed" test "$status" = 1 -a "$(serve_json)" = "{}"
+export TS_FAKE_OPERATOR=1
+run "$work/out" "$work/err" "$TS" serve --bg --yes --https=443 3000
+check "serve a port: ok" test "$status" = 0
+check "… messageForPort's text" cmp -s "$work/out" <(printf 'Available within your tailnet:\n\nhttps://self.example-tailnet.ts.net/\n|-- proxy http://127.0.0.1:3000\n\nServe started and running in the background.\nTo disable the proxy, run: tailscale serve --https=443 off\n')
+"$TS" serve --bg --yes --https=443 --set-path=/api http://127.0.0.1:8080 > /dev/null
+check "a second mount: serve-proxy.json exactly" cmp -s <(serve_json) "$FIXTURES/serve-proxy.json"
+check "serve status (text): the tree" grep -qx '|-- /api proxy http://127.0.0.1:8080' <("$TS" serve status)
+run "$work/out" "$work/err" "$TS" funnel --bg --yes --https=8443 text:hello
+check "funnel a port: Available on the internet" test "$status" = 0 -a "$(head -n 1 "$work/out")" = "Available on the internet:"
+check "… AllowFunnel true for it" grep -q '"self.example-tailnet.ts.net:8443": true' <(serve_json)
+run "$work/out" "$work/err" "$TS" serve --bg --yes --https=8443 text:hello
+check "serve over a funnelled port: the CLI's odd 'Removing Funnel' line" grep -qx "Removing Funnel for self.example-tailnet.ts.net:self.example-tailnet.ts.net:8443" "$work/err"
+check "… AllowFunnel gone (an empty map omitted)" test "$(serve_json | grep -c AllowFunnel)" = 0
+check "… valid JSON throughout" valid_json < <(serve_json)
+"$TS" serve --bg --yes --tcp=2222 22 > "$work/out"
+check "tcp: TCPForward 127.0.0.1:22" grep -q '"TCPForward": "127.0.0.1:22"' <(serve_json)
+check "tcp: the message lists the addresses" grep -qxF '|-- tcp://[fd7a:115c:a1e0::1]:2222' "$work/out"
+"$TS" serve --bg --yes --tls-terminated-tcp=5432 tcp://127.0.0.1:5432 > /dev/null
+check "tls-terminated-tcp: TerminateTLS the host" grep -q '"TerminateTLS": "self.example-tailnet.ts.net"' <(serve_json)
+check "TCP ports sorted as Go sorts map keys (as strings)" test "$(serve_json | grep -o '^    "[0-9]*"' | tr -d ' "' | paste -sd ,)" = "2222,443,5432,8443"
+run "$work/out" "$work/err" "$TS" serve --bg --yes --tcp=443 22
+check "conflict: TCP on a web port" grep -qx "error: failed to apply TCP serve: cannot serve TCP; already serving web on 443 for self.example-tailnet.ts.net" "$work/err"
+# shellcheck disable=SC2016 # the CLI's backquotes, literally
+check "… the help hint, exit 1" test "$status" = 1 -a "$(tail -n 1 "$work/err")" = 'try `tailscale serve --help` for usage info'
+run "$work/out" "$work/err" "$TS" serve --bg --yes --https=2222 3000
+check "conflict: web on a TCP port" grep -qx "error: failed apply web serve: cannot serve web; already serving TCP" "$work/err"
+run "$work/out" "$work/err" "$TS" serve --bg --yes --tcp=2223 tcp://example.com
+check "tcp target without a port" grep -qF 'TCP target "tcp://example.com" must include a port' "$work/err"
+run "$work/out" "$work/err" "$TS" serve --bg --yes /nonexistent/x
+check "a path that does not exist: invalid path" grep -qx "error: failed apply web serve: invalid path" "$work/err"
+before=$(serve_json)
+run "$work/out" "$work/err" "$TS" serve --bg --yes --https=9443 "$work"
+check "a path, not root: the LocalAPI's 401, nothing saved" test "$status" = 1 -a "$(serve_json)" = "$before"
+check "… its text" grep -qx "sending serve config: 401 Unauthorized: must be root, or be an operator and able to run 'sudo tailscale' to serve a path or Unix socket" "$work/err"
+run "$work/out" "$work/err" "$PKEXEC" "$TS" serve --bg --yes --https=9443 --set-path=/share "$work"
+check "a path as root: a directory mount ends in /" grep -q '"/share/": {' <(serve_json)
+"$PKEXEC" "$TS" serve --bg --yes --https=9443 off > /dev/null
+run "$work/out" "$work/err" "$TS" serve 3000
+check "foreground serve: not replayed (exit 2)" test "$status" = 2
+run "$work/out" "$work/err" "$TS" serve 3000 --bg
+check "a flag after the target: invalid argument format (Go's flag parsing)" grep -qx "Error: invalid argument format" "$work/err"
+run "$work/out" "$work/err" "$TS" serve --bg a b c
+check "three arguments: invalid number" grep -qx "Error: invalid number of arguments (3)" "$work/err"
+run "$work/out" "$work/err" "$TS" serve --bg --https=443 --tcp=22 3000
+check "two listener types refused" grep -qx "error: cannot serve multiple types for a single mount point" "$work/err"
+run "$work/out" "$work/err" env TS_FAKE_STATE=stopped "$TS" serve --bg 3000
+check "stopped: 'Tailscale is stopped.', exit 1" test "$status" = 1 -a "$(cat "$work/err")" = "Tailscale is stopped."
+# Turning off
+run "$work/out" "$work/err" "$TS" serve --bg --yes --https=443 --set-path=/nope off
+check "off: a mount that does not exist" grep -qx "error: failed to remove web serve: handler does not exist" "$work/err"
+"$TS" serve --bg --yes --https=443 --set-path=/api off
+check "off with --set-path: only that mount" test "$(serve_json | grep -c '"/api"')|$(serve_json | grep -c '"Proxy": "http://127.0.0.1:3000"')" = "0|1"
+"$TS" funnel --bg --yes 3000 > /dev/null
+"$TS" serve --bg --https=443 --set-path=/b 3001 > /dev/null 2>&1
+"$TS" funnel --bg 3000 > /dev/null
+run "$work/out" "$work/err" "$TS" serve --bg --https=443 off
+check "off, several mounts, no --yes, no terminal: prompt.YesNo's default (yes) — all gone" test "$status" = 0 -a "$(serve_json | grep -c 'self.example-tailnet.ts.net:443')" = 0
+check "… the port's listener and Funnel went with the last mount" test "$(serve_json | grep -c '"443"')" = 0
+run "$work/out" "$work/err" "$TS" serve --bg --tcp=9999 off
+check "tcp off without a forwarder" grep -qx "error: failed to remove TCP serve: serve config does not exist" "$work/err"
+"$TS" serve --bg --tcp=2222 off
+check "tcp off: the forwarder gone" test "$(serve_json | grep -c 2222)" = 0
+# Shields up: the daemon refuses any config with Funnel on
+"$TS" set --shields-up
+run "$work/out" "$work/err" "$TS" funnel --bg --yes 3000
+check "funnel under shields-up: the daemon's text, exit 1" test "$status" = 1
+check "… its text" grep -qx "sending serve config: updating config: Unable to turn on Funnel while shields-up is enabled" "$work/err"
+check "… nothing saved" test "$(serve_json | grep -c AllowFunnel)" = 0
+"$TS" set --shields-up=false
+run "$work/out" "$work/err" env -u TS_FAKE_OPERATOR "$TS" serve reset
+check "reset as a non-operator: denied" grep -qx "sending serve config: Access denied: serve config denied" "$work/err"
+"$TS" serve reset
+check "reset: {}" test "$(serve_json)" = "{}"
+# Seeded configs (raw JSON in the state dir)
+for fixture in serve-proxy serve-funnel serve-tcp serve-path serve-rich serve-empty; do
+    cp "$FIXTURES/$fixture.json" "$work/state/serve.json"
+    check "seeded $fixture.json: status --json prints it unchanged" cmp -s <(serve_json) "$FIXTURES/$fixture.json"
+    check "… valid JSON" valid_json < "$FIXTURES/$fixture.json"
+done
+cp "$FIXTURES/serve-funnel.json" "$work/state/serve.json"
+"$TS" serve --bg --yes --https=8443 text:bye 2> "$work/err" > /dev/null
+check "seeded serve-funnel: a change applies (AllowFunnel false for 8443 → removed, with the line)" grep -qx "Removing Funnel for self.example-tailnet.ts.net:self.example-tailnet.ts.net:8443" "$work/err"
+check "… the rest kept" grep -q '"self.example-tailnet.ts.net:443": true' <(serve_json)
+cp "$FIXTURES/serve-rich.json" "$work/state/serve.json"
+run "$work/out" "$work/err" "$TS" serve --bg --yes --https=443 3000
+check "seeded serve-rich (Services, Foreground, Redirect, an unknown field): changes refused, exit 2" test "$status" = 2
+check "… says why" grep -q "changes not replayed" "$work/err"
+check "… unchanged" cmp -s <(serve_json) "$FIXTURES/serve-rich.json"
+"$TS" serve reset
+check "… reset still replaces it" test "$(serve_json)" = "{}"
+unset TS_FAKE_OPERATOR
+
+echo "=== stand-in tailscale: cert (step 5) ==="
+fresh
+mkdir -p "$work/certs"
+run "$work/out" "$work/err" "$TS" cert --cert-file="$work/certs/c.crt" --key-file="$work/certs/c.key" self.example-tailnet.ts.net
+check "cert as a non-operator: cert access denied" test "$status" = 1
+check "… its text" grep -qx "Access denied: cert access denied" "$work/err"
+export TS_FAKE_OPERATOR=1
+run "$work/out" "$work/err" "$TS" cert --cert-file="$work/certs/c.crt" --key-file="$work/certs/c.key" self.example-tailnet.ts.net
+check "cert without cert domains: the daemon's 500" grep -qx "500 Internal Server Error: your Tailscale account does not support getting TLS certs" "$work/err"
+printf 'self.example-tailnet.ts.net\nalias.example-tailnet.ts.net\n' > "$work/state/cert-domains"
+check "cert-domains file: status's CertDomains" test "$("$TS" status --json | grep -A2 '"CertDomains"' | tail -n 1 | tr -d ' ')" = '"alias.example-tailnet.ts.net"'
+check "… still valid JSON" valid_json < <("$TS" status --json)
+run "$work/out" "$work/err" "$TS" cert --cert-file="$work/certs/c.crt" --key-file="$work/certs/c.key" other.example.com
+check "cert for another domain: Go's %q list" grep -qxF '500 Internal Server Error: invalid domain "other.example.com"; must be one of ["self.example-tailnet.ts.net" "alias.example-tailnet.ts.net"]' "$work/err"
+check "… nothing written" test ! -e "$work/certs/c.crt"
+run "$work/out" "$work/err" env TS_FAKE_CERT_NOT_AFTER="Mar  1 00:00:00 2027 GMT" "$TS" cert --cert-file="$work/certs/c.crt" --key-file="$work/certs/c.key" --min-validity=720h self.example-tailnet.ts.net
+check "cert: ok, both written" test "$status" = 0
+check "… Wrote public cert" grep -qx "Wrote public cert to $work/certs/c.crt" "$work/out"
+check "… Wrote private key" grep -qx "Wrote private key to $work/certs/c.key" "$work/out"
+check "… cert 0644, key 0600" test "$(stat -c %a "$work/certs/c.crt")/$(stat -c %a "$work/certs/c.key")" = "644/600"
+check "… the stand-in PEM with the expiry" grep -qx "STAND-IN self.example-tailnet.ts.net notAfter=Mar  1 00:00:00 2027 GMT" "$work/certs/c.crt"
+check "… no temp file left" test "$(find "$work/certs" -mindepth 1 | wc -l)" = 2
+run "$work/out" "$work/err" env TS_FAKE_CERT_NOT_AFTER="Mar  1 00:00:00 2027 GMT" "$TS" cert --cert-file="$work/certs/c.crt" --key-file="$work/certs/c.key" self.example-tailnet.ts.net
+check "cert again, the same: unchanged" grep -qx "Public cert unchanged at $work/certs/c.crt" "$work/out"
+check "… key unchanged too" grep -qx "Private key unchanged at $work/certs/c.key" "$work/out"
+(cd "$work/certs" && "$TS" cert self.example-tailnet.ts.net > /dev/null)
+check "cert without file flags: DOMAIN.crt / DOMAIN.key in the working directory" test -f "$work/certs/self.example-tailnet.ts.net.crt" -a -f "$work/certs/self.example-tailnet.ts.net.key"
+start=$SECONDS
+TS_FAKE_CERT_DELAY=1 "$TS" cert --cert-file="$work/certs/d.crt" --key-file="$work/certs/d.key" self.example-tailnet.ts.net > /dev/null
+check "TS_FAKE_CERT_DELAY: it takes its time" test $((SECONDS - start)) -ge 1
+printf 'serve\n' > "$work/state/scenario"; rm -f "$work/state/cert-domains"
+run "$work/out" "$work/err" "$TS" cert --cert-file="$work/certs/e.crt" --key-file="$work/certs/e.key" self.example-tailnet.ts.net
+check "scenario serve: its CertDomains allow the cert" test "$status" = 0 -a -f "$work/certs/e.crt"
+unset TS_FAKE_OPERATOR
+
+echo "=== stand-in openssl (step 5) ==="
+OPENSSL=$TOOLS/stand-in/openssl
+run "$work/out" "$work/err" "$OPENSSL" x509 -noout -enddate -in "$work/certs/c.crt"
+check "openssl x509 -enddate: notAfter from the stand-in cert" test "$status" = 0 -a "$(cat "$work/out")" = "notAfter=Mar  1 00:00:00 2027 GMT"
+run "$work/out" "$work/err" "$OPENSSL" x509 -noout -enddate -in "$work/certs/c.key"
+check "a file without it: unable to load certificate, exit 1" test "$status" = 1 -a "$(cat "$work/err")" = "unable to load certificate"
+run "$work/out" "$work/err" "$OPENSSL" x509 -noout -enddate -in "$work/certs/none"
+check "no file: the same" test "$status" = 1
+run "$work/out" "$work/err" "$OPENSSL" req -new
+check "anything else: not replayed (exit 2)" test "$status" = 2
+check "openssl: logged" grep -q "^openssl x509 -noout -enddate -in " "$work/log"
+
+echo "=== stand-in tailscale: lock status (step 5) ==="
+fresh
+check "lock status --json, lock off: lock-disabled.json" cmp -s <("$TS" lock status --json) "$FIXTURES/lock-disabled.json"
+check "lock status: the real first line" test "$("$TS" lock status | head -n 1)" = "Tailnet Lock is NOT enabled."
+cp "$FIXTURES/lock-signed.json" "$work/state/lock.json"
+check "lock.json: printed by lock status --json" cmp -s <("$TS" lock status --json) "$FIXTURES/lock-signed.json"
+check "lock signed: ENABLED, accessible" test "$("$TS" lock status | head -n 1)" = "Tailnet Lock is ENABLED."
+check "… accessible" grep -q "^This node is accessible under Tailnet Lock" <("$TS" lock status)
+check "… its own key marked (self)" grep -qP '^\ttlpub:0{63}1\t1\t\(self\)$' <("$TS" lock status)
+cp "$FIXTURES/lock-locked-out.json" "$work/state/lock.json"
+check "lock locked out: the LOCKED OUT line" grep -q "^This node is LOCKED OUT by Tailnet Lock" <("$TS" lock status)
+check "… the filtered peer listed" grep -qP '^\tpeer3.example-tailnet.ts.net.\t100.64.0.3,fd7a:115c:a1e0::3\tnPEER3CNTRL\tnodekey:peer3$' <("$TS" lock status)
+for fixture in lock-disabled lock-signed lock-locked-out; do
+    check "$fixture.json is valid JSON" valid_json < "$FIXTURES/$fixture.json"
+done
+run "$work/out" "$work/err" "$TS" lock sign nodekey:x
+check "other lock commands: not replayed (exit 2)" test "$status" = 2
+run "$work/out" "$work/err" "$TS" lock status extra
+check "lock status with an argument: the CLI's error" test "$status" = 1 -a "$(cat "$work/err")" = "tailscale lock status: unexpected argument"
 
 echo "=== stand-in pkexec ==="
 fresh

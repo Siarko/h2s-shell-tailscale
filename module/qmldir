@@ -9,3 +9,15 @@ SshSection 1.0 SshSection.qml
 singleton TaildropRules 1.0 TaildropRules.qml
 TaildropClient 1.0 TaildropClient.qml
 TaildropSection 1.0 TaildropSection.qml
+singleton ServeRules 1.0 ServeRules.qml
+ServeClient 1.0 ServeClient.qml
+ServeSection 1.0 ServeSection.qml
+singleton CertRules 1.0 CertRules.qml
+CertClient 1.0 CertClient.qml
+CertSection 1.0 CertSection.qml
+singleton LockRules 1.0 LockRules.qml
+LockClient 1.0 LockClient.qml
+LockSection 1.0 LockSection.qml
+singleton NetworkExitRules 1.0 NetworkExitRules.qml
+NetworkExitClient 1.0 NetworkExitClient.qml
+NetworkExitTable 1.0 NetworkExitTable.qml

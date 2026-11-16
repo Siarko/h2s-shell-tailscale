@@ -1,0 +1,46 @@
+{
+  "SchemaVersion": "1",
+  "Enabled": true,
+  "PublicKey": "tlpub:0000000000000000000000000000000000000000000000000000000000000001",
+  "NodeKey": "nodekey:0000000000000000000000000000000000000000000000000000000000000001",
+  "Head": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "NodeKeySigned": true,
+  "NodeKeySignature": {
+    "SigKind": "direct",
+    "KeyID": "tlpub:0000000000000000000000000000000000000000000000000000000000000001",
+    "Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+  },
+  "TrustedKeys": [
+    {
+      "Kind": "25519",
+      "Votes": 1,
+      "Public": "tlpub:0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    {
+      "Kind": "25519",
+      "Votes": 2,
+      "Public": "tlpub:0000000000000000000000000000000000000000000000000000000000000002",
+      "Meta": {
+        "purpose": "example"
+      }
+    }
+  ],
+  "VisiblePeers": [
+    {
+      "ID": "nPEER2CNTRL",
+      "DNSName": "peer2.example-tailnet.ts.net.",
+      "TailscaleIPs": [
+        "100.64.0.2",
+        "fd7a:115c:a1e0::2"
+      ],
+      "NodeKey": "nodekey:peer2",
+      "NodeKeySignature": {
+        "SigKind": "direct",
+        "KeyID": "tlpub:0000000000000000000000000000000000000000000000000000000000000002",
+        "Signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+      }
+    }
+  ],
+  "FilteredPeers": [],
+  "State": 1234567890
+}

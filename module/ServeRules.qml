@@ -1,0 +1,390 @@
+pragma Singleton
+
+import QtQuick
+import Quickshell
+
+// Serve and Funnel (delivery step 5), pure: the serve config as the daemon holds it
+// (`tailscale serve status --json`, ipn.ServeConfig), what the page lists, what is missing
+// before anything can be shared, and the argv of each change. Everything from tailscale
+// 1.104.4's source:
+//   - reading the config: LocalAPI GET serve-config needs read access only (ipn/localapi/serve.go
+//     PermitRead) — any user; observed: `serve status --json` prints `{}` with nothing served;
+//   - changing it: POST serve-config needs write access (root or the operator: 403 "serve config
+//     denied" otherwise); a config holding a Path handler or a unix socket needs a local admin —
+//     root, or the operator able to `sudo tailscale` (authorizeServeConfigForGOOSAndUserContext);
+//   - the CLI reads the config, changes one handler and writes it back with the ETag it read
+//     ("Another client is changing the serve config; please try again."), so one command never
+//     drops another's entry. `serve` sets a handler and turns Funnel OFF for its host:port,
+//     `funnel` sets it and turns Funnel ON (cli/serve_v2.go setServe → applyFunnel); "off"
+//     removes a handler (the port's Funnel goes with its last mount: RemoveWebHandler);
+//   - files and folders are served by tailscaled itself — root — at request time, following
+//     links (ipnlocal serveFileOrDirectory: os.Stat/os.Open, http.Dir): a path the user chose
+//     would be read by root long after any check. So the module never ADDS a path; existing
+//     ones are listed and may be removed (removing reads nothing);
+//   - `serve` with HTTPS on a node without the "https" capability enters an interactive flow
+//     that prints a link and may wait (enableFeatureInteractive): the module checks the
+//     capability first and never sends it then;
+//   - Funnel needs the "https" and "funnel" node capabilities (ipn.NodeCanFunnel) and a port the
+//     funnel-ports capability lists ("https://tailscale.com/cap/funnel-ports?ports=443,8443,10000",
+//     ipn.CheckFunnelPort; the CLI only checks 443 itself — the module checks the real port);
+//     the daemon refuses Funnel while shields-up is on (ipnlocal setServeConfigLocked).
+Singleton {
+    id: root
+
+    readonly property string adminDnsUrl: "https://login.tailscale.com/admin/dns"
+    readonly property string adminAclsUrl: "https://login.tailscale.com/admin/acls"
+    readonly property string httpsCapability: "https"
+    readonly property string funnelCapability: "funnel"
+    readonly property string funnelPortsCapability: "https://tailscale.com/cap/funnel-ports"
+    // Ports offered for HTTPS (Funnel's usual ones, so Funnel can be turned on later)
+    readonly property var httpsPorts: [443, 8443, 10000]
+    readonly property int maxEntries: 64
+
+    function _isObject(value) {
+        return value !== null && typeof value === "object" && !Array.isArray(value);
+    }
+
+    function _own(object, key) {
+        return _isObject(object) && Object.prototype.hasOwnProperty.call(object, key) ? object[key] : undefined;
+    }
+
+    function _text(value, length) {
+        return typeof value === "string" ? value.slice(0, length ?? 1024) : "";
+    }
+
+    function _port(value) {
+        const number = typeof value === "number" ? value : (typeof value === "string" && /^\d{1,5}$/.test(value) ? Number(value) : NaN);
+        return Number.isInteger(number) && number >= 1 && number <= 65535 ? number : 0;
+    }
+
+    // "host:port" (a HostPort; an IPv6 host in brackets) → { host, port } | null
+    function _hostPort(text) {
+        const match = /^(.*):(\d{1,5})$/.exec(String(text));
+        if (!match || _port(match[2]) === 0)
+            return null;
+        return { host: match[1].replace(/^\[|\]$/g, ""), port: Number(match[2]) };
+    }
+
+    // The link a listener gives (no default port in it)
+    function urlFor(scheme, host, port, mount) {
+        const shown = (scheme === "https" && port === 443) || (scheme === "http" && port === 80) ? "" : ":" + port;
+        return scheme + "://" + host + shown + (mount || "/");
+    }
+
+    // A handler → { what: "proxy" | "text" | "path" | "redirect" | "unknown", target }
+    function _handler(raw) {
+        if (_text(_own(raw, "Proxy")) !== "")
+            return { what: "proxy", target: _text(_own(raw, "Proxy"), 300) };
+        if (_text(_own(raw, "Path")) !== "")
+            return { what: "path", target: _text(_own(raw, "Path"), 300) };
+        if (_text(_own(raw, "Text")) !== "")
+            return { what: "text", target: _text(_own(raw, "Text"), 2000) };
+        if (_text(_own(raw, "Redirect")) !== "")
+            return { what: "redirect", target: _text(_own(raw, "Redirect"), 300) };
+        return { what: "unknown", target: "" };
+    }
+
+    // `serve status --json` (text or object) → { ok, error, empty, entries, funnelOn, services,
+    // foreground }. An entry: { key, type ("https" | "http" | "tcp" | "tls-terminated-tcp"), port,
+    // mount ("" for TCP), host, what (above, "tcp" for a forwarder), target, funnel, url, urls }.
+    // Only the node's own listeners are entries; `services` and `foreground` count what is shown
+    // but not managed here (Tailscale Services, `serve` running in a terminal). Unknown fields are
+    // ignored; anything not an object is not ok.
+    function parseConfig(input) {
+        const result = { ok: false, error: "", empty: true, entries: [], funnelOn: false, services: 0, foreground: 0 };
+        let raw = input;
+        if (typeof input === "string") {
+            try {
+                raw = JSON.parse(input.trim() === "" || input.trim() === "null" ? "{}" : input);
+            } catch (error) {
+                result.error = "not JSON";
+                return result;
+            }
+        }
+        if (raw === null)
+            raw = {};
+        if (!_isObject(raw)) {
+            result.error = "not an object";
+            return result;
+        }
+        result.ok = true;
+        const tcp = _isObject(_own(raw, "TCP")) ? _own(raw, "TCP") : {};
+        const web = _isObject(_own(raw, "Web")) ? _own(raw, "Web") : {};
+        const funnel = _isObject(_own(raw, "AllowFunnel")) ? _own(raw, "AllowFunnel") : {};
+        result.services = _isObject(_own(raw, "Services")) ? Object.keys(_own(raw, "Services")).length : 0;
+        result.foreground = _isObject(_own(raw, "Foreground")) ? Object.keys(_own(raw, "Foreground")).length : 0;
+        const funnelFor = (host, port) => Object.keys(funnel).some(key => {
+            const parsed = _hostPort(key);
+            return parsed !== null && parsed.port === port && (host === "" || parsed.host === host) && funnel[key] === true;
+        });
+        const entries = [];
+        for (const portKey of Object.keys(tcp).sort((a, b) => Number(a) - Number(b))) {
+            const port = _port(portKey);
+            const handler = _own(tcp, portKey);
+            if (port === 0 || !_isObject(handler))
+                continue;
+            const forward = _text(_own(handler, "TCPForward"), 300);
+            if (forward === "")
+                continue;
+            const terminated = _text(_own(handler, "TerminateTLS"), 300) !== "";
+            entries.push({ key: (terminated ? "tls-terminated-tcp" : "tcp") + ":" + port, type: terminated ? "tls-terminated-tcp" : "tcp",
+                           port: port, mount: "", host: "", what: "tcp", target: forward, funnel: funnelFor("", port), url: "", urls: [] });
+        }
+        for (const hostKey of Object.keys(web).sort()) {
+            const parsed = _hostPort(hostKey);
+            const server = _own(web, hostKey);
+            const handlers = _isObject(_own(server, "Handlers")) ? _own(server, "Handlers") : {};
+            if (parsed === null)
+                continue;
+            const listener = _own(tcp, String(parsed.port));
+            const type = _own(listener, "HTTP") === true ? "http" : "https";
+            for (const mount of Object.keys(handlers).sort()) {
+                if (!_isObject(_own(handlers, mount)) || !mount.startsWith("/"))
+                    continue;
+                const handler = _handler(_own(handlers, mount));
+                const url = urlFor(type, parsed.host, parsed.port, mount);
+                entries.push({ key: type + ":" + parsed.port + ":" + mount, type: type, port: parsed.port, mount: mount.slice(0, 300),
+                               host: parsed.host, what: handler.what, target: handler.target, funnel: funnelFor(parsed.host, parsed.port),
+                               url: url, urls: [url] });
+            }
+        }
+        // TCP forwarders' addresses: host:port, filled in by entriesFor (they need status)
+        result.entries = entries.slice(0, maxEntries);
+        result.empty = entries.length === 0 && result.services === 0 && result.foreground === 0;
+        result.funnelOn = Object.keys(funnel).some(key => funnel[key] === true);
+        return result;
+    }
+
+    // The entries with what status adds: a TCP forwarder's names to copy (MagicDNS name and the
+    // Tailscale addresses, with the port)
+    function entriesFor(config, status) {
+        const self = status?.self ?? null;
+        const host = String(self?.dnsName ?? "");
+        const addresses = (self?.addresses ?? []).map(address => address.includes(":") ? "[" + address + "]" : address);
+        return (config?.entries ?? []).map(entry => entry.what !== "tcp" ? entry
+            : Object.assign({}, entry, { urls: [host].concat(addresses).filter(name => name !== "").map(name => name + ":" + entry.port) }));
+    }
+
+    // The funnel-ports capability's ports → [numbers] (ranges expanded, at most 64), [] none
+    function funnelPorts(caps) {
+        for (const cap of (Array.isArray(caps) ? caps : [])) {
+            const text = String(cap);
+            if (!text.startsWith(funnelPortsCapability + "?"))
+                continue;
+            const match = /[?&]ports=([0-9,\-]*)/.exec(text);
+            const ports = [];
+            for (const part of (match ? match[1] : "").split(",")) {
+                const range = /^(\d{1,5})(?:-(\d{1,5}))?$/.exec(part);
+                if (!range)
+                    continue;
+                const first = _port(range[1]);
+                const last = range[2] ? _port(range[2]) : first;
+                for (let port = first; first > 0 && port <= last && ports.length < 64; port++)
+                    if (!ports.includes(port))
+                        ports.push(port);
+            }
+            return ports;
+        }
+        return [];
+    }
+
+    // What sharing needs (status and prefs as TailscaleRules parses them) → { connected, https,
+    // magicDns, funnelAllowed, funnelPorts, shieldsUp, canServeHttps, canFunnel, problems
+    // [{ kind, text, url }], funnelProblems [same] }. Unknown (no status): not connected.
+    function preconditions(status, prefs) {
+        const caps = status?.self?.caps ?? [];
+        const connected = status?.backendState === "Running";
+        const https = caps.includes(httpsCapability);
+        const magicDns = status?.tailnet?.magicDnsEnabled === true;
+        const funnelAllowed = caps.includes(funnelCapability);
+        const ports = funnelPorts(caps);
+        const shieldsUp = prefs?.shieldsUp === true;
+        const problems = [];
+        if (!connected)
+            problems.push({ kind: "not-connected", text: "Connect to share", url: "" });
+        if (connected && !magicDns)
+            problems.push({ kind: "magic-dns", text: "MagicDNS is off for this tailnet", url: adminDnsUrl });
+        if (connected && !https)
+            problems.push({ kind: "https", text: "HTTPS certificates are off for this tailnet", url: adminDnsUrl });
+        const funnelProblems = [];
+        if (connected && https && !funnelAllowed)
+            funnelProblems.push({ kind: "funnel", text: "Funnel is not allowed for this device", url: adminAclsUrl });
+        if (connected && shieldsUp)
+            funnelProblems.push({ kind: "shields-up", text: "Funnel needs incoming connections: shields up is on", url: "" });
+        return {
+            connected: connected, https: https, magicDns: magicDns, funnelAllowed: funnelAllowed, funnelPorts: ports, shieldsUp: shieldsUp,
+            canServeHttps: connected && https && magicDns, canFunnel: connected && https && magicDns && funnelAllowed && !shieldsUp,
+            problems: problems, funnelProblems: funnelProblems
+        };
+    }
+
+    // A local port typed by the user → 1–65535 or 0
+    function localPort(text) {
+        return _port(typeof text === "string" ? text.trim() : text);
+    }
+
+    // A path prefix typed by the user ("" or "/" the root) → { ok, mount, error }: letters,
+    // digits and . _ ~ - / only, no "..", no "//", as cleanURLPath would keep it
+    function mountFor(text) {
+        let value = String(text ?? "").trim();
+        if (value === "" || value === "/")
+            return { ok: true, mount: "/", error: "" };
+        if (!value.startsWith("/"))
+            value = "/" + value;
+        if (value.length > 200 || !/^[A-Za-z0-9._~\/-]+$/.test(value) || value.includes("//") || value.split("/").some(part => part === "." || part === ".."))
+            return { ok: false, mount: "", error: "Not a usable path" };
+        return { ok: true, mount: value, error: "" };
+    }
+
+    // A proxy target the module itself would send again: a local http(s) URL with a port
+    function _resendable(target) {
+        return /^(https?|https\+insecure):\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}(\/[A-Za-z0-9._~\/-]*)?$/.test(target);
+    }
+
+    function _plan(kind, extra) {
+        return Object.assign({ kind: kind, error: "", argv: [], description: "" }, extra ?? {});
+    }
+
+    // Adding one share, planned from the config as read now: addPlan(config, intent, status,
+    // prefs) → { kind: "run" | "refused", error, argv, description }. intent { kind: "proxy",
+    // port (HTTPS listener), localPort, path, funnel } or { kind: "tcp", port, localPort }.
+    // A web handler goes on with `funnel` when Funnel is asked or already on for that port (so
+    // adding a path never turns a port's Funnel off), else `serve`.
+    function addPlan(config, intent, status, prefs) {
+        const ready = preconditions(status, prefs);
+        const local = localPort(intent?.localPort);
+        const port = _port(intent?.port);
+        if (config?.ok !== true)
+            return _plan("refused", { error: "What is shared is not read yet" });
+        if (!ready.connected)
+            return _plan("refused", { error: "Connect to share" });
+        if (local === 0)
+            return _plan("refused", { error: "Enter a local port" });
+        if (port === 0)
+            return _plan("refused", { error: "Choose a port" });
+        const entries = config.entries ?? [];
+        if (intent?.kind === "tcp") {
+            if (entries.some(entry => entry.port === port))
+                return _plan("refused", { error: "Port " + port + " is in use" });
+            return _plan("run", { argv: ["tailscale", "serve", "--bg", "--yes", "--tcp=" + port, "tcp://127.0.0.1:" + local],
+                                  description: "Sharing a local port with the tailnet" });
+        }
+        if (intent?.kind !== "proxy")
+            return _plan("refused", { error: "Nothing to add" });
+        if (!ready.canServeHttps)
+            return _plan("refused", { error: ready.problems[0]?.text ?? "HTTPS is not available" });
+        const mount = mountFor(intent?.path);
+        if (!mount.ok)
+            return _plan("refused", { error: mount.error });
+        if (entries.some(entry => entry.port === port && (entry.what === "tcp" || entry.type === "http")))
+            return _plan("refused", { error: "Port " + port + " is in use" });
+        if (entries.some(entry => entry.port === port && entry.mount === mount.mount))
+            return _plan("refused", { error: "Already shared" });
+        const funnelOn = entries.some(entry => entry.port === port && entry.funnel);
+        const funnel = intent?.funnel === true || funnelOn;
+        if (funnel) {
+            const problem = funnelProblem(ready, port);
+            if (problem !== "")
+                return _plan("refused", { error: problem });
+        }
+        return _plan("run", {
+            argv: ["tailscale", funnel ? "funnel" : "serve", "--bg", "--yes", "--https=" + port].concat(mount.mount === "/" ? [] : ["--set-path=" + mount.mount],
+                ["http://127.0.0.1:" + local]),
+            description: funnel ? "Sharing a local port on the internet" : "Sharing a local port with the tailnet"
+        });
+    }
+
+    // Why Funnel cannot be turned on for `port` ("" it can)
+    function funnelProblem(ready, port) {
+        if (!ready.canFunnel)
+            return ready.funnelProblems[0]?.text ?? ready.problems[0]?.text ?? "Funnel is not available";
+        if (!ready.funnelPorts.includes(port))
+            return "Funnel works on port " + (ready.funnelPorts.length > 0 ? ready.funnelPorts.join(", ") : "443, 8443 or 10000") + " only";
+        return "";
+    }
+
+    // Removing one entry (by key) → plan. Always `serve … off` (never `funnel … off`: that would
+    // first run Funnel's capability check, and the result is the same); --set-path names the
+    // one mount, --yes so a port with several mounts never waits for a question
+    function removePlan(config, key) {
+        const entry = (config?.entries ?? []).find(item => item.key === key) ?? null;
+        if (config?.ok !== true || entry === null)
+            return _plan("refused", { error: "Not shared any more" });
+        if (entry.what === "tcp")
+            return _plan("run", { argv: ["tailscale", "serve", "--bg", "--yes", "--" + entry.type + "=" + entry.port, "off"], description: "Stopping a share" });
+        return _plan("run", { argv: ["tailscale", "serve", "--bg", "--yes", "--" + entry.type + "=" + entry.port, "--set-path=" + entry.mount, "off"],
+                              description: "Stopping a share" });
+    }
+
+    // Funnel on or off for an entry's port → plan: the entry's handler set again, with `funnel`
+    // (on) or `serve` (off) — the only way the CLI turns Funnel off without removing the handler.
+    // Only for HTTPS entries the module could send itself (a local proxy or a text); a path is
+    // never sent again
+    function funnelPlan(config, key, on, status, prefs) {
+        const entry = (config?.entries ?? []).find(item => item.key === key) ?? null;
+        if (config?.ok !== true || entry === null)
+            return _plan("refused", { error: "Not shared any more" });
+        if (entry.type !== "https")
+            return _plan("refused", { error: "Funnel needs HTTPS" });
+        if (entry.funnel === (on === true))
+            return _plan("nothing");
+        let target = "";
+        if (entry.what === "proxy" && _resendable(entry.target))
+            target = entry.target;
+        else if (entry.what === "text" && entry.target !== "" && !/[\u0000]/.test(entry.target))
+            target = "text:" + entry.target;
+        if (target === "")
+            return _plan("refused", { error: "Change this one in a terminal" });
+        if (on === true) {
+            const problem = funnelProblem(preconditions(status, prefs), entry.port);
+            if (problem !== "")
+                return _plan("refused", { error: problem });
+        }
+        return _plan("run", {
+            argv: ["tailscale", on === true ? "funnel" : "serve", "--bg", "--yes", "--https=" + entry.port].concat(entry.mount === "/" ? [] : ["--set-path=" + entry.mount], [target]),
+            description: on === true ? "Putting a share on the internet" : "Taking a share off the internet"
+        });
+    }
+
+    // Everything off: `serve reset` (empties the whole config, Funnel included)
+    function resetPlan() {
+        return _plan("run", { argv: ["tailscale", "serve", "reset"], description: "Stopping every share" });
+    }
+
+    // An intent ({ action: "add" | "remove" | "funnel" | "reset", … }) planned against a config
+    // read now; `identity` (TailscaleRules.prefsIdentity at the click) against `freshIdentity`:
+    // another profile → "changed"
+    function planIntent(intent, config, status, prefs, identity, freshIdentity) {
+        if (identity !== "" && freshIdentity !== identity)
+            return _plan("changed", { error: "Changed meanwhile" });
+        switch (intent?.action) {
+        case "add":
+            return addPlan(config, intent, status, prefs);
+        case "remove":
+            return removePlan(config, intent.key);
+        case "funnel":
+            return funnelPlan(config, intent.key, intent.on, status, prefs);
+        case "reset":
+            return resetPlan();
+        default:
+            return _plan("refused", { error: "Nothing to do" });
+        }
+    }
+
+    // The label of what an entry serves, plain
+    function targetLabel(entry) {
+        if (!entry)
+            return "";
+        if (entry.what === "proxy")
+            return entry.target.replace(/^http:\/\/127\.0\.0\.1:(\d+)$/, "port $1");
+        if (entry.what === "tcp")
+            return entry.target.replace(/^127\.0\.0\.1:(\d+)$/, "port $1");
+        if (entry.what === "text")
+            return "text";
+        if (entry.what === "path")
+            return entry.target;
+        if (entry.what === "redirect")
+            return "redirect";
+        return "unknown";
+    }
+}

@@ -377,6 +377,56 @@ check "… never through pkexec, never \`file get\`" test "$(grep -c 'file.get\|
 show_item taildropSaved
 screenshot settings-tailscale-taildrop-saved
 check "… the page built without an error or a warning" test "$(module_errors)" = "[]"
+
+# ---- Step 5: serve and Funnel, tailnet lock ----
+ts_serve_field() { shell_ipc tailscale serve 2> /dev/null | python3 -I -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print(",".join(map(lambda x: str(x).lower() if isinstance(x,bool) else str(x),v)) if isinstance(v,list) else (str(v).lower() if isinstance(v,bool) else v))' "$1" 2> /dev/null; }
+serve_is() { [ "$(ts_serve_field "$1")" = "$2" ]; }
+click_item() { # click_item <objectName>: a click in the middle of a page item
+    local rect at x y
+    rect=$(settings_rect "$1")
+    at=$(settings_window_at)
+    read -r x y < <(python3 -I -c 'import json,sys; r, a = json.loads(sys.argv[1]), json.loads(sys.argv[2]); print(a[0] + r["x"] + r["width"] // 2, a[1] + r["y"] + r["height"] // 2)' "$rect" "$at")
+    move_pointer "$x" "$y"
+    sleep 0.3
+    send_input "click left"
+}
+# The tailnet allows HTTPS and Funnel (the stand-in adds these to Self's CapMap), this node's name
+printf 'https\nfunnel\nhttps://tailscale.com/cap/funnel-ports?ports=443,8443,10000\n' > "$tools/state/caps"
+printf 'self.example-tailnet.ts.net\n' > "$tools/state/cert-domains"
+shell_ipc tailscale refresh > /dev/null
+check_within 10 "serve: HTTPS and Funnel allowed (status's capabilities)" serve_is canFunnel true
+show_item tailscaleServeToggle
+click_item tailscaleServeToggle
+check_within 10 "the Serve section opened on screen reads what is shared: nothing" serve_is read true
+check "… nothing shared" serve_is entries 0
+shell_ipc tailscale sharePort 443 3000 > /dev/null
+check_within 15 "share port 3000: listed" serve_is entries 1
+check "… HTTPS on 443, a local proxy, with its link" test "$(ts_serve_field types)|$(ts_serve_field ports)|$(ts_serve_field whats)|$(ts_serve_field urls)" = "https|443|proxy|1"
+check "… as the operator (since Taildrop above), plainly: the module's own argv" grep -qx "serve --bg --yes --https=443 http://127.0.0.1:3000" "$tools/log"
+check "… no pkexec for it" test "$(grep -cP "\t(serve|funnel)\t" "$tools/pkexec.log")" = 0
+check "… not public" serve_is funnel false
+sleep 1
+show_item tailscaleServeToggle
+screenshot settings-tailscale-serve
+shell_ipc tailscale setFunnel 443 true > /dev/null
+check_within 15 "Funnel on: the public mark" serve_is funnel true
+check "… funnel --bg --yes --https=443 with the same target" grep -qx "funnel --bg --yes --https=443 http://127.0.0.1:3000" "$tools/log"
+check_within 5 "… the \"Public\" mark on the page" item_on_screen tailscaleServePublic
+sleep 1
+screenshot settings-tailscale-funnel
+check "… the page built without an error or a warning" test "$(module_errors)" = "[]"
+# Tailnet lock: this node locked out → the entry asks for the user
+ts_lock_field() { shell_ipc tailscale tailnetLock 2> /dev/null | python3 -I -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print(str(v).lower() if isinstance(v,bool) else v)' "$1" 2> /dev/null; }
+check_within 10 "tailnet lock read: off" test "$(ts_lock_field read)|$(ts_lock_field enabled)" = "true|false"
+cp "$tools/fixtures/lock-locked-out.json" "$tools/state/lock.json"
+shell_ipc tailscale readTailnetLock > /dev/null
+check_within 10 "locked out by tailnet lock: read" test "$(ts_lock_field lockedOut)" = true
+check_within 5 "… the entry needs the user: Open admin console" ts_is attentionAction "Open admin console"
+show_item tailscaleLockState
+screenshot settings-tailscale-locked-out
+rm -f "$tools/state/lock.json"
+shell_ipc tailscale readTailnetLock > /dev/null
+check_within 10 "… signed again (lock.json gone): no attention" ts_is attentionAction ""
 shell_ipc settings close > /dev/null
 
 check "the stand-ins were called (their log)" test "$(grep -c . "$tools/log")" -gt 3

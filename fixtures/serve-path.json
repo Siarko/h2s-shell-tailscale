@@ -1,0 +1,19 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "self.example-tailnet.ts.net:443": {
+      "Handlers": {
+        "/": {
+          "Path": "/home/user1/index.html"
+        },
+        "/files/": {
+          "Path": "/srv/share"
+        }
+      }
+    }
+  }
+}

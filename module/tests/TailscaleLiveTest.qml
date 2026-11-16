@@ -119,7 +119,7 @@ TestCase {
     // Lines of the stand-in tailscale's log that are not reads
     function changesIn(s) {
         const reads = [/^status --json$/, /^debug prefs$/, /^exit-node suggest$/, /^version( --json)?$/, /^netcheck --format=json$/, /^dns status --json$/,
-            /^debug derp-map$/, /^ping --c=1 --timeout=3s \S+$/, /^switch --list --json$/];
+            /^debug derp-map$/, /^ping --c=1 --timeout=3s \S+$/, /^switch --list --json$/, /^lock status --json$/, /^serve status --json$/];
         return (s.logLines ?? []).filter(line => !line.startsWith("curl ") && !line.startsWith("xdg-open ") && !line.startsWith("systemctl ")
             && !reads.some(pattern => pattern.test(line)));
     }

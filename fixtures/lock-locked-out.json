@@ -1,0 +1,42 @@
+{
+  "SchemaVersion": "1",
+  "Enabled": true,
+  "PublicKey": "tlpub:0000000000000000000000000000000000000000000000000000000000000001",
+  "NodeKey": "nodekey:0000000000000000000000000000000000000000000000000000000000000001",
+  "Head": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "NodeKeySigned": false,
+  "TrustedKeys": [
+    {
+      "Kind": "25519",
+      "Votes": 1,
+      "Public": "tlpub:0000000000000000000000000000000000000000000000000000000000000002"
+    },
+    {
+      "Kind": "25519",
+      "Votes": 1,
+      "Public": "tlpub:0000000000000000000000000000000000000000000000000000000000000003"
+    },
+    {
+      "Kind": "25519",
+      "Votes": 1,
+      "Public": "tlpub:0000000000000000000000000000000000000000000000000000000000000004",
+      "Meta": {
+        "purpose": "pre-auth key",
+        "authkey_stableid": "kEXAMPLE1CNTRL"
+      }
+    }
+  ],
+  "VisiblePeers": [],
+  "FilteredPeers": [
+    {
+      "ID": "nPEER3CNTRL",
+      "DNSName": "peer3.example-tailnet.ts.net.",
+      "TailscaleIPs": [
+        "100.64.0.3",
+        "fd7a:115c:a1e0::3"
+      ],
+      "NodeKey": "nodekey:peer3"
+    }
+  ],
+  "State": 1234567890
+}

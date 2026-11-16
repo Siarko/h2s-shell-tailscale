@@ -58,7 +58,7 @@ TestCase {
         assert(module !== null && module.active, "the module is loaded and active");
         assertEqual(module.status?.state, "loaded", "… state loaded");
         assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, qs.components, Quickshell)");
-        assertEqual(module.manifest.api, "1.2", "written for module API 1.2 (resumed(), shown)");
+        assertEqual(module.manifest.api, "1.3", "written for module API 1.3 (resumed(), shown, the networks)");
         const slots = (module.manifest.slots ?? []).map(entry => entry.slot).sort().join(",");
         assertEqual(slots, "network.vpn.card,network.vpn.row", "the row's and the card's VPN slots in its manifest — no network.vpn.page: its page is a settings page");
         assertEqual((module.manifest.settingsPages ?? []).map(page => page.id + ":" + page.parent).join(","), "tailscale:network",

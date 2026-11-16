@@ -45,6 +45,16 @@ Provenance:
 | dns-status.json | real, redacted (the split-DNS domain example.com, its resolver 192.168.1.53, Tailscale's 192.0.2.53) | `dns status --json` |
 | version.json | real | `version --json` |
 | status-running-work.json, status-key-expiring-work.json | derived from status-running / -key-expiring: tailnet "example.org", suffix example-org.ts.net, login user1@example.org | the second account (stand-in profile c3d4) |
+| status-serve.json | derived from status-running: Self's CapMap (and Capabilities) add "https", "funnel" and "https://tailscale.com/cap/funnel-ports?ports=443,8443,10000"; CertDomains ["self.example-tailnet.ts.net"] (cap names from 1.104.4's tailcfg/nodecap, CheckFunnelPort's attribute format) | step 5: the stand-in scenario "serve" (HTTPS certs and Funnel enabled) |
+| serve-empty.json | real (1.104.4, `serve status --json` with nothing served) | `{}` |
+| serve-proxy.json | synthetic, shape from 1.104.4's ipn/serve.go (ServeConfig, MarshalIndent: sorted keys, omitempty) | HTTPS 443: "/" → proxy http://127.0.0.1:3000, "/api" → http://127.0.0.1:8080 |
+| serve-funnel.json | synthetic, shape from 1.104.4's ipn/serve.go | HTTPS 443 proxy with AllowFunnel true; HTTPS 8443 text "hello" with AllowFunnel false (present, off) |
+| serve-tcp.json | synthetic, shape from 1.104.4's ipn/serve.go | TCP 2222 → 127.0.0.1:22; TLS-terminated TCP 5432 → 127.0.0.1:5432 (TerminateTLS self.example-tailnet.ts.net) |
+| serve-path.json | synthetic, shape from 1.104.4's ipn/serve.go | HTTPS 443: "/files/" → path /srv/share, "/" → path /home/user1/index.html (served only as root: ipn/localapi/serve.go) |
+| serve-rich.json | synthetic, shape from 1.104.4's ipn/serve.go | what the module only shows: HTTP 80 proxy plus a Redirect handler, a Foreground session (HTTPS 10000), Services "svc:example" (TCP + Web), an unknown top-level "FutureField" (the stand-in refuses to change it) |
+| lock-disabled.json | real, redacted (1.104.4, `lock status --json` with tailnet lock off; keys replaced by …0001) | lock off |
+| lock-signed.json | synthetic, shape from 1.104.4's cmd/tailscale/tslockjsonv1 and feature/tailnetlock/tslockjsonv1/status.go (zeroed keys, Head and signatures) | lock on, this node signed: two trusted keys (one this node's), a visible peer, FilteredPeers [] |
+| lock-locked-out.json | synthetic, same shapes | lock on, NodeKeySigned false: three trusted keys (one a pre-auth key), one filtered (locked-out) peer |
 
 (¹) The redaction set every non-zero time to 2026-01-01; in these files Self.KeyExpiry was
 moved to 2027-05-01 by hand, so that "now" = 2026-11-15 does not read as an expired key.
