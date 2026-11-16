@@ -1,0 +1,57 @@
+{
+  "ControlURL": "https://controlplane.tailscale.com",
+  "RouteAll": true,
+  "ExitNodeID": "",
+  "ExitNodeIP": "",
+  "InternalExitNodePrior": "",
+  "ExitNodeAllowLANAccess": false,
+  "CorpDNS": true,
+  "RunSSH": true,
+  "RunWebClient": true,
+  "WantRunning": true,
+  "LoggedOut": false,
+  "ShieldsUp": false,
+  "AdvertiseTags": [
+    "tag:server",
+    "tag:relay"
+  ],
+  "Hostname": "",
+  "NotepadURLs": false,
+  "AdvertiseRoutes": [
+    "0.0.0.0/0",
+    "::/0",
+    "10.20.0.0/16",
+    "192.168.50.0/24",
+    "2001:db8:1::/48"
+  ],
+  "AdvertiseServices": null,
+  "Sync": null,
+  "NoSNAT": false,
+  "NoStatefulFiltering": false,
+  "NetfilterMode": 2,
+  "AutoUpdate": {
+    "Check": true,
+    "Apply": null
+  },
+  "AppConnector": {
+    "Advertise": true
+  },
+  "PostureChecking": true,
+  "RelayServerPort": 40000,
+  "SomeFutureField": {"x": 1},
+  "NetfilterKind": "",
+  "RemoteConfig": false,
+  "DriveShares": null,
+  "Config": {
+    "PrivateNodeKey": "privkey:0000000000000000000000000000000000000000000000000000000000000000",
+    "OldPrivateNodeKey": "privkey:0000000000000000000000000000000000000000000000000000000000000000",
+    "UserProfile": {
+      "ID": 10001,
+      "LoginName": "user1@example.com",
+      "DisplayName": "Example User 1",
+      "ProfilePicURL": ""
+    },
+    "NetworkLockKey": "nlpriv:00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+    "NodeID": "nSELFCNTRL"
+  }
+}

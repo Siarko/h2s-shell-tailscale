@@ -36,12 +36,15 @@ import QtQuick
 //     CurAddr, Relay, PeerRelay, RxBytes, TxBytes, LastSeen, Online, Active, ExitNode,
 //     ExitNodeOption, KeyExpiry, Expired, Tags, TaildropTarget, NoFileSharingReason,
 //     Location { Country, CountryCode, City, CityCode, Priority }, ShareeNode,
-//     AltSharerUserID — each missing: "", 0, false, [] or null.
+//     AltSharerUserID, AllowedIPs (own addresses + approved routes), sshHostKeys (a count:
+//     it runs Tailscale SSH), CapMap (its keys only) — each missing: "", 0, false, [] or null.
 //   debug prefs (ipn.Prefs; its keys are zeroed for a non-root reader): ControlURL,
 //     RouteAll (accept routes, default false), ExitNodeID, ExitNodeIP,
 //     ExitNodeAllowLANAccess, CorpDNS (accept DNS, default true), RunSSH, RunWebClient,
 //     WantRunning, LoggedOut, ShieldsUp, AdvertiseTags, Hostname, AdvertiseRoutes,
-//     OperatorUser, ProfileName, AutoUpdate { Check, Apply }, Config.UserProfile.LoginName.
+//     OperatorUser, ProfileName, AutoUpdate { Check, Apply }, Config.UserProfile.LoginName;
+//     since step 3 NoSNAT, NoStatefulFiltering (opt.Bool), NetfilterMode (0/1/2),
+//     AppConnector { Advertise }, PostureChecking, RelayServerPort (omitted while off).
 //   the IPN bus (ipn.Notify, one JSON object per message): State (a NUMBER: ipn.State),
 //     BrowseToURL, LoginFinished, ErrMessage, Prefs, Health { Warnings { code: {
 //     Severity, Title, Text, ImpactsConnectivity } } }, SuggestedExitNode, ClientVersion,
@@ -259,6 +262,13 @@ Singleton {
             keyExpiry: timeMs(_get(raw, "KeyExpiry")),
             expired: _bool(_get(raw, "Expired")),
             tags: _strings(tags, 64),
+            // The prefixes this node may route: its own addresses plus the routes an admin
+            // approved (tailcfg.Node.AllowedIPs; ipnlocal peerStatusFromNode copies it)
+            allowedIps: _strings(_get(raw, "AllowedIPs"), 512),
+            // ipnstate.PeerStatus.SSH_HostKeys (JSON "sshHostKeys"): the node runs Tailscale SSH
+            sshHostKeys: _strings(_get(raw, "sshHostKeys"), 16).length,
+            // The capability names (CapMap's keys; null: no CapMap sent)
+            caps: _isObject(_get(raw, "CapMap")) ? _keys(_get(raw, "CapMap")).slice(0, 128).map(key => String(key).slice(0, 200)) : null,
             taildropTarget: Math.trunc(_number(_get(raw, "TaildropTarget"), 0)),
             noFileSharingReason: _string(_get(raw, "NoFileSharingReason"), 300),
             shareeNode: _bool(_get(raw, "ShareeNode")),
@@ -366,7 +376,8 @@ Singleton {
             exitNodeAllowLan: false, acceptDns: true, ssh: false, webClient: false, wantRunning: false,
             loggedOut: false, shieldsUp: false, advertiseTags: [], hostname: "", advertiseRoutes: [],
             advertiseExitNode: false, operatorUser: "", profileName: "", loginName: "", updateCheck: true,
-            autoUpdate: null
+            autoUpdate: null, advertiseRoutesAll: [], snat: true, statefulFiltering: null, netfilterMode: "",
+            advertiseConnector: false, postureChecking: false, relayServerPort: null, advertiseRoutesCut: false, nodeId: ""
         };
         const parsed = _parseJson(input);
         if (!_isObject(parsed.value)) {
@@ -389,6 +400,8 @@ Singleton {
         result.advertiseTags = _strings(_get(raw, "AdvertiseTags"), 64);
         result.hostname = _string(_get(raw, "Hostname"), 256);
         const routes = _strings(_get(raw, "AdvertiseRoutes"), 256);
+        // More than the 256 read: an edit built from this list would drop the rest
+        result.advertiseRoutesCut = Array.isArray(_get(raw, "AdvertiseRoutes")) && _get(raw, "AdvertiseRoutes").length > 256;
         // The exit node is advertised as the two default routes (ipn/prefs.go)
         result.advertiseExitNode = routes.includes("0.0.0.0/0") && routes.includes("::/0");
         result.advertiseRoutes = routes.filter(route => route !== "0.0.0.0/0" && route !== "::/0");
@@ -396,10 +409,29 @@ Singleton {
         result.profileName = _string(_get(raw, "ProfileName"), 200);
         const config = _get(raw, "Config");
         result.loginName = _string(_get(_get(config, "UserProfile"), "LoginName"), 200);
+        // The node of this profile (Config.NodeID, readable without root): with the login it
+        // tells whether the profile changed between two reads (prefsIdentity)
+        result.nodeId = _string(_get(config, "NodeID"), 128);
         const update = _get(raw, "AutoUpdate");
         result.updateCheck = _bool(_get(update, "Check"), true);
         const apply = _get(update, "Apply");
         result.autoUpdate = typeof apply === "boolean" ? apply : null;
+        // Step 3 (ipn/prefs.go): the whole AdvertiseRoutes list as the daemon has it
+        result.advertiseRoutesAll = routes;
+        // NoSNAT false (the default) = source NAT on
+        result.snat = !_bool(_get(raw, "NoSNAT"));
+        // NoStatefulFiltering is an opt.Bool: true → off, false → on, missing → unknown (null)
+        const noStateful = _get(raw, "NoStatefulFiltering");
+        result.statefulFiltering = noStateful === false || noStateful === "false" ? true
+            : (noStateful === true || noStateful === "true" ? false : null);
+        // preftype.NetfilterMode: 0 off, 1 nodivert, 2 on
+        const netfilter = _get(raw, "NetfilterMode");
+        result.netfilterMode = netfilter === 0 ? "off" : netfilter === 1 ? "nodivert" : netfilter === 2 ? "on" : "";
+        result.advertiseConnector = _bool(_get(_get(raw, "AppConnector"), "Advertise"));
+        result.postureChecking = _bool(_get(raw, "PostureChecking"));
+        // *uint16, omitted while off
+        const relayPort = _get(raw, "RelayServerPort");
+        result.relayServerPort = typeof relayPort === "number" && Number.isInteger(relayPort) && relayPort >= 0 && relayPort <= 65535 ? relayPort : null;
         return result;
     }
 
@@ -836,8 +868,10 @@ Singleton {
                 keyExpiry: node.keyExpiry, rxBytes: node.rxBytes, txBytes: node.txBytes,
                 canReceiveFiles: taildrop === 1,
                 fileSharingNote: taildrop === 1 ? "" : (node.noFileSharingReason || (taildrop >= 0 && taildrop < _taildropReasons.length ? _taildropReasons[taildrop] : "unknown")),
+                sshHostKeys: node.sshHostKeys,
                 sharedIn: _sharedIn(node, suffix), locationNode: locationNode, location: node.location
             });
+            list[list.length - 1].sshCommand = sshCommand(list[list.length - 1]);
         }
         return list.sort((a, b) => (a.online === b.online ? 0 : (a.online ? -1 : 1))
             || _compareText(a.name, b.name) || _compareText(a.id, b.id));
@@ -1064,18 +1098,34 @@ Singleton {
         return { state: state, days: days, text: text };
     }
 
-    // This computer for the page's "This device": thisDevice(status, prefs, now) → null (not
-    // read) | { hostName (what Tailscale calls it now), customHostname (prefs' --hostname; ""
-    // = the system's), dnsName (MagicDNS), ipv4, ipv6, online, relay (home DERP region code),
-    // keyExpiry (ms), key (keyState) }
-    function thisDevice(status, prefs, now) {
+    // This computer for the page's "This device": thisDevice(status, prefs, now,
+    // systemHostname) → null (not read) | { hostName (the name it HAS: prefs' --hostname when
+    // set, else status's), customHostname (prefs' --hostname; "" = the system's), statusName
+    // (what the tailnet shows now: status's Self), namePending (the tailnet does not show
+    // hostName yet), nameNote ("" | "the tailnet shows it after connecting" | "updating"),
+    // dnsName (MagicDNS, as the tailnet has it — stale while namePending), ipv4, ipv6,
+    // online, relay (home DERP region code), keyExpiry (ms), key (keyState) }.
+    // Why: `set --hostname` changes prefs at once, but status's Self (HostName, DNSName) comes
+    // from the control plane, which learns the name only once connected (observed: set while
+    // Stopped, status still had the old name). systemHostname: the OS's name ("" unknown) —
+    // only to tell whether going back to the system's name has reached the tailnet yet.
+    function thisDevice(status, prefs, now, systemHostname) {
         const self = _isObject(status) && _isObject(status.self) ? status.self : null;
         if (!self)
             return null;
         const addresses = _strings(status.addresses, 16).length > 0 ? _strings(status.addresses, 16) : self.addresses;
+        const custom = _string(_get(prefs, "hostname"), 256);
+        const system = _string(systemHostname, 256).split(".")[0];
+        const label = name => String(name).split(".")[0].toLowerCase();
+        const wanted = custom !== "" ? custom : system;
+        const pending = wanted !== "" && self.hostName !== "" && label(wanted) !== label(self.hostName);
+        const running = _isObject(status) && status.backendState === "Running";
         return {
-            hostName: self.hostName,
-            customHostname: _string(_get(prefs, "hostname"), 256),
+            hostName: custom !== "" ? custom : (system !== "" ? system : self.hostName),
+            customHostname: custom,
+            statusName: self.hostName,
+            namePending: pending,
+            nameNote: !pending ? "" : (running ? "updating" : "the tailnet shows it after connecting"),
             dnsName: self.dnsName,
             ipv4: addresses.find(address => _parseIpv4(address) !== null) ?? "",
             ipv6: addresses.find(address => _parseIpv6(address) !== null) ?? "",
@@ -1119,6 +1169,320 @@ Singleton {
             return "No control characters.";
         if (name.startsWith("-"))
             return "It cannot start with a dash.";
+        return "";
+    }
+
+    // ---- Sharing this computer (delivery step 3) ----
+    //
+    // Everything here is a preference changed with `tailscale set` (cmd/tailscale/cli/set.go of
+    // 1.104.4). The exit node and the subnet routes are ONE preference, AdvertiseRoutes (the
+    // exit node = the pair 0.0.0.0/0 and ::/0). set.go's calcAdvertiseRoutesForSet composes
+    // them: `--advertise-routes=<list>` alone keeps the exit-node pair when it is advertised
+    // (netutil.CalcAdvertiseRoutes(list, curPrefs.AdvertisesExitNode())); `--advertise-exit-node=
+    // <bool>` alone keeps the subnet routes (it filters the /0s out or appends them). So the
+    // module never passes both flags in one command, and never puts a /0 into the route list.
+    // Approval: status's Self.AllowedIPs holds the node's own addresses plus the routes an admin
+    // approved; PrimaryRoutes those it currently serves as the primary router; ExitNodeOption is
+    // ContainsExitRoutes(AllowedIPs) (ipnlocal peerStatusFromNode).
+
+    readonly property string adminAclsUrl: "https://login.tailscale.com/admin/acls"
+    // The web interface's port (tsconst.WebListenPort)
+    readonly property int webClientPort: 5252
+    // The capability that lets this node run Tailscale SSH (nodecap.SSH; the daemon refuses
+    // `--ssh` without it: ipnlocal checkSSHPrefsLocked)
+    readonly property string sshCapability: "https://tailscale.com/cap/ssh"
+    // Tailscale's own ranges: a route inside them is warned about
+    readonly property var tailscaleRanges: ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]
+
+    function _isDefaultControl(prefs) {
+        const url = _string(_get(prefs, "controlUrl"), 2048);
+        return url === "" || /^https:\/\/(controlplane|login)\.tailscale\.com\/?$/.test(url);
+    }
+
+    // The admin console's page of this machine (the default control server only; else "")
+    function adminMachineUrl(status, prefs) {
+        if (!_isDefaultControl(prefs))
+            return "";
+        const self = _isObject(status) && _isObject(status.self) ? status.self : null;
+        const ipv4 = self ? (self.addresses.find(address => _parseIpv4(address) !== null) ?? "") : "";
+        return ipv4 !== "" ? adminMachinesUrl + "/" + ipv4 : adminMachinesUrl;
+    }
+
+    // A route the user types: routeProblem(text, offered [networks]) → { network, error, warning }.
+    // As the CLI checks it (net/netutil/routes.go CalcAdvertiseRoutes: netip.ParsePrefix — an
+    // address/prefix, no host bits set) and more: no duplicates, no default route (that is the
+    // exit-node switch). A warning (not refusing) for Tailscale's own ranges.
+    function routeProblem(text, offered) {
+        const value = typeof text === "string" ? text.trim() : "";
+        const result = { network: "", error: "", warning: "" };
+        if (value === "") {
+            result.error = "Write a network as address/prefix, e.g. 192.168.1.0/24.";
+            return result;
+        }
+        const slash = value.indexOf("/");
+        if (slash < 0 || !/^\d{1,3}$/.test(value.slice(slash + 1)) || (value.length - slash > 2 && value[slash + 1] === "0")) {
+            result.error = "Not a network: write it as address/prefix, e.g. 192.168.1.0/24.";
+            return result;
+        }
+        const cidr = parseCidr(value);
+        if (!cidr) {
+            result.error = "Not a network: write it as address/prefix, e.g. 192.168.1.0/24.";
+            return result;
+        }
+        if (cidr.bits === 0) {
+            result.error = "That is the default route: offer this computer as an exit node instead.";
+            return result;
+        }
+        if (!cidr.canonical) {
+            result.error = "Host bits are set: the network is " + cidr.network + ".";
+            return result;
+        }
+        result.network = cidr.network;
+        const existing = (Array.isArray(offered) ? offered : []).map(parseCidr).filter(item => item !== null).map(item => item.network);
+        if (existing.includes(cidr.network)) {
+            result.error = "Already offered.";
+            return result;
+        }
+        const range = tailscaleRanges.find(item => cidrOverlap(parseCidr(item), cidr));
+        if (range)
+            result.warning = "It overlaps Tailscale's own addresses (" + range + ").";
+        return result;
+    }
+
+    // The subnet routes after adding or removing one (never the exit-node pair: see above)
+    function routesWith(routes, network) {
+        const list = _strings(routes, 256).filter(route => { const cidr = parseCidr(route); return cidr !== null && cidr.bits > 0; });
+        const added = parseCidr(network);
+        if (!added || added.bits === 0 || list.some(route => parseCidr(route).network === added.network))
+            return list;
+        return list.concat([added.network]);
+    }
+
+    function routesWithout(routes, network) {
+        const removed = parseCidr(network);
+        return _strings(routes, 256).filter(route => {
+            const cidr = parseCidr(route);
+            return cidr !== null && cidr.bits > 0 && (!removed || cidr.network !== removed.network);
+        });
+    }
+
+    // Which profile prefs belong to: its login, its node, its control server ("" not known).
+    // Two reads with different identities are two profiles (a switch, a login in between).
+    function prefsIdentity(prefs) {
+        if (!_isObject(prefs) || prefs.ok !== true)
+            return "";
+        const login = _string(prefs.loginName, 200);
+        const node = _string(prefs.nodeId, 128);
+        return login === "" && node === "" ? "" : login + "|" + node + "|" + _string(prefs.controlUrl, 2048);
+    }
+
+    // A route edit is an INTENT — { add: <network> } or { remove: <network> } — planned against
+    // prefs read just before the command runs (the live side reads them again under its
+    // operation lock, also right before a retry through pkexec): routeEditPlan(prefs, intent,
+    // identity) → { kind, error, routes, command }:
+    //   "run"      command: `set --advertise-routes=<the whole new list>`; routes: that list
+    //   "nothing"  already as asked (the route already offered / not offered): nothing to send
+    //              — the live side refuses that at the click, and accepts it at a re-check
+    //   "changed"  prefs belong to another profile than `identity` (the one clicked in)
+    //   "refused"  error: prefs unknown, the list cut, the route invalid
+    function routeEditPlan(prefs, intent, identity) {
+        const plan = (kind, extra) => Object.assign({ kind: kind, error: "", routes: [], command: null }, extra ?? {});
+        if (!_isObject(prefs) || prefs.ok !== true)
+            return plan("refused", { error: "Tailscale's settings are not read yet: try again in a moment." });
+        if (prefs.advertiseRoutesCut === true)
+            return plan("refused", { error: "More routes are offered than the module reads (256): change them with `tailscale set`." });
+        if (typeof identity === "string" && identity !== "" && prefsIdentity(prefs) !== identity)
+            return plan("changed", { error: "Changed meanwhile (another account?): try again." });
+        const current = _strings(prefs.advertiseRoutes, 256);
+        const adding = _isObject(intent) && typeof intent.add === "string";
+        const removing = _isObject(intent) && typeof intent.remove === "string";
+        if (adding === removing)
+            return plan("refused", { error: "Not a route change." });
+        const offered = current.map(parseCidr).filter(item => item !== null).map(item => item.network);
+        let routes;
+        if (adding) {
+            const check = routeProblem(intent.add, []);
+            if (check.error !== "")
+                return plan("refused", { error: check.error });
+            if (offered.includes(check.network))
+                return plan("nothing");
+            routes = routesWith(current, check.network);
+        } else {
+            const removed = parseCidr(intent.remove);
+            if (!removed)
+                return plan("refused", { error: "Not a network." });
+            if (!offered.includes(removed.network))
+                return plan("nothing");
+            routes = routesWithout(current, removed.network);
+        }
+        const command = commandFor("advertiseRoutes", { routes: routes });
+        if (!command.ok)
+            return plan("refused", { error: command.error });
+        return plan("run", { routes: routes, command: command });
+    }
+
+    // Prefs as they are after a route edit succeeded (the list sent, the exit node unchanged):
+    // held at once, so a second edit before the next read builds on the first
+    function prefsWithRoutes(prefs, routes) {
+        if (!_isObject(prefs))
+            return prefs;
+        const list = _strings(routes, 256);
+        return Object.assign({}, prefs, {
+            advertiseRoutes: list,
+            advertiseRoutesAll: prefs.advertiseExitNode === true ? ["0.0.0.0/0", "::/0"].concat(list) : list
+        });
+    }
+
+    // Why this computer cannot offer an exit node now ("" it can): the daemon refuses to
+    // advertise one while it uses one (ipnlocal checkExitNodePrefsLocked: "Cannot advertise an
+    // exit node and use an exit node at the same time.")
+    function exitNodeOfferProblem(prefs) {
+        if (!_isObject(prefs))
+            return "";
+        return _string(prefs.exitNodeId) !== "" || _string(prefs.exitNodeIp) !== ""
+            ? "It uses an exit node itself: Tailscale cannot do both. Stop using it first." : "";
+    }
+
+    // The reverse: choosing an exit node while this computer offers itself as one
+    function exitNodeUseProblem(prefs) {
+        return _isObject(prefs) && prefs.advertiseExitNode === true
+            ? "This computer offers itself as an exit node: Tailscale cannot also use one. Stop offering it first." : "";
+    }
+
+    // What this computer offers to the tailnet, for the page's Sharing section:
+    // sharing(status, prefs) → {
+    //   known (prefs read), connected (Running: approval states are current),
+    //   exitNode { offered, state "off" | "pending" | "approved" | "unknown", text, problem },
+    //   routes [{ route, family, state "pending" | "approved" | "standby" | "unknown", text }],
+    //   offersAny (routes, exit node or app connector: forwarding matters), families [4, 6]
+    //   (those that need forwarding), pendingCount, adminUrl,
+    //   tagsRequested, tagsApplied, connector, snat, statefulFiltering, netfilterMode,
+    //   relayServerPort, webClient, webClientUrl, postureChecking, autoUpdate, updateCheck }
+    function sharing(status, prefs) {
+        const known = _isObject(prefs) && prefs.ok !== false;
+        const self = _isObject(status) && _isObject(status.self) ? status.self : null;
+        const connected = _isObject(status) && status.backendState === "Running" && self !== null;
+        const allowed = self ? self.allowedIps.map(parseCidr).filter(item => item !== null).map(item => item.network) : [];
+        const primary = self ? self.primaryRoutes.map(parseCidr).filter(item => item !== null).map(item => item.network) : [];
+        const offeredExit = known && prefs.advertiseExitNode === true;
+        const exitApproved = self !== null && (self.exitNodeOption === true || (allowed.includes("0.0.0.0/0") && allowed.includes("::/0")));
+        const exitState = !offeredExit ? "off" : (!connected ? "unknown" : (exitApproved ? "approved" : "pending"));
+        const stateText = { pending: "waiting for an admin's approval", approved: "approved", standby: "approved; another device serves it now",
+            unknown: "approval shown when connected", off: "" };
+        const routes = (known ? prefs.advertiseRoutes : []).map(route => {
+            const cidr = parseCidr(route);
+            if (!cidr)
+                return null;
+            const state = !connected ? "unknown" : (!allowed.includes(cidr.network) ? "pending" : (primary.includes(cidr.network) ? "approved" : "standby"));
+            return { route: cidr.network, family: cidr.family, state: state, text: stateText[state] };
+        }).filter(item => item !== null);
+        const families = [];
+        if (offeredExit || (known && prefs.advertiseConnector === true))
+            families.push(4, 6);
+        for (const route of routes)
+            if (!families.includes(route.family))
+                families.push(route.family);
+        const selfIpv4 = self ? (self.addresses.find(address => _parseIpv4(address) !== null) ?? "") : "";
+        return {
+            known: known, connected: connected,
+            exitNode: { offered: offeredExit, state: exitState, text: stateText[exitState], problem: known ? exitNodeOfferProblem(prefs) : "" },
+            routes: routes,
+            offersAny: offeredExit || routes.length > 0 || (known && prefs.advertiseConnector === true),
+            families: families.sort(),
+            pendingCount: routes.filter(route => route.state === "pending").length + (exitState === "pending" ? 1 : 0),
+            adminUrl: adminMachineUrl(status, prefs),
+            tagsRequested: known ? _strings(prefs.advertiseTags, 64) : [],
+            tagsApplied: self ? self.tags : [],
+            connector: known && prefs.advertiseConnector === true,
+            snat: !known || prefs.snat !== false,
+            statefulFiltering: known ? prefs.statefulFiltering : null,
+            netfilterMode: known ? _string(prefs.netfilterMode, 16) : "",
+            relayServerPort: known ? prefs.relayServerPort : null,
+            webClient: known && prefs.webClient === true,
+            webClientUrl: known && prefs.webClient === true && selfIpv4 !== "" ? "http://" + selfIpv4 + ":" + webClientPort : "",
+            postureChecking: known && prefs.postureChecking === true,
+            autoUpdate: known ? prefs.autoUpdate : null,
+            updateCheck: !known || prefs.updateCheck !== false
+        };
+    }
+
+    // `/proc/sys/net/ipv4/ip_forward` and `/proc/sys/net/ipv6/conf/all/forwarding` as the live
+    // side reads them: lines "ipv4\t<content>" and "ipv6\t<content>" → { ipv4, ipv6 } each true
+    // (1), false (0) or null (unreadable)
+    function parseForwarding(text) {
+        const result = { ipv4: null, ipv6: null };
+        for (const line of (typeof text === "string" ? text.slice(0, 4096) : "").split("\n")) {
+            const match = /^(ipv4|ipv6)\t\s*([01])\s*$/.exec(line);
+            if (match)
+                result[match[1]] = match[2] === "1";
+        }
+        return result;
+    }
+
+    // The forwarding warning for the Sharing section: forwardingWarning(sharing, forwarding,
+    // busHealth, status, nixos) → null | { text, families [4|6 that are off], tailscaleSays
+    // (Tailscale's own health text, or ""), nixosLines [] }. Only while something is offered
+    // (routes, the exit node, an app connector — set.go's warnOnAdvertiseRoutes asks then too).
+    // The module writes no sysctl: it says what to do.
+    function forwardingWarning(share, forwarding, busHealth, status, nixos) {
+        if (!_isObject(share) || share.offersAny !== true)
+            return null;
+        const off = (share.families ?? []).filter(family => _get(forwarding, family === 4 ? "ipv4" : "ipv6") === false);
+        // Tailscale's own: health warnable "ip-forwarding-off" (health/warnings.go), or its text
+        const fromBus = Array.isArray(busHealth) ? busHealth.find(warning => _isObject(warning) && warning.code === "ip-forwarding-off") : null;
+        const fromStatus = _strings(_isObject(status) ? status.health : [], 64).find(text => /IP forwarding is (disabled|off)/i.test(text)) ?? "";
+        const tailscaleSays = fromBus ? _string(fromBus.text, 300) || _string(fromBus.title, 200) : fromStatus;
+        if (off.length === 0 && tailscaleSays === "")
+            return null;
+        const names = off.map(family => family === 4 ? "IPv4" : "IPv6").join(" and ");
+        return {
+            text: off.length > 0 ? "IP forwarding is off (" + names + "): other devices cannot reach the offered networks through this computer."
+                : "Tailscale says IP forwarding is off.",
+            families: off,
+            tailscaleSays: tailscaleSays,
+            nixosLines: nixos === true ? [
+                "services.tailscale.useRoutingFeatures = \"server\";",
+                "# or: boot.kernel.sysctl.\"net.ipv4.ip_forward\" = 1; boot.kernel.sysctl.\"net.ipv6.conf.all.forwarding\" = 1;"
+            ] : ["net.ipv4.ip_forward = 1", "net.ipv6.conf.all.forwarding = 1"]
+        };
+    }
+
+    // Tailscale SSH for the page: sshServer(status, prefs) → { on, allowedByTailnet (true,
+    // false, null unknown: no CapMap), canTurnOn, problem }
+    function sshServer(status, prefs) {
+        const self = _isObject(status) && _isObject(status.self) ? status.self : null;
+        const caps = self && Array.isArray(self.caps) ? self.caps : null;
+        const allowed = caps === null ? null : caps.includes(sshCapability);
+        return {
+            on: _isObject(prefs) && prefs.ssh === true,
+            allowedByTailnet: allowed,
+            canTurnOn: allowed !== false,
+            problem: allowed === false ? "Not enabled for this tailnet: Tailscale refuses to start its SSH server." : ""
+        };
+    }
+
+    // The command a device row copies: "ssh <MagicDNS name>" (else its IPv4 address) for a
+    // device that runs Tailscale SSH (sshHostKeys), or "" — never a name that could be read
+    // as an option or holds anything but DNS characters (names come from the tailnet)
+    function sshCommand(device) {
+        if (!_isObject(device) || !(device.sshHostKeys > 0))
+            return "";
+        const name = _string(device.dnsName, 253);
+        if (name !== "" && validTarget(name) && _parseIpv4(name) === null)
+            return "ssh " + name;
+        const ipv4 = (device.addresses ?? []).find(address => _parseIpv4(address) !== null) ?? "";
+        return ipv4 !== "" ? "ssh " + ipv4 : "";
+    }
+
+    // A relay server port as typed: "" (off) or 0–65535 (0: any free port), digits only
+    // (set.go: strconv.ParseUint(…, 10, 16)) → "" or why not
+    function relayPortProblem(text) {
+        if (typeof text !== "string")
+            return "Not a port.";
+        if (text === "")
+            return "";
+        if (!/^\d{1,5}$/.test(text) || Number(text) > 65535 || (text.length > 1 && text[0] === "0"))
+            return "A port 0–65535 (0: any free port).";
         return "";
     }
 
@@ -1571,6 +1935,7 @@ Singleton {
     //   "needs-login" logged out
     //   "timeout"     timed out (the CLI's own, or timeout(1)'s exit 124 — 137 when it had
     //                 to KILL after TERM)
+    //   "aborted"     a risk confirmation answered no (set --ssh inside an SSH session)
     //   "other"       anything else; `message` its first line
     // `message` is one sentence for a notification's body.
     function errorKind(exitCode, stderr) {
@@ -1589,7 +1954,14 @@ Singleton {
             return { kind: "needs-login", message: "Tailscale is logged out: log in first." };
         if (code === 124 || code === 137 || /\btimed? ?out\b/i.test(text) || /context deadline exceeded/i.test(text))
             return { kind: "timeout", message: "Tailscale did not answer in time and was stopped: check its service and the network." };
-        const firstLine = text.split("\n").map(line => line.trim()).find(line => line !== "") ?? "";
+        // The risk check of `set --ssh` (cli/up.go presentSSHToggleRisk) asks "Continue?" only
+        // when the CLI runs inside an SSH session over Tailscale (SSH_CLIENT): with no terminal
+        // it answers no (cli/risks.go errAborted)
+        if (/aborted, no changes made/.test(text))
+            return { kind: "aborted", message: "Tailscale asked for a confirmation (it runs inside an SSH session over Tailscale) and nothing was changed: run the command in a terminal there." };
+        // The CLI's own "Warning: …" lines (a version mismatch, IP forwarding) are not the error
+        const firstLine = text.split("\n").map(line => line.trim()).find(line => line !== "" && !/^Warning:/.test(line))
+            ?? text.split("\n").map(line => line.trim()).find(line => line !== "") ?? "";
         return { kind: "other", message: firstLine !== "" ? firstLine.slice(0, 300) : ("Tailscale exited with status " + (isFinite(code) ? code : "?") + ".") };
     }
 
@@ -1770,7 +2142,8 @@ Singleton {
     // The names commandFor knows
     readonly property var commandNames: ["connect", "disconnect", "login", "addAccount", "logout", "exitNode", "exitNodeNone",
         "exitNodeAuto", "allowLan", "acceptRoutes", "acceptDns", "shieldsUp", "hostname", "advertiseExitNode",
-        "advertiseRoutes", "ssh", "webClient", "updateCheck", "operator", "switchAccount", "switchList", "removeAccount", "nickname", "derpMap",
+        "advertiseRoutes", "ssh", "webClient", "updateCheck", "autoUpdate", "snat", "statefulFiltering", "connector", "posture",
+        "relayServerPort", "operator", "switchAccount", "switchList", "removeAccount", "nickname", "derpMap",
         "ping", "netcheck", "fileCp", "fileGet", "fileTargets", "serveStatus", "serveReset", "serveAdd", "serveRemove",
         "funnelStatus", "funnelReset", "funnelAdd", "funnelRemove", "cert", "lockStatus", "status", "prefs",
         "exitNodeSuggest", "exitNodeList", "dnsStatus", "version", "watch", "startService"]
@@ -1833,6 +2206,26 @@ Singleton {
             return set(_flag("webclient", value("on")), (value("on") === true ? "Starting" : "Stopping") + " Tailscale's web interface");
         case "advertiseExitNode":
             return set(_flag("advertise-exit-node", value("on")), (value("on") === true ? "Offering" : "No longer offering") + " this computer as an exit node");
+        case "autoUpdate":
+            // The daemon refuses it where it cannot update itself (NixOS: clientupdate's
+            // updateNixos is not an auto-updater; ipnlocal checkAutoUpdatePrefsLocked)
+            return set(_flag("auto-update", value("on")), (value("on") === true ? "Turning on" : "Turning off") + " Tailscale's automatic updates");
+        case "snat":
+            return set(_flag("snat-subnet-routes", value("on")), (value("on") === true ? "Turning on" : "Turning off") + " source NAT for offered routes");
+        case "statefulFiltering":
+            return set(_flag("stateful-filtering", value("on")), (value("on") === true ? "Turning on" : "Turning off") + " stateful filtering of forwarded traffic");
+        case "connector":
+            return set(_flag("advertise-connector", value("on")), (value("on") === true ? "Offering" : "No longer offering") + " this computer as an app connector");
+        case "posture":
+            // --report-posture (prefs PostureChecking); there is no --posture-checking flag
+            return set(_flag("report-posture", value("on")), (value("on") === true ? "Reporting" : "Not reporting") + " device posture to the tailnet");
+        case "relayServerPort": {
+            const port = value("port") ?? "";
+            const text = typeof port === "number" ? String(port) : port;
+            if (relayPortProblem(text) !== "")
+                return _refused(name, relayPortProblem(text));
+            return set("--relay-server-port=" + text, text === "" ? "Turning off the peer relay" : "Running a peer relay");
+        }
         case "updateCheck":
             return set(_flag("update-check", value("on")), (value("on") === true ? "Checking" : "Not checking") + " for Tailscale updates");
         case "hostname": {
@@ -1845,17 +2238,15 @@ Singleton {
             const routes = value("routes");
             if (!Array.isArray(routes))
                 return _refused(name, "routes must be a list");
+            // The subnet routes only: set.go keeps the exit-node pair as it is when only
+            // --advertise-routes is given (calcAdvertiseRoutesForSet)
             const checked = [];
             for (const route of routes.slice(0, 257)) {
-                const cidr = parseCidr(route);
-                if (!cidr)
-                    return _refused(name, String(route).slice(0, 60) + " is not a network (address/prefix)");
-                if (!cidr.canonical)
-                    return _refused(name, String(route) + " has host bits set: " + cidr.network + " is meant");
-                if (cidr.bits === 0)
-                    return _refused(name, "the default route is not a subnet: offer an exit node instead");
-                if (!checked.includes(cidr.network))
-                    checked.push(cidr.network);
+                const problem = routeProblem(route, []);
+                if (problem.error !== "")
+                    return _refused(name, String(route).slice(0, 60) + ": " + problem.error);
+                if (!checked.includes(problem.network))
+                    checked.push(problem.network);
             }
             if (checked.length > 256)
                 return _refused(name, "too many routes");
@@ -2200,6 +2591,9 @@ Singleton {
     }
 
     function _formatIpv6(bytes) {
+        // IPv4-mapped (::ffff:a.b.c.d) as Go's netip prints it, the IPv4 part dotted
+        if (bytes.slice(0, 10).every(byte => byte === 0) && bytes[10] === 255 && bytes[11] === 255)
+            return "::ffff:" + bytes.slice(12, 16).join(".");
         const words = [];
         for (let i = 0; i < 16; i += 2)
             words.push((bytes[i] << 8) | bytes[i + 1]);

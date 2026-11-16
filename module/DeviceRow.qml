@@ -96,7 +96,9 @@ Rectangle {
         }
         CopyChips {
             Layout.fillWidth: true
-            texts: (root.device?.addresses ?? []).concat(root.device?.dnsName ? [root.device.dnsName] : [])
+            // A device that runs Tailscale SSH: its ssh command to copy (TailscaleRules.sshCommand)
+            texts: (root.device?.addresses ?? []).concat(root.device?.dnsName ? [root.device.dnsName] : [],
+                (root.device?.sshCommand ?? "") !== "" ? [{ label: "Copy ssh command", text: root.device.sshCommand }] : [])
         }
         Text {
             textFormat: Text.PlainText

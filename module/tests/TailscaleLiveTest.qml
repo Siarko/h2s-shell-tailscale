@@ -15,6 +15,12 @@ TestCase {
     id: suite
     suiteName: "tailscale: the live side against the stand-ins"
     asynchronous: true
+    // Many scenarios side by side: more than the runner's 20 s default. Set only where the shell
+    // knows the property (TestCase.timeLimitMs), so the suite still compiles on an older one
+    Component.onCompleted: {
+        if ("timeLimitMs" in suite)
+            suite["timeLimitMs"] = 45000;
+    }
 
     function _path(url) {
         return String(url).replace(/^file:\/\//, "").replace(/\/+$/, "");
@@ -59,6 +65,9 @@ TestCase {
             if (s.options.daemonDown)
                 lines.push(": > \"$1/state/daemon-down\"");
             lines.push("echo '{\"Health\":{\"Warnings\":{}}}' > \"$1/bus.jsonl\"");
+            // IP forwarding as /proc would say it (the forwarding seam): "<ipv4> <ipv6>"
+            const forwarding = (s.options.forwarding ?? "1 1").split(" ");
+            lines.push("mkdir -p \"$1/forwarding\" && echo " + forwarding[0] + " > \"$1/forwarding/ipv4\" && echo " + forwarding[1] + " > \"$1/forwarding/ipv6\"");
             if (s.options.without)
                 lines.push("mkdir -p \"$1/tools\" && cp \"$3\"/* \"$1/tools/\" && rm -f \"$1/tools/$4\"");
             if (s.options.busLines > 0)
@@ -68,9 +77,10 @@ TestCase {
                     fail(name + ": set up failed: " + result.error);
                 s.client = _clientComponent.createObject(suite, {
                     toolsDir: s.options.emptyTools ? dir + "/empty-tools" : (s.options.without ? dir + "/tools" : standIns),
-                    environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 2000,
+                    environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: s.options.pollMs ?? 2000,
                     loginTimeoutMs: s.options.loginTimeoutMs ?? 60000, fixedNow: s.options.fixedNow ?? 0,
-                    timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, checkTrust: s.options.checkTrust === true
+                    timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, checkTrust: s.options.checkTrust === true,
+                    forwardingDir: dir + "/forwarding"
                 });
                 s.client.failed.connect((what, reason) => s.failures.push({ what: what, reason: reason }));
                 s.client.running = true;
@@ -454,7 +464,8 @@ TestCase {
         });
 
         // ---- a burst of 50 bus messages: a couple of reads ----
-        const burst = scenario("burst", { state: "running", busLines: 50, env: { TS_FAKE_BUS_FILE: base + "/burst/bus.jsonl" } });
+        // No slow poll here (pollMs very high): the read count then measures only the debouncing
+        const burst = scenario("burst", { state: "running", busLines: 50, pollMs: 3600000, env: { TS_FAKE_BUS_FILE: base + "/burst/bus.jsonl" } });
         then(burst, "50 messages read", () => burst.client.events >= 50 && !burst.client._reading && !burst.client._readTimer.running, () => {
             assert(burst.client.reads <= 3, "50 bus messages: at most 3 reads (" + burst.client.reads + ")");
         });
@@ -501,7 +512,8 @@ TestCase {
             assertEqual(count(slowUp.logLines, /^xdg-open https:\/\/login\.tailscale\.com\/a\/REDACTED$/), 1, "… the URL opened once (the user's connect)");
         });
         thenShell(slowUp, "the pending `up` ended",
-            "for p in /proc/[0-9]*; do grep -qzx \"TS_FAKE_STATE_DIR=$1/state\" \"$p/environ\" 2> /dev/null && tr '\\0' ' ' < \"$p/cmdline\" 2> /dev/null | grep -qE 'tailscale up|sleep 30' && echo \"$p\"; done | wc -l",
+            // One grep over every environ (a grep per process overran the step's time on a busy machine)
+            "for f in $(grep -lzx \"TS_FAKE_STATE_DIR=$1/state\" /proc/[0-9]*/environ 2> /dev/null); do p=${f%/environ}; tr '\\0' ' ' < \"$p/cmdline\" 2> /dev/null | grep -qE 'tailscale up|sleep 30' && echo \"$p\"; done | wc -l",
             "upLeft", left => assertEqual(left, "0", "the plain `up` process (and its wait) ended, not left behind"));
 
         // ---- A2: `up` past its time limit; a URL from the bus while it waits ----
@@ -686,7 +698,7 @@ TestCase {
             hostname.failures = [];
             assert(hostname.client.setHostname("box"), "rename to box: starts");
         });
-        then(hostname, "renamed", () => !hostname.client.busy && hostname.client.device?.hostName === "box", () => {
+        then(hostname, "renamed", () => !hostname.client.busy && hostname.client.device?.hostName === "box" && hostname.client.device?.statusName === "box", () => {
             assertEqual(hostname.client.device.customHostname, "box", "… set here (prefs)");
             assertEqual(hostname.client.device.dnsName, "box.example-tailnet.ts.net", "… its MagicDNS name follows");
             assert(hostname.client.setNickname("home"), "nickname: starts");
@@ -781,7 +793,9 @@ TestCase {
             assert(sameAccount.client.prefs.acceptRoutes, "before: routes accepted (the fixture)");
             sameAccount.client.addAccount();
         });
-        then(sameAccount, "logged in again", () => !sameAccount.client.busy && sameAccount.client.view.phase === "running" && sameAccount.client.device?.customHostname === "", () => {
+        then(sameAccount, "logged in again", () => !sameAccount.client.busy && sameAccount.client.view.phase === "running" && sameAccount.client.device?.customHostname === ""
+            // status read after the login too (a read in flight may pair the old status with the new prefs)
+            && sameAccount.client.device?.statusName === "self", () => {
             assertEqual(sameAccount.client.currentAccount.loginName, "user1@example.com", "the same account");
             assertEqual(sameAccount.client.prefs.acceptRoutes, false, "its settings reset: routes no longer accepted (documents the reset)");
             assertEqual(sameAccount.client.device.hostName, "self", "… the name set here gone");
@@ -799,6 +813,152 @@ TestCase {
             ipcOrigin.client.setHostname("box", "network");
         });
         then(ipcOrigin, "denied again", () => !ipcOrigin.client.busy && ipcOrigin.failures.length > 1, () => {});
+
+        // ---- step 3: offering routes and the exit node (through pkexec), approval, SSH ----
+        const sharing = scenario("sharing", { state: "running", forwarding: "0 1" });
+        then(sharing, "read", () => sharing.client.prefs !== null && sharing.client.status !== null, () => {
+            assertEqual(sharing.client.sharing.offersAny, false, "nothing offered yet");
+            assert(!sharing.client.addRoute("192.168.7.5/24"), "a route with host bits: refused before anything runs");
+            assert(/Host bits/.test(sharing.failures[0]?.reason ?? ""), "… saying why: " + sharing.failures[0]?.reason);
+            sharing.failures = [];
+            assert(sharing.client.addRoute("192.168.7.0/24"), "offer 192.168.7.0/24: starts");
+        });
+        then(sharing, "route offered", () => !sharing.client.busy && sharing.client.sharing.routes.length === 1 && sharing.client.forwarding.readAt > 0, () => {
+            same(sharing.client.sharing.routes.map(route => route.route + " " + route.state), ["192.168.7.0/24 pending"], "the route, waiting for an admin's approval");
+            same([sharing.client.forwarding.ipv4, sharing.client.forwarding.ipv6], [false, true], "forwarding read from the seam after offering");
+            assert(sharing.client.forwardingWarning !== null && /IPv4/.test(sharing.client.forwardingWarning.text), "… IPv4 off: the warning");
+            assert(sharing.client.setAdvertiseExitNode(true), "offer the exit node: starts");
+        });
+        then(sharing, "exit node offered", () => !sharing.client.busy && sharing.client.sharing.exitNode.offered, () => {
+            same(sharing.client.prefs.advertiseRoutes, ["192.168.7.0/24"], "the route kept (set --advertise-exit-node alone keeps the routes)");
+            assertEqual(sharing.client.sharing.exitNode.state, "pending", "… the exit node waiting for approval");
+            assert(!sharing.client.setExitNode({ argument: "peer4" }), "using an exit node while offering one: refused before it runs");
+            assert(/Stop offering/.test(sharing.failures[0]?.reason ?? ""), "… saying why");
+        });
+        thenLogs(sharing, "what ran", () => {
+            assertEqual(count(sharing.pkexecLines, elevatedLine(60, "set\\t--advertise-routes=192\\.168\\.7\\.0/24")), 1, "`set --advertise-routes=192.168.7.0/24` through pkexec");
+            assertEqual(count(sharing.pkexecLines, elevatedLine(60, "set\\t--advertise-exit-node=true")), 1, "`set --advertise-exit-node=true` alone");
+            assertEqual(count(sharing.logLines, /advertise-routes.*advertise-exit-node|advertise-exit-node.*advertise-routes/), 0, "never both flags in one command");
+            assertEqual(count(sharing.logLines, /192\.168\.7\.5|exit-node=peer4/), 0, "the refused ones never ran");
+        });
+
+        // Approval and removal on the sharing fixtures (an exit node and three routes offered);
+        // the operator, so no pkexec (beside the first scenario: the suite has 20 s)
+        const routeApproval = scenario("sharing-approval", { state: "sharing", env: { TS_FAKE_OPERATOR: "1" } });
+        then(routeApproval, "read", () => routeApproval.client.prefs !== null && routeApproval.client.status !== null, () => {
+            same(routeApproval.client.sharing.routes.map(route => route.state), ["standby", "approved", "pending"], "the fixture's routes: standby, approved, pending");
+        });
+        thenShell(routeApproval, "an admin approves the IPv6 route", "printf '2001:db8:1::/48\\n' > \"$1/state/approved\"; echo ok", "approvedWritten", () => routeApproval.client.refresh());
+        then(routeApproval, "approved", () => routeApproval.client.sharing.routes[2]?.state !== "pending", () => {
+            assertEqual(routeApproval.client.sharing.exitNode.state, "pending", "the exit node still pending (not approved)");
+            assert(routeApproval.client.removeRoute("10.20.0.0/16"), "remove a route: starts");
+        });
+        then(routeApproval, "route removed", () => !routeApproval.client.busy && routeApproval.client.sharing.routes.length === 2, () => {
+            assert(routeApproval.client.sharing.exitNode.offered, "the exit node still offered (--advertise-routes alone keeps it)");
+        });
+        thenLogs(routeApproval, "what ran", () => {
+            assertEqual(count(routeApproval.logLines, /^set --advertise-routes=192\.168\.50\.0\/24,2001:db8:1::\/48$/), 1, "the remaining routes, no /0");
+        });
+
+        // SSH and the peer relay
+        const sshOn = scenario("sharing-ssh", { state: "running", env: { TS_FAKE_OPERATOR: "1" } });
+        then(sshOn, "read", () => sshOn.client.prefs !== null && sshOn.client.status !== null, () => assert(sshOn.client.setSwitch("ssh", true), "turn on Tailscale SSH: starts"));
+        then(sshOn, "SSH on", () => !sshOn.client.busy && sshOn.client.sshServer.on, () => assert(sshOn.client.setRelayServerPort("40000"), "a peer relay: starts"));
+        then(sshOn, "relay on", () => !sshOn.client.busy && sshOn.client.sharing.relayServerPort === 40000, () => assertEqual(sshOn.failures.length, 0, "no failure"));
+        thenLogs(sshOn, "what ran", () => {
+            assertEqual(count(sshOn.logLines, /^set --ssh=true$/), 1, "`set --ssh=true`, no --accept-risk");
+            assertEqual(count(sshOn.logLines, /^set --relay-server-port=40000$/), 1, "`set --relay-server-port=40000`");
+        });
+
+        // ---- step 3 review: route edits never built from stale or foreign prefs ----
+        // Prefs not read (status hangs, so prefs never come): both edits refused, nothing run
+        const unread = scenario("routes-unread", { state: "running", env: { TS_FAKE_STATUS_HANG: "8" } });
+        then(unread, "tools found", () => unread.client.cli === "present", () => {
+            assertEqual(unread.client.prefs, null, "prefs not read yet");
+            assert(!unread.client.addRoute("192.168.7.0/24"), "add while prefs are unknown: refused");
+            assert(!unread.client.removeRoute("192.168.7.0/24"), "remove while prefs are unknown: refused");
+            assert(unread.failures.length === 2 && unread.failures.every(failure => /not read yet/.test(failure.reason)), "… saying why: " + JSON.stringify(unread.failures));
+        });
+        thenLogs(unread, "nothing sent", () => assertEqual(count(unread.logLines, /^set /), 0, "no `set` at all"));
+
+        // Two adds in a row with no event stream (no curl): the second builds on the first
+        const addAdd = scenario("routes-add-add", { state: "running", without: "curl", env: { TS_FAKE_OPERATOR: "1" } });
+        then(addAdd, "read", () => addAdd.client.prefsCurrent, () => assert(addAdd.client.addRoute("192.168.7.0/24"), "add A: starts"));
+        then(addAdd, "A sent", () => !addAdd.client.busy && (addAdd.client.prefs?.advertiseRoutes ?? []).includes("192.168.7.0/24"), () => {
+            assert(addAdd.client.addRoute("192.168.8.0/24"), "add B at once (no read landed yet): starts");
+        });
+        then(addAdd, "B sent", () => !addAdd.client.busy && (addAdd.client.prefs?.advertiseRoutes ?? []).length === 2, () => {});
+        thenLogs(addAdd, "both kept", () => {
+            assertEqual(count(addAdd.logLines, /^set --advertise-routes=192\.168\.7\.0\/24,192\.168\.8\.0\/24$/), 1, "B's command holds A too");
+            assertEqual(count(addAdd.logLines, /^set --advertise-routes=192\.168\.8\.0\/24$/), 0, "A never dropped");
+        });
+
+        // Right after switching accounts: refused until the new profile's prefs are read
+        const switchAdd = scenario("routes-switch-add", { state: "running", env: { TS_FAKE_OPERATOR: "1" } });
+        then(switchAdd, "read", () => switchAdd.client.prefsCurrent, () => assert(switchAdd.client.addRoute("192.168.7.0/24"), "a route on the first account"));
+        then(switchAdd, "added", () => !switchAdd.client.busy && switchAdd.client.prefsCurrent, () => assert(switchAdd.client.switchAccount("c3d4"), "switch: starts"));
+        then(switchAdd, "switched", () => !switchAdd.client.busy, () => {
+            assert(!switchAdd.client.addRoute("10.9.0.0/16"), "add at once after the switch: refused (prefs not read again)");
+            assert(/read again/.test(switchAdd.failures[0]?.reason ?? ""), "… saying why: " + switchAdd.failures[0]?.reason);
+        });
+        then(switchAdd, "new profile read", () => switchAdd.client.prefsCurrent && switchAdd.client.currentAccount.loginName === "user1@example.org", () => {
+            same(switchAdd.client.prefs.advertiseRoutes, [], "the new profile offers nothing");
+            assert(switchAdd.client.addRoute("10.9.0.0/16"), "add now: starts");
+        });
+        then(switchAdd, "added there", () => !switchAdd.client.busy && (switchAdd.client.prefs?.advertiseRoutes ?? []).length === 1, () => {});
+        thenLogs(switchAdd, "no route carried over", () => assertEqual(count(switchAdd.logLines, /^set --advertise-routes=10\.9\.0\.0\/16$/), 1, "only its own route (the other account's not written into it)"));
+
+        // Changed elsewhere between the click and the retry through pkexec (the stand-in's
+        // on-deny hook): the retry is planned from prefs read again
+        const meanwhile = scenario("routes-meanwhile", { state: "running" });
+        thenShell(meanwhile, "a route added elsewhere when the plain try is denied",
+            "printf '%s\\n' \"printf 'AdvertiseRoutes=10.9.0.0/16\\\\n' >> \\\"\\$1/prefs\\\"\" > \"$1/state/on-deny\"; echo ok", "hookWritten", () => {});
+        then(meanwhile, "read", () => meanwhile.client.prefsCurrent, () => assert(meanwhile.client.addRoute("192.168.7.0/24"), "add: starts"));
+        then(meanwhile, "added", () => !meanwhile.client.busy, () => assertEqual(meanwhile.failures.length, 0, "no failure"));
+        thenLogs(meanwhile, "the retry kept the other route", () => {
+            assertEqual(count(meanwhile.pkexecLines, elevatedLine(60, "set\\t--advertise-routes=10\\.9\\.0\\.0/16,192\\.168\\.7\\.0/24")), 1, "through pkexec: both routes");
+        });
+        const otherProfile = scenario("routes-profile-meanwhile", { state: "running" });
+        thenShell(otherProfile, "the account switched elsewhere when the plain try is denied",
+            "printf '%s\\n' \"printf 'c3d4\\\\n' > \\\"\\$1/current\\\"\" > \"$1/state/on-deny\"; echo ok", "hookWritten", () => {});
+        then(otherProfile, "read", () => otherProfile.client.prefsCurrent, () => assert(otherProfile.client.addRoute("192.168.7.0/24"), "add: starts"));
+        then(otherProfile, "aborted", () => !otherProfile.client.busy && otherProfile.failures.length > 0, () => {
+            assert(/Changed meanwhile/.test(otherProfile.failures[0].reason), "the profile changed: \"Changed meanwhile, try again\": " + otherProfile.failures[0].reason);
+        });
+        thenLogs(otherProfile, "nothing written into the other profile", () => assertEqual(count(otherProfile.pkexecLines, /advertise-routes/), 0, "no pkexec `set`"));
+
+        // ---- step 3: Tailscale's own refusals, shown as it says them ----
+        const refusals = scenario("sharing-refusals", { state: "exit-node", env: { TS_FAKE_OPERATOR: "1", TS_FAKE_SSH_CAP: "0" } });
+        then(refusals, "read", () => refusals.client.prefs !== null && refusals.client.status !== null, () => {
+            assert(refusals.client.sharing.exitNode.problem !== "", "using an exit node: offering one is not possible, said on the section");
+            assert(!refusals.client.setAdvertiseExitNode(true), "… refused before it runs");
+            refusals.failures = [];
+            assert(refusals.client.setSwitch("ssh", true), "SSH (the tailnet does not allow it, status does not say so): runs");
+        });
+        then(refusals, "SSH refused", () => !refusals.client.busy && refusals.failures.length > 0, () => {
+            assertEqual(refusals.failures[0].reason, "Unable to enable local Tailscale SSH server; not enabled on Tailnet. See https://tailscale.com/s/ssh", "Tailscale's refusal, as it says it");
+            assertEqual(refusals.client.sshServer.on, false, "… still off");
+            assert(refusals.client.setSwitch("autoUpdate", true), "auto-update (not detected as Nix-managed here): runs");
+        });
+        then(refusals, "auto-update refused", () => !refusals.client.busy && refusals.failures.length > 1, () => {
+            assertEqual(refusals.failures[1].reason, "Auto-updates are not supported on this platform.", "the daemon's refusal (NixOS) shown plainly");
+            assertEqual(refusals.client.busy, false, "nothing left busy");
+        });
+
+        // ---- the coordinator's bug 1: a name set while disconnected ----
+        const renameStopped = scenario("rename-stopped", { state: "stopped", env: { TS_FAKE_OPERATOR: "1" } });
+        then(renameStopped, "read", () => renameStopped.client.prefs !== null && renameStopped.client.device !== null, () => {
+            assert(renameStopped.client.setHostname("framework"), "rename while off: starts");
+        });
+        then(renameStopped, "renamed", () => !renameStopped.client.busy && renameStopped.client.device?.customHostname === "framework", () => {
+            same([renameStopped.client.device.hostName, renameStopped.client.device.statusName, renameStopped.client.device.namePending, renameStopped.client.device.nameNote],
+                 ["framework", "self", true, "the tailnet shows it after connecting"], "the new name shown; the tailnet still has the old one, said so");
+            renameStopped.client.connect("user");
+        });
+        then(renameStopped, "connected", () => !renameStopped.client.busy && renameStopped.client.view.phase === "running" && renameStopped.client.device?.namePending === false, () => {
+            same([renameStopped.client.device.hostName, renameStopped.client.device.statusName, renameStopped.client.device.dnsName],
+                 ["framework", "framework", "framework.example-tailnet.ts.net"], "connected: the tailnet has it");
+        });
         thenLogs(ipcOrigin, "no prompt", () => {
             assertEqual(ipcOrigin.pkexecLines.length, 0, "origin network: nothing through pkexec");
             assertEqual(count(ipcOrigin.logLines, /^switch c3d4$/), 1, "… the plain switch tried once");

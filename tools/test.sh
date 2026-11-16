@@ -29,6 +29,7 @@ check() { # check <description> <command…>: passes when the command succeeds
 fresh() {
     rm -rf "$work/state" "$work/log" "$work/pkexec.log"
     mkdir -p "$work/state"
+    unset SSH_CLIENT
     unset TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT TS_FAKE_UP_DELAY TS_FAKE_UP_URL TS_FAKE_STATUS_HANG
     export TS_FAKE_STATE_DIR=$work/state TS_FAKE_LOG=$work/log TS_FAKE_PKEXEC_LOG=$work/pkexec.log
     export TS_FAKE_LOGIN_DELAY=0 TS_FAKE_USER=tester TS_FAKE_FIXTURES=$FIXTURES
@@ -79,7 +80,43 @@ check "operator: no exit node" test "$(pref ExitNodeID)" = '""' -a "$(backend)" 
 run "$work/out" "$work/err" "$TS" set --exit-node=nowhere
 check "operator: an unknown exit node is an error" test "$status" = 1
 run "$work/out" "$work/err" "$TS" set --nonsense
-check "operator: an unknown flag is Go's flag error" grep -q "flag provided but not defined: --nonsense" "$work/err"
+check "operator: an unknown flag is Go's flag error (one dash)" grep -q "flag provided but not defined: -nonsense" "$work/err"
+
+# Sharing (step 3): set.go's composition of --advertise-routes and --advertise-exit-node
+routes() { "$TS" debug prefs | awk '/^  "AdvertiseRoutes": null/ { print ""; exit } /^  "AdvertiseRoutes": \[/ { on = 1; next } on && /^  \]/ { print list; exit } on { gsub(/[ ",]/, ""); list = list (list == "" ? "" : ",") $0 }'; }
+"$TS" set --advertise-routes=192.168.1.0/24,10.0.0.0/8
+check "sharing: routes set, sorted by prefix length" test "$(routes)" = "10.0.0.0/8,192.168.1.0/24"
+"$TS" set --advertise-exit-node
+check "sharing: --advertise-exit-node alone keeps the routes" test "$(routes)" = "0.0.0.0/0,::/0,10.0.0.0/8,192.168.1.0/24"
+"$TS" set --advertise-routes=192.168.2.0/24
+check "sharing: --advertise-routes alone keeps the exit node" test "$(routes)" = "0.0.0.0/0,::/0,192.168.2.0/24"
+"$TS" set --advertise-routes=
+check "sharing: an empty --advertise-routes keeps the exit node" test "$(routes)" = "0.0.0.0/0,::/0"
+run "$work/out" "$work/err" "$TS" set --exit-node=peer4
+check "sharing: using an exit node while offering one is refused with the daemon's text" grep -qx "Cannot advertise an exit node and use an exit node at the same time." "$work/err"
+"$TS" set --advertise-exit-node=false
+check "sharing: --advertise-exit-node=false drops only the pair" test "$(routes)" = ""
+"$TS" set --exit-node=peer4
+run "$work/out" "$work/err" "$TS" set --advertise-exit-node
+check "sharing: offering an exit node while using one is refused" test "$status" = 1 -a "$(routes)" = ""
+"$TS" set --exit-node=
+run "$work/out" "$work/err" "$TS" set --advertise-routes=192.168.1.5/24
+check "sharing: host bits refused as the CLI does" grep -qx "192.168.1.5/24 has non-address bits set; expected 192.168.1.0/24" "$work/err"
+run "$work/out" "$work/err" "$TS" set --advertise-routes=10.1.2.3
+check "sharing: an address without a prefix refused" grep -qx '"10.1.2.3" is not a valid IP address or CIDR prefix' "$work/err"
+run "$work/out" "$work/err" "$TS" set --advertise-tags=tag:x
+check "sharing: --advertise-tags is not a flag of set (up only)" grep -qx "flag provided but not defined: -advertise-tags" "$work/err"
+"$TS" set --advertise-routes=192.168.2.0/24 --advertise-exit-node
+printf '192.168.2.0/24\n' > "$work/state/approved"
+check "sharing: an approved route shows in Self's AllowedIPs and PrimaryRoutes" test "$("$TS" status --json | grep -c '"192.168.2.0/24"')" = 2
+check "sharing: the exit node not approved: ExitNodeOption false" grep -q '^    "ExitNodeOption": false' <("$TS" status --json)
+run "$work/out" "$work/err" "$TS" set --auto-update
+check "sharing: auto-update refused as on NixOS" grep -qx "Auto-updates are not supported on this platform." "$work/err"
+"$TS" set --relay-server-port=40000 --snat-subnet-routes=false --report-posture
+check "sharing: relay port, SNAT, posture in prefs" test "$(pref RelayServerPort)|$(pref NoSNAT)|$(pref PostureChecking)" = "40000|true|true"
+run "$work/out" "$work/err" env SSH_CLIENT="100.64.0.9 50000 22" "$TS" set --ssh
+check "sharing: --ssh inside an SSH session over Tailscale aborts without a terminal" grep -qx "aborted, no changes made" "$work/err"
+check "… nothing changed" test "$(pref RunSSH)" = false
 run "$work/out" "$work/err" "$TS" set --ssh=maybe
 check "operator: a bad boolean is refused" test "$status" = 2
 run "$work/out" "$work/err" "$TS" down

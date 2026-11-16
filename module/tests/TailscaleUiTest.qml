@@ -115,10 +115,19 @@ TestCase {
             accountsOutdated: false, loginInterrupted: { id: "a1", title: crafted },
             currentAccount: { loginName: crafted, tailnet: crafted },
             device: { hostName: crafted, customHostname: "x", dnsName: crafted, ipv4: "100.64.0.1", ipv6: "", online: true, relay: crafted, keyExpiry: 0,
-                      key: { state: "soon", days: 3, text: crafted } },
+                      key: { state: "soon", days: 3, text: crafted }, statusName: crafted, namePending: true, nameNote: "updating" },
+            // Step 3: Sharing (tags come from the tailnet) and SSH (Tailscale's health texts)
+            sharing: { known: true, connected: true, exitNode: { offered: true, state: "pending", text: "waiting", problem: "" },
+                       routes: [{ route: "192.168.7.0/24", family: 4, state: "pending", text: "waiting" }], offersAny: true, families: [4], pendingCount: 1,
+                       adminUrl: "https://login.tailscale.com/admin/machines/100.64.0.1", tagsRequested: [crafted], tagsApplied: [crafted], connector: false,
+                       snat: true, statefulFiltering: null, netfilterMode: "on", relayServerPort: null, webClient: true, webClientUrl: "http://100.64.0.1:5252",
+                       postureChecking: false, autoUpdate: null, updateCheck: true },
+            sshServer: { on: true, allowedByTailnet: true, canTurnOn: true, problem: "" },
+            forwardingWarning: { text: "IP forwarding is off (IPv4).", families: [4], tailscaleSays: crafted, nixosLines: ["x"] },
+            readForwarding: () => {}, autoUpdateProblem: "",
             diagnostics: { running: false, ranAt: 1, clientVersion: crafted, netcheck: [{ label: "Nearest relay", value: crafted }],
                            dns: [{ label: "Search domains", value: crafted }], errors: [crafted], nearest: null },
-            health: [{ title: crafted, text: crafted, severity: "" }], diagnosticsReport: "", updateNotice: "",
+            health: [{ title: crafted, text: crafted, severity: "" }, { title: "Tailscale SSH", text: crafted, severity: "" }], diagnosticsReport: "", updateNotice: "",
             devices: [Object.assign({}, device, { id: "n1" })], pings: { n1: { running: false, ok: false, text: crafted } },
             watch: () => {}, unwatch: () => {}
         };

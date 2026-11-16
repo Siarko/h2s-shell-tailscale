@@ -2,7 +2,8 @@
 
 The Tailscale module for [h2s-shell](../h2s-shell), the Quickshell desktop shell: Tailscale
 listed among the shell's VPNs (connect, disconnect, log in and out, exit nodes), with a page of
-its own for the main switches, the accounts, this device, the devices and diagnostics. The plan is the shell's
+its own for the main switches, the accounts, this device, sharing this computer (exit node, routes,
+SSH server, web interface), the devices and diagnostics. The plan is the shell's
 `docs/plans/tailscale.md`; the module system it plugs into is `docs/plans/modules.md`. It needs
 module API 1.2 (the VPN slots, the handle's `resumed()`, the pages' `shown`).
 
@@ -103,18 +104,81 @@ module API 1.2 (the VPN slots, the handle's `resumed()`, the pages' `shown`).
 - **Ping a device** from its row: `ping --c=1 --timeout=3s <its address>` → "direct, 4 ms",
   "relayed (DERP fra), 31 ms", "no reply" (a 10 s limit around it).
 
-Not yet: sharing this computer, Taildrop, serve and funnel, a bar widget of its own (delivery
-steps 3–6 of the plan's §8).
+## What works (delivery step 3)
+
+- **Sharing** (a section of the page): offer this computer as an **exit node** (`set
+  --advertise-exit-node=true|false`); offer its networks as **subnet routes** (`set
+  --advertise-routes=<every route, comma-separated>`, `=` for none) — a route is checked before
+  it is sent (address/prefix, no host bits, IPv4 or IPv6, not a default route — that is the exit
+  node —, no duplicate; a warning inside 100.64.0.0/10 or fd7a:115c:a1e0::/48). Each shows its
+  **approval**, read from `status --json`: Self's AllowedIPs holds the routes an admin approved,
+  PrimaryRoutes those this device serves now (approved but not primary: another router serves
+  it), ExitNodeOption (both /0 in AllowedIPs) the exit node; while not connected: unknown. The
+  admin console's page of this machine is linked while something waits.
+  **How the exit node and the routes compose** (tailscale 1.104.4, cmd/tailscale/cli/set.go
+  calcAdvertiseRoutesForSet): they are one preference, AdvertiseRoutes; `--advertise-routes`
+  alone keeps the exit-node pair as it is, `--advertise-exit-node` alone keeps the routes — so
+  the module sends one flag per command, never both, and never a /0 in the route list.
+  A route edit is an intent (add or remove one network): its command is planned from prefs read
+  again just before it runs — and again before the retry through pkexec —, so it never drops
+  routes from a stale list or writes one account's routes into another; it is refused while
+  Tailscale's settings are being read again after a change (try again in a moment), and aborted
+  ("Changed meanwhile") when the account changed. Once the password dialog is up, the command
+  is fixed.
+  Offering an exit node while using one is refused by the daemon ("Cannot advertise an exit node
+  and use an exit node at the same time.", ipnlocal checkExitNodePrefsLocked): the switch is off
+  with the reason and a "Stop using it" button; choosing an exit node while offering one says so.
+- **IP forwarding**: `/proc/sys/net/ipv4/ip_forward` and `/proc/sys/net/ipv6/conf/all/forwarding`
+  are read (any user may) while the page is shown and something is offered, and after offering;
+  off for a family that matters → a warning with what to put in the NixOS configuration
+  (`services.tailscale.useRoutingFeatures = "server";`, or the two `boot.kernel.sysctl` lines)
+  and Tailscale's own health warning ("ip-forwarding-off") when it sends one. The module writes
+  no sysctl.
+- **The web interface** (`--webclient`, port 5252) with its link; under **More** (collapsed):
+  app connector (`--advertise-connector`), source NAT for offered routes
+  (`--snat-subnet-routes`), stateful filtering (`--stateful-filtering`), the peer relay
+  (`--relay-server-port=<port>`, 0 any port, empty = off), posture reports (`--report-posture`),
+  and read only: the netfilter mode and the tags (asked for and applied).
+- **SSH**: Tailscale's SSH server (`set --ssh=true|false`) — "who may log in is decided by the
+  tailnet's access rules", the admin console's ACL page linked; off with the reason when the
+  tailnet does not allow it (Self's CapMap lacks https://tailscale.com/cap/ssh — the daemon
+  refuses then); Tailscale's own SSH health warnings; the system's sshd is not touched (Tailscale
+  SSH answers on the Tailscale addresses only). The risk check of `set --ssh` (cli/up.go
+  presentSSHToggleRisk) asks only when the CLI runs inside an SSH session over Tailscale
+  (SSH_CLIENT from a 100.x address; pkexec clears it): from the desktop it does not ask; if it
+  does, the refusal is explained. Device rows of devices that run Tailscale SSH (status's
+  `sshHostKeys`) have **Copy ssh command** (`ssh <MagicDNS name>`, else `ssh <IPv4>`). No
+  terminal is opened: the shell has no terminal setting or launch API (none in its
+  SettingsSchema) — a possible later core addition.
+- **About**: update checks (`--update-check`), automatic updates (`--auto-update`; off with the
+  reason where Tailscale is updated with the system — on NixOS the daemon refuses: "Auto-updates
+  are not supported on this platform.").
+- **This device's name** (a fix): a name set while disconnected is the name shown; while
+  status (what the tailnet has) still shows the old one the row says "the tailnet shows it after
+  connecting" (off) or "updating" (connected), and the old MagicDNS name is marked, not offered
+  to copy. Going back to the system's name is judged the same way (the system's name read once
+  from /proc/sys/kernel/hostname).
+
+**Left out, with the reason** (tailscale 1.104.4's cmd/tailscale/cli/set.go): changing tags —
+`--advertise-tags` is a flag of `up` only (up.go), and changing tags there re-authenticates;
+changing the netfilter mode (shown only: it can break the system's firewall); `--posture-checking`
+does not exist (the flag is `--report-posture`); `--relay-server-static-endpoints` and
+`--remote-config` (hidden) are not offered.
+
+Not yet: Taildrop, serve and funnel, a bar widget of its own (delivery steps 4–6 of the plan's
+§8).
 
 ## What needs root (asked through pkexec, answered by the shell's polkit agent)
 
 Unless your user is Tailscale's operator, these are tried plainly, denied by Tailscale, and run
 again as `pkexec <timeout> -k 5 <limit> <tailscale> …` — only after a click: `up`, `down`,
 `login` (log in, add an account), `logout`, every `set …` (exit node, allow
-LAN, routes, DNS, shields up, hostname, nickname, operator), `switch <id>`, `switch remove
+LAN, routes, DNS, shields up, hostname, nickname, operator; since step 3: offering the exit node and routes,
+SSH, the web interface, app connector, NAT, stateful filtering, peer relay, posture, update checks and
+automatic updates), `switch <id>`, `switch remove
 <id>`, and the read `switch --list --json`. Never through pkexec: `status --json`,
 `debug prefs`, `exit-node suggest`, the bus, `netcheck`, `dns status`, `debug derp-map`,
-`version`, `ping` (any user may), and `systemctl start tailscaled.service` (systemd asks
+`version`, `ping` (any user may), the two IP-forwarding files in /proc, and `systemctl start tailscaled.service` (systemd asks
 polkit itself).
 
 ## IPC (`qs ipc call tailscale …`)
@@ -126,7 +190,10 @@ interrupted — no names or addresses), `readProfiles`, `switchProfile <id>`, `s
 <name>` (these three only while no password is needed — the operator — or the tools seam names
 stand-ins; outside the seam they are asked as origin "network": a denial is a failure, never a
 prompt), `runDiagnostics`, `diagnostics` (ran, row counts, the nearest relay's code, error
-and health counts).
+and health counts). Since step 3: `sharing` (what is offered and its approval, SSH, forwarding — counts and
+states, never the networks), `advertiseRoute <network>`, `removeRoute <network>`, `advertiseExitNode
+<true|false>`, `setSsh <true|false>` (under the same rule as `setHostname`), `readForwarding`;
+`profiles` also says `namePending` and `nameNote`.
 
 
 ## Trying it in a development shell
@@ -159,11 +226,14 @@ module/                 the module itself — what gets installed
   ExitNodeChooser.qml   the chooser (row and page)
   DeviceRow.qml         one device on the page (with Ping)
   CopyChips.qml         addresses and names to copy with a click
+  SharingSection.qml    the page's Sharing (exit node, routes, forwarding, web interface, More)
+  SshSection.qml        the page's SSH (the server switch, access rules)
   tests/                its suites (extend the shell's TestCase: `import qs.tests`)
 fixtures/               redacted real outputs and synthetic ones (see fixtures/README.md)
 tools/
   stand-in/tailscale    a stand-in CLI: a state machine over the fixtures (accounts: profiles, switch,
-                        login adding one, remove, nickname; hostname; netcheck, dns status, derp-map)
+                        login adding one, remove, nickname; hostname; netcheck, dns status, derp-map);
+                        sharing: every `set` flag with set.go's composition and refusals, approval
   stand-in/pkexec       a stand-in pkexec: ok / 126 / 127 / unkillable, logs what it was asked to run
   stand-in/timeout      runs the real coreutils timeout (so the seam names every program)
   stand-in/curl         a stand-in for the LocalAPI event stream

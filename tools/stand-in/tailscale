@@ -39,7 +39,21 @@
 #   TS_FAKE_STATUS_HANG  seconds `status --json` hangs before it answers (a stuck daemon);
 #                        also a file "status-hang" in the state dir holding the seconds
 #   TS_FAKE_LOG          a file each call's arguments are appended to (one line per call)
+#   TS_FAKE_SSH_CAP      0: the tailnet does not allow Tailscale SSH (`set --ssh` refused as the
+#                        daemon does); also a file "no-ssh-cap" in the state dir
+#   TS_FAKE_AUTO_UPDATE  ok: `set --auto-update` allowed (default: refused, as on NixOS)
+#   SSH_CLIENT           from a 100.x address: `set --ssh=<change>` asks for the lose-ssh risk
+#                        and, with no terminal, aborts (as the real CLI)
 #
+# Sharing (step 3): `set --advertise-routes` / `--advertise-exit-node` compose as set.go's
+# calcAdvertiseRoutesForSet (each alone keeps the other half of AdvertiseRoutes), routes are
+# checked as netutil.CalcAdvertiseRoutes (host bits for IPv4 only), offering an exit node while
+# using one (or the reverse) is refused with the daemon's text. An admin's approval is the
+# state dir's file "approved" (one route per line): those advertised routes show in status's
+# Self AllowedIPs (subnets also in PrimaryRoutes, the exit pair as ExitNodeOption). A
+# `--hostname` set while not Running reaches status's Self only with the next `up`.
+#
+# State dir file "on-deny": a snippet run once when a write is denied ($1 the state dir).
 # State dir files: scenario (the status fixture's name), prefs (key=value overrides of the
 # prefs fixture), resume (the scenario `up` returns to), profiles and current (the accounts:
 # see profiles_init), login-from (the account a pending `login` started from).
@@ -83,6 +97,13 @@ can_write() {
 denied() {
     what=$1
     shift
+    # A change made elsewhere at that moment (a test's "meanwhile"): the state dir's file
+    # "on-deny", a shell snippet run once with $1 = the state dir, then removed
+    if [ -f "$STATE_DIR/on-deny" ]; then
+        hook=$(cat "$STATE_DIR/on-deny")
+        rm -f "$STATE_DIR/on-deny"
+        sh -c "$hook" sh "$STATE_DIR"
+    fi
     printf "Access denied: %s\n\nUse 'sudo tailscale %s'.\nTo not require root, use 'sudo tailscale set --operator=\$USER' once.\n" "$what" "$*" >&2
     exit 1
 }
@@ -114,15 +135,39 @@ status_fixture() {
     fi
 }
 
-# The status fixture, with a --hostname set earlier as this computer's name (Self's HostName
-# and the first label of its DNSName: the first of each in the fixtures)
+# The status fixture, with the name the tailnet knows (a --hostname set while connected, or
+# applied by the next `up`: StatusHostname) as this computer's (Self's HostName and the first
+# label of its DNSName: the first of each in the fixtures), and the advertised routes an admin
+# approved (the file "approved" in the state dir, one route per line) in Self's AllowedIPs —
+# subnet routes in PrimaryRoutes too, the exit-node pair as ExitNodeOption (as ipnlocal's
+# peerStatusFromNode fills them)
 print_status() {
-    hostname=$(get_pref Hostname)
+    hostname=$(get_pref StatusHostname)
+    approved=""
+    if [ -f "$STATE_DIR/approved" ]; then
+        advertised=$(current_routes)
+        while IFS= read -r route; do
+            [ -n "$route" ] && has_route "$advertised" "$route" && approved="${approved:+$approved,}$route"
+        done < "$STATE_DIR/approved"
+    fi
     if [ -n "$hostname" ]; then
         sed "0,/\"HostName\": \"[^\"]*\"/s//\"HostName\": \"$hostname\"/; 0,/\"DNSName\": \"[^.\"]*\./s//\"DNSName\": \"$hostname./" "$(status_fixture)"
     else
         cat "$(status_fixture)"
-    fi
+    fi | awk -v approved="$approved" '
+        BEGIN { n = split(approved, list, ","); exit4 = 0; exit6 = 0; subnets = ""
+                for (i = 1; i <= n; i++) { if (list[i] == "0.0.0.0/0") exit4 = 1; else if (list[i] == "::/0") exit6 = 1
+                                            else subnets = subnets (subnets == "" ? "" : ",") list[i] } }
+        # Self is the first object with four-space keys; its AllowedIPs is the first such array
+        !self_done && /^    "AllowedIPs": \[/ { in_allowed = 1; print; next }
+        in_allowed && /^    \]/ {
+            for (i = 1; i <= n; i++) print "      ,\"" list[i] "\""
+            print
+            if (subnets != "") { m = split(subnets, sub_list, ","); print "    \"PrimaryRoutes\": ["
+                for (i = 1; i <= m; i++) print "      " (i > 1 ? "," : "") "\"" sub_list[i] "\""; print "    ]," }
+            in_allowed = 0; self_done = 1; next }
+        !exit_done && /^    "ExitNodeOption": / { exit_done = 1; if (exit4 && exit6) { print "    \"ExitNodeOption\": true,"; next } }
+        { print }'
 }
 
 prefs_base() {
@@ -133,6 +178,7 @@ prefs_base() {
         key-expired) echo "$F/prefs-running.json" ;;
         exit-node | exit-node-offline) echo "$F/prefs-exit-node.json" ;;
         rich) echo "$F/prefs-rich.json" ;;
+        sharing) echo "$F/prefs-sharing.json" ;;
         *) echo "$F/prefs-running.json" ;;
     esac
 }
@@ -169,10 +215,20 @@ json_string() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 print_prefs() {
     base=$(prefs_base)
     script=""
-    for key in RouteAll CorpDNS ShieldsUp ExitNodeAllowLANAccess RunSSH RunWebClient WantRunning LoggedOut; do
+    for key in RouteAll CorpDNS ShieldsUp ExitNodeAllowLANAccess RunSSH RunWebClient WantRunning LoggedOut NoSNAT NoStatefulFiltering PostureChecking; do
         value=$(get_pref "$key")
         [ -n "$value" ] && script="$script s/^\\(  \"$key\": \\)[a-z]*/\\1$value/;"
     done
+    # Nested ones: AppConnector.Advertise, AutoUpdate.Check / .Apply (four spaces in)
+    value=$(get_pref AppConnectorAdvertise)
+    [ -n "$value" ] && script="$script s/^\\(    \"Advertise\": \\)[a-z]*/\\1$value/;"
+    value=$(get_pref UpdateCheck)
+    [ -n "$value" ] && script="$script s/^\\(    \"Check\": \\)[a-z]*/\\1$value/;"
+    value=$(get_pref AutoUpdateApply)
+    [ -n "$value" ] && script="$script s/^\\(    \"Apply\": \\)[a-z]*/\\1$value/;"
+    # RelayServerPort: omitted while off (Go's omitempty), a number when on
+    value=$(get_pref RelayServerPort)
+    [ -n "$value" ] && script="$script s/^\\(  \"Hostname\": .*\\)$/\\1\\n  \"RelayServerPort\": $value,/;"
     value=$(get_pref ExitNodeID)
     [ -f "$STATE_DIR/prefs" ] && grep -q '^ExitNodeID=' "$STATE_DIR/prefs" \
         && script="$script s/^\\(  \"ExitNodeID\": \\)\"[^\"]*\"/\\1\"$value\"/;"
@@ -195,7 +251,20 @@ print_prefs() {
         [ -n "$nickname" ] && script="$script s/^\\(  \"Hostname\": .*\\)$/\\1\\n  \"ProfileName\": \"$nickname\",/;"
         script="$script s/^\\(      \"LoginName\": \\)\"[^\"]*\"/\\1\"$account\"/;"
     fi
-    sed "$script" "$base"
+    # AdvertiseRoutes from its override (null when empty), else as the fixture has it
+    if grep -q '^AdvertiseRoutes=' "$STATE_DIR/prefs" 2> /dev/null; then
+        sed "$script" "$base" | awk -v routes="$(get_pref AdvertiseRoutes)" '
+            /^  "AdvertiseRoutes": / {
+                if (routes == "") print "  \"AdvertiseRoutes\": null,"
+                else { n = split(routes, list, ","); print "  \"AdvertiseRoutes\": ["
+                       for (i = 1; i <= n; i++) print "    \"" list[i] "\"" (i < n ? "," : ""); print "  ]," }
+                if ($0 ~ /\[$/) skip = 1
+                next }
+            skip { if ($0 ~ /^  \]/) skip = 0; next }
+            { print }'
+    else
+        sed "$script" "$base"
+    fi
 }
 
 bool_flag() { # --name or --name=true|false → true|false; anything else: Go's flag error
@@ -227,7 +296,7 @@ save_profile_prefs() {
 # login's defaults, over whatever fixture the scenario reads (accept routes off, no exit node,
 # no hostname, no operator)
 default_prefs() {
-    printf 'RouteAll=false\nCorpDNS=true\nShieldsUp=false\nExitNodeAllowLANAccess=false\nRunSSH=false\nExitNodeID=\nHostname=\nWantRunning=false\n' > "$STATE_DIR/prefs"
+    printf 'RouteAll=false\nCorpDNS=true\nShieldsUp=false\nExitNodeAllowLANAccess=false\nRunSSH=false\nExitNodeID=\nHostname=\nWantRunning=false\nStatusHostname=\nAdvertiseRoutes=\nRunWebClient=false\n' > "$STATE_DIR/prefs"
 }
 
 login_flow() {
@@ -285,6 +354,143 @@ login_flow() {
     set_pref WantRunning true
     save_scenario running
     printf 'Success.\n' >&2
+}
+
+negate() { [ "$1" = true ] && echo false || echo true; }
+
+# The status fixture says Running (the tailnet hears about prefs changes only then)
+is_running() { grep -q '"BackendState": "Running"' "$(status_fixture)"; }
+
+# A key's value in the printed prefs (one "Key": value line, two spaces in)
+prefs_value() { print_prefs | sed -n "s/^  \"$1\": \"\{0,1\}\([^\"]*\)\"\{0,1\},\{0,1\}\$/\1/p" | head -n 1; }
+
+# AdvertiseRoutes as a comma list: the override, else the fixture's array
+current_routes() {
+    if grep -q '^AdvertiseRoutes=' "$STATE_DIR/prefs" 2> /dev/null; then
+        get_pref AdvertiseRoutes
+    else
+        awk '/^  "AdvertiseRoutes": \[/ { on = 1; next } on && /^  \]/ { exit } on { gsub(/[ ",]/, ""); if ($0 != "") list = list (list == "" ? "" : ",") $0 } END { print list }' "$(prefs_base)"
+    fi
+}
+has_route() { case ",$1," in *",$2,"*) return 0 ;; esac; return 1; }
+advertises_exit() { has_route "$1" 0.0.0.0/0 && has_route "$1" ::/0; }
+
+# net/netutil/routes.go CalcAdvertiseRoutes: each prefix parsed (an address alone is not one),
+# no host bits (checked for IPv4 here), a /0 only with its other-family twin; the exit pair
+# added when asked; deduplicated, sorted by prefix length. Prints the list or fails as the CLI
+calc_routes() { # calc_routes <comma list> <true|false: add the exit pair>
+    list=""
+    default4=false
+    default6=false
+    old_ifs=$IFS
+    IFS=,
+    for route in $1; do
+        IFS=$old_ifs
+        case $route in
+            *.*.*.*/*)
+                masked=$(printf '%s\n' "$route" | awk -F '[./]' 'NF == 5 && $5 ~ /^(0|[1-9][0-9]?)$/ && $5 + 0 <= 32 {
+                    for (i = 1; i <= 4; i++) if ($i !~ /^(0|[1-9][0-9]?[0-9]?)$/ || $i + 0 > 255) exit
+                    out = ""
+                    for (i = 1; i <= 4; i++) { keep = $5 - (i - 1) * 8; keep = keep < 0 ? 0 : (keep > 8 ? 8 : keep)
+                        step = 2 ^ (8 - keep); out = out (i > 1 ? "." : "") int($i / step) * step }
+                    print out "/" $5 }')
+                [ -n "$masked" ] || { printf '"%s" is not a valid IP address or CIDR prefix\n' "$route" >&2; exit 1; }
+                [ "$masked" = "$route" ] || { printf '%s has non-address bits set; expected %s\n' "$route" "$masked" >&2; exit 1; } ;;
+            *:*/*)
+                printf '%s\n' "$route" | grep -Eq '^[0-9a-fA-F:]+/(0|[1-9][0-9]?|1[01][0-9]|12[0-8])$' \
+                    || { printf '"%s" is not a valid IP address or CIDR prefix\n' "$route" >&2; exit 1; } ;;
+            *) printf '"%s" is not a valid IP address or CIDR prefix\n' "$route" >&2; exit 1 ;;
+        esac
+        [ "$route" = 0.0.0.0/0 ] && default4=true
+        [ "$route" = ::/0 ] && default6=true
+        has_route "$list" "$route" || list="${list:+$list,}$route"
+        IFS=,
+    done
+    IFS=$old_ifs
+    [ $default4 = true ] && [ $default6 = false ] && { echo "0.0.0.0/0 advertised without its IPv6 counterpart, please also advertise ::/0" >&2; exit 1; }
+    [ $default6 = true ] && [ $default4 = false ] && { echo "::/0 advertised without its IPv4 counterpart, please also advertise 0.0.0.0/0" >&2; exit 1; }
+    if [ "$2" = true ]; then
+        has_route "$list" 0.0.0.0/0 || list="${list:+$list,}0.0.0.0/0"
+        has_route "$list" ::/0 || list="${list:+$list,}::/0"
+    fi
+    printf '%s\n' "$list" | tr , '\n' | awk -F / 'NF { print $2 "\t" $0 }' | sort -n -s -k1,1 | cut -f2 | paste -sd , -
+}
+
+# The checks of a `set` before anything is written (set.go, then the daemon's checkPrefs):
+# leaves new_routes / old_routes for the writes
+set_checks() {
+    routes_given=false
+    exit_given=false
+    exit_value=false
+    exit_node_after=$(prefs_value ExitNodeID)
+    ssh_after=""
+    risk=""
+    for argument in "$@"; do
+        case $argument in
+            --advertise-routes=*) routes_given=true; routes_value=${argument#--advertise-routes=} ;;
+            --advertise-exit-node | --advertise-exit-node=*) exit_given=true; exit_value=$(bool_flag "$argument") || exit 2 ;;
+            --exit-node=*) exit_node_after=$(exit_node_id "${argument#--exit-node=}") ;;
+            --ssh | --ssh=*) ssh_after=$(bool_flag "$argument") || exit 2 ;;
+            --accept-risk=*) risk=${argument#--accept-risk=} ;;
+            --relay-server-port=*)
+                port=${argument#--relay-server-port=}
+                if [ -n "$port" ]; then
+                    printf '%s\n' "$port" | grep -Eq '^[0-9]{1,5}$' && [ "$port" -le 65535 ] \
+                        || { printf 'failed to set relay server port: strconv.ParseUint: parsing "%s": invalid syntax\n' "$port" >&2; exit 1; }
+                fi ;;
+            --auto-update | --auto-update=*)
+                # NixOS: the daemon cannot update itself (ipnlocal checkAutoUpdatePrefsLocked)
+                if [ "$(bool_flag "$argument")" = true ] && [ "${TS_FAKE_AUTO_UPDATE:-}" != ok ]; then
+                    echo "Auto-updates are not supported on this platform." >&2
+                    exit 1
+                fi ;;
+            --accept-routes* | --accept-dns* | --shields-up* | --exit-node-allow-lan-access* | --webclient* | --update-check* \
+                | --report-posture* | --advertise-connector* | --snat-subnet-routes* | --stateful-filtering* | --hostname=* \
+                | --nickname=* | --operator=*) ;;
+            *)
+                name=${argument%%=*}
+                printf 'flag provided but not defined: -%s\n' "${name#--}" >&2
+                exit 2 ;;
+        esac
+    done
+    old_routes=$(current_routes)
+    new_routes=$old_routes
+    if [ $routes_given = true ] && [ $exit_given = true ]; then
+        new_routes=$(calc_routes "$routes_value" "$exit_value") || exit 1
+    elif [ $routes_given = true ]; then
+        advertises_exit "$old_routes" && was=true || was=false
+        new_routes=$(calc_routes "$routes_value" "$was") || exit 1
+    elif [ $exit_given = true ]; then
+        advertises_exit "$old_routes" && was=true || was=false
+        if [ "$was" != "$exit_value" ]; then
+            kept=$(printf '%s\n' "$old_routes" | tr , '\n' | grep -v '/0$' | paste -sd , -)
+            new_routes=$(calc_routes "$kept" "$exit_value") || exit 1
+        fi
+    fi
+    # The daemon's checkExitNodePrefsLocked
+    if [ -n "$exit_node_after" ] && [ "$exit_node_after" != "?" ] && advertises_exit "$new_routes"; then
+        echo "Cannot advertise an exit node and use an exit node at the same time." >&2
+        exit 1
+    fi
+    if [ -n "$ssh_after" ]; then
+        # checkSSHPrefsLocked: the tailnet must allow it (TS_FAKE_SSH_CAP=0 or a file
+        # "no-ssh-cap": it does not)
+        if [ "$ssh_after" = true ] && { [ "${TS_FAKE_SSH_CAP:-1}" = 0 ] || [ -f "$STATE_DIR/no-ssh-cap" ]; }; then
+            echo "Unable to enable local Tailscale SSH server; not enabled on Tailnet. See https://tailscale.com/s/ssh" >&2
+            exit 1
+        fi
+        # cli/up.go presentSSHToggleRisk: only inside an SSH session over Tailscale (SSH_CLIENT
+        # from a 100.x address); with no terminal the prompt answers no
+        case ${SSH_CLIENT:-} in
+            100.*)
+                if [ "$ssh_after" != "$(prefs_value RunSSH)" ] && [ "$risk" != lose-ssh ] && [ "$risk" != all ]; then
+                    echo "You are connected over Tailscale; this action will reroute SSH traffic to Tailscale SSH and will result in your session disconnecting."
+                    echo "To skip this warning, use --accept-risk=lose-ssh"
+                    echo "aborted, no changes made" >&2
+                    exit 1
+                fi ;;
+        esac
+    fi
 }
 
 command=${1:-}
@@ -366,6 +572,8 @@ case $command in
         need_daemon
         need_write "prefs write access denied" set "$@"
         [ $# -gt 0 ] || { echo "usage: tailscale set [flags]" >&2; exit 2; }
+        # All or nothing, as the real `set` (one EditPrefs): the checks first, then the writes
+        set_checks "$@"
         for argument in "$@"; do
             case $argument in
                 --accept-routes | --accept-routes=*) bool_pref RouteAll "$argument" ;;
@@ -374,10 +582,20 @@ case $command in
                 --exit-node-allow-lan-access | --exit-node-allow-lan-access=*) bool_pref ExitNodeAllowLANAccess "$argument" ;;
                 --ssh | --ssh=*) bool_pref RunSSH "$argument" ;;
                 --webclient | --webclient=*) bool_pref RunWebClient "$argument" ;;
-                --advertise-exit-node | --advertise-exit-node=* | --update-check | --update-check=* | --auto-update | --auto-update=*)
-                    bool_flag "$argument" > /dev/null ;;
-                --advertise-routes=*) : ;;
-                --hostname=*) set_pref Hostname "${argument#--hostname=}" ;;
+                --update-check | --update-check=*) bool_pref UpdateCheck "$argument" ;;
+                --auto-update | --auto-update=*) bool_pref AutoUpdateApply "$argument" ;;
+                --report-posture | --report-posture=*) bool_pref PostureChecking "$argument" ;;
+                --advertise-connector | --advertise-connector=*) bool_pref AppConnectorAdvertise "$argument" ;;
+                --snat-subnet-routes | --snat-subnet-routes=*) set_pref NoSNAT "$(negate "$(bool_flag "$argument")")" ;;
+                --stateful-filtering | --stateful-filtering=*) set_pref NoStatefulFiltering "$(negate "$(bool_flag "$argument")")" ;;
+                --relay-server-port=*) set_pref RelayServerPort "${argument#--relay-server-port=}" ;;
+                --accept-risk=*) : ;;
+                --advertise-exit-node | --advertise-exit-node=* | --advertise-routes=*) : ;;
+                --hostname=*)
+                    set_pref Hostname "${argument#--hostname=}"
+                    # The tailnet (status's Self) learns the name only while connected: set
+                    # while not Running, status keeps the old one until `up` (observed)
+                    is_running && set_pref StatusHostname "${argument#--hostname=}" ;;
                 --nickname=*)
                     profiles_init
                     nickname=${argument#--nickname=}
@@ -396,10 +614,14 @@ case $command in
                         running | exit-node | exit-node-offline) [ -n "$id" ] && save_scenario exit-node || save_scenario running ;;
                     esac ;;
                 *)
-                    printf 'flag provided but not defined: %s\n' "${argument%%=*}" >&2
+                    # Go's flag package names it with one dash
+                    name=${argument%%=*}
+                    printf 'flag provided but not defined: -%s\n' "${name#--}" >&2
                     exit 2 ;;
             esac
-        done ;;
+        done
+        [ "$new_routes" != "$old_routes" ] && set_pref AdvertiseRoutes "$new_routes"
+        true ;;
     up)
         need_daemon
         need_write "prefs write access denied" up "$@"
@@ -429,6 +651,8 @@ case $command in
                         exit 1
                     fi
                 fi
+                # Connected: the tailnet learns a name set meanwhile
+                set_pref StatusHostname "$(get_pref Hostname)"
                 resume=$(cat "$STATE_DIR/resume" 2> /dev/null || echo running)
                 save_scenario "$resume" ;;
             *) set_pref WantRunning true ;;

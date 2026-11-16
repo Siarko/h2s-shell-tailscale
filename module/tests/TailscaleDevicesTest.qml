@@ -221,7 +221,7 @@ TestCase {
             assert(hostBits && !hostBits.canonical && hostBits.network === "192.168.1.0/24", "cidr: host bits → not canonical, the network named");
             assertEqual(rules.parseCidr("fd00:99:0:0::/64")?.network, "fd00:99::/64", "cidr: IPv6 written canonically");
             assertEqual(rules.parseCidr("fd7a:115c:a1e0::1")?.network, "fd7a:115c:a1e0::1/128", "cidr: a bare IPv6 address is a /128");
-            assertEqual(rules.parseCidr("::ffff:192.0.2.1/128")?.network, "::ffff:c000:201/128", "cidr: an embedded IPv4");
+            assertEqual(rules.parseCidr("::ffff:192.0.2.1/128")?.network, "::ffff:192.0.2.1/128", "cidr: an embedded IPv4, written as Go's netip prints it");
             assertEqual(rules.parseCidr("::/0")?.bits, 0, "cidr: the IPv6 default route");
             assertEqual(rules.parseCidr("2001:db8:0:1:1:1:1:1/64")?.network, "2001:db8:0:1::/64", "cidr: zeros compressed once, the longest run");
             for (const bad of ["300.1.1.1/24", "1.2.3/24", "1.2.3.4/33", "fd00::/129", "1::2::3", "01.2.3.4/8", "1.2.3.4/", "1.2.3.4/x", "fe80::1%eth0",

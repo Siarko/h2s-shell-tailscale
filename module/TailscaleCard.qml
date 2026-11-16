@@ -43,7 +43,11 @@ ColumnLayout {
     }
     DetailRow {
         label: "This computer"
-        value: root.self ? (root.self.dnsName || root.self.hostName) : ""
+        // While a new name has not reached the tailnet, that name (and why the old one still
+        // shows), never the old MagicDNS name as if current (TailscaleRules.thisDevice)
+        value: !root.self ? "" : (root.client?.device?.namePending
+            ? root.client.device.hostName + " (" + root.client.device.nameNote + ")"
+            : (root.self.dnsName || root.self.hostName))
     }
     DetailRow {
         label: "Its addresses"

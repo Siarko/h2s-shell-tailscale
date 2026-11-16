@@ -10,7 +10,7 @@ import qs.components
 Flow {
     id: root
 
-    // [string]
+    // [string], or { label, text }: the chip shows the label and copies the text
     property var texts: []
     property string _copied: ""
 
@@ -18,7 +18,8 @@ Flow {
 
     Repeater {
         model: ScriptModel {
-            values: (root.texts ?? []).filter(text => typeof text === "string" && text !== "").map(text => ({ text: text }))
+            values: (root.texts ?? []).map(item => typeof item === "string" ? { text: item, label: item } : (item && typeof item.text === "string" ? { text: item.text, label: String(item.label ?? item.text) } : null))
+                .filter(item => item !== null && item.text !== "")
             objectProp: "text"
         }
         Rectangle {
@@ -31,7 +32,7 @@ Flow {
                 id: _label
                 textFormat: Text.PlainText
                 anchors.centerIn: parent
-                text: root._copied === parent.modelData.text ? "Copied" : parent.modelData.text
+                text: root._copied === parent.modelData.text ? "Copied" : parent.modelData.label
                 font.family: Api.theme.fontFamily
                 font.pixelSize: Api.theme.fontSizeXSmall
                 color: Api.theme.textSecondary

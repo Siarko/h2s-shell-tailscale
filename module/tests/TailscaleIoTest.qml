@@ -202,6 +202,12 @@ TestCase {
                 ["version", {}, ["tailscale", "version", "--json"]],
                 ["derpMap", {}, ["tailscale", "debug", "derp-map"]],
                 ["nickname", { name: "home" }, ["tailscale", "set", "--nickname=home"]],
+                ["autoUpdate", { on: false }, ["tailscale", "set", "--auto-update=false"]],
+                ["snat", { on: true }, ["tailscale", "set", "--snat-subnet-routes=true"]],
+                ["statefulFiltering", { on: false }, ["tailscale", "set", "--stateful-filtering=false"]],
+                ["connector", { on: true }, ["tailscale", "set", "--advertise-connector=true"]],
+                ["posture", { on: false }, ["tailscale", "set", "--report-posture=false"]],
+                ["relayServerPort", { port: "40000" }, ["tailscale", "set", "--relay-server-port=40000"]],
                 ["startService", {}, ["systemctl", "start", "tailscaled.service"]]
             ];
             for (const row of table)

@@ -112,7 +112,8 @@ QtObject {
             return JSON.stringify({
                 read: client.accounts !== null, ids: list.map(account => account.id), selected: list.find(account => account.selected)?.id ?? "",
                 outdated: client.accountsOutdated, hostname: client.prefs?.hostname ?? "", keyState: client.keyState.state,
-                loginInterrupted: client.loginInterrupted !== null
+                loginInterrupted: client.loginInterrupted !== null, namePending: client.device?.namePending ?? false,
+                nameNote: client.device?.nameNote ?? ""
             });
         }
 
@@ -133,6 +134,49 @@ QtObject {
         function setHostname(name: string): void {
             if (main._ipcMayChange())
                 main.client.setHostname(name, main._ipcOrigin());
+        }
+
+        // Step 3: what this computer offers, without the networks themselves: { known, connected,
+        // exitNode (offered), exitNodeState, routes (count), routeStates [pending | approved |
+        // standby | unknown], pending, connector, webClient, ssh, sshAllowed (true / false /
+        // null), forwardingRead, ipv4Forwarding, ipv6Forwarding, forwardingWarning, prefsCurrent
+        // (a route edit is accepted: prefs read since the last operation) }
+        function sharing(): string {
+            const client = main.client;
+            const share = client.sharing;
+            return JSON.stringify({
+                known: share.known, connected: share.connected, exitNode: share.exitNode.offered, exitNodeState: share.exitNode.state,
+                routes: share.routes.length, routeStates: share.routes.map(route => route.state), pending: share.pendingCount,
+                connector: share.connector, webClient: share.webClient, ssh: client.sshServer.on, sshAllowed: client.sshServer.allowedByTailnet,
+                forwardingRead: client.forwarding.readAt > 0, ipv4Forwarding: client.forwarding.ipv4, ipv6Forwarding: client.forwarding.ipv6,
+                forwardingWarning: client.forwardingWarning !== null, prefsCurrent: client.prefsCurrent
+            });
+        }
+
+        // As the page's controls, under the same rule as setHostname (no prompt from a script)
+        function advertiseRoute(network: string): void {
+            if (main._ipcMayChange())
+                main.client.addRoute(network, main._ipcOrigin());
+        }
+
+        function removeRoute(network: string): void {
+            if (main._ipcMayChange())
+                main.client.removeRoute(network, main._ipcOrigin());
+        }
+
+        function advertiseExitNode(on: bool): void {
+            if (main._ipcMayChange())
+                main.client.setAdvertiseExitNode(on, main._ipcOrigin());
+        }
+
+        function setSsh(on: bool): void {
+            if (main._ipcMayChange())
+                main.client.setSwitch("ssh", on, main._ipcOrigin());
+        }
+
+        // Reads /proc's two forwarding switches (any user may)
+        function readForwarding(): void {
+            main.client.readForwarding();
         }
 
         // Diagnostics need no privileges; their state without addresses or names

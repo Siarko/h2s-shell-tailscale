@@ -10,9 +10,9 @@ import qs.components
 // scrolled by its implicitHeight. It still takes a `context` should a shell frame it as a
 // provider page (network.vpn.page), but the module no longer contributes that slot.
 // Sections: Connection (the account in use under the state), Accounts, This device, Exit node,
-// Network, Devices, Diagnostics (collapsed, run only when asked), Administration, About. The
-// devices' traffic is read only while this page is on screen (`shown`, module API 1.2:
-// client.watch() / unwatch()).
+// Network, Sharing and SSH (step 3: SharingSection.qml, SshSection.qml), Devices, Diagnostics
+// (collapsed, run only when asked), Administration, About. The devices' traffic is read only
+// while this page is on screen (`shown`, module API 1.2: client.watch() / unwatch()).
 ColumnLayout {
     id: root
     objectName: "tailscalePage"
@@ -357,9 +357,27 @@ ColumnLayout {
         visible: root.device !== null
         text: "This device"
     }
+    // The label/value rows together, so their label column reads as one (a lone "Name" row
+    // above the field and the chips showed DetailRow's 110 px label column as a gap)
     DetailRow {
+        objectName: "tailscaleDeviceName"
         label: "Name"
-        value: root.device ? root.device.hostName + (root.device.customHostname !== "" ? " (set here)" : " (the system's)") : ""
+        // The name it HAS (prefs' --hostname when set): status's Self follows only once the
+        // control plane has it (TailscaleRules.thisDevice)
+        value: root.device ? root.device.hostName + " (" + (root.device.customHostname !== "" ? "set here" : "the system's")
+            + (root.device.nameNote !== "" ? "; " + root.device.nameNote : "") + ")" : ""
+    }
+    DetailRow {
+        label: "MagicDNS"
+        value: !root.device ? "" : root.device.dnsName + (root.device.namePending && root.device.dnsName !== "" ? " (the old name, until the tailnet has the new one)" : "")
+    }
+    DetailRow {
+        label: "Connection"
+        value: !root.device ? "" : (root.device.online ? "online" : "offline") + (root.device.relay !== "" ? " · home relay " + root.device.relay : "")
+    }
+    DetailRow {
+        label: "Key"
+        value: !root.device ? "" : (root.device.keyExpiry > 0 ? root._date(root.device.keyExpiry) + " — " : "") + root.device.key.text
     }
     RowLayout {
         visible: root.device !== null
@@ -398,23 +416,11 @@ ColumnLayout {
         font.pixelSize: Api.theme.fontSizeSmall
         color: Api.theme.warning
     }
+    // The MagicDNS name only while it is the current one (else it is in the row above, marked)
     CopyChips {
         visible: root.device !== null
         Layout.fillWidth: true
-        texts: root.device ? [root.device.ipv4, root.device.ipv6, root.device.dnsName] : []
-    }
-    DetailRow {
-        label: "Connection"
-        value: !root.device ? "" : (root.device.online ? "online" : "offline") + (root.device.relay !== "" ? " · home relay " + root.device.relay : "")
-    }
-    RowLayout {
-        visible: root.device !== null
-        Layout.fillWidth: true
-        spacing: 8
-        DetailRow {
-            label: "Key"
-            value: !root.device ? "" : (root.device.keyExpiry > 0 ? root._date(root.device.keyExpiry) + " — " : "") + root.device.key.text
-        }
+        texts: root.device ? [root.device.ipv4, root.device.ipv6].concat(root.device.namePending ? [] : [root.device.dnsName]) : []
     }
     // No button renews the key here: a bare `login` would drop the connection and reset this
     // device's settings (tailscale.md §8 step 2) — the admin console renews it, or turns it off
@@ -441,6 +447,10 @@ ColumnLayout {
     Hint {
         visible: root._running
         text: "It carries this computer's internet traffic; the tailnet is reached either way."
+    }
+    Hint {
+        visible: root._running && TailscaleRules.exitNodeUseProblem(root.prefs) !== ""
+        text: TailscaleRules.exitNodeUseProblem(root.prefs)
     }
     ExitNodeChooser {
         visible: root._running
@@ -485,6 +495,19 @@ ColumnLayout {
         checked: root.prefs?.shieldsUp === true
         need: root.need
         onToggled: root._free && root.client.setShieldsUp(!checked)
+    }
+
+    // ── Sharing, SSH (step 3) ──
+    SharingSection {
+        Layout.fillWidth: true
+        client: root.client
+        need: root.need
+        shown: root.shown
+    }
+    SshSection {
+        Layout.fillWidth: true
+        client: root.client
+        need: root.need
     }
 
     // ── Devices ──
@@ -736,5 +759,22 @@ ColumnLayout {
         // Not beside an update warning, which says the same
         visible: root.client?.updateManagedBySystem === true && !(root.client?.warnings ?? []).some(warning => warning.kind === "update")
         text: "Tailscale is updated with the NixOS system, not here."
+    }
+    SwitchRow {
+        visible: root.prefs !== null
+        label: "Tell me about Tailscale updates"
+        hint: "Tailscale checks for a newer version"
+        checked: root.client?.sharing?.updateCheck !== false
+        need: root.need
+        onToggled: root._free && root.client.setSwitch("updateCheck", !checked)
+    }
+    SwitchRow {
+        visible: root.prefs !== null
+        label: "Update Tailscale automatically"
+        // Refused by the daemon where it cannot update itself (NixOS): off, with the reason
+        hint: (root.client?.autoUpdateProblem ?? "") !== "" ? root.client.autoUpdateProblem : "Tailscale installs new versions by itself"
+        checked: root.client?.sharing?.autoUpdate === true
+        need: !checked && (root.client?.autoUpdateProblem ?? "") !== "" ? "no" : root.need
+        onToggled: root._free && root.client.setSwitch("autoUpdate", !checked)
     }
 }

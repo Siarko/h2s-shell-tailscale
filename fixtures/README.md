@@ -20,6 +20,7 @@ Provenance:
 | status-rich.json | synthetic | 15 peers: direct, idle, relayed, peer-relay, offline with an expired key, shared in from another tailnet, a sharee, an offline own exit node, an IPv4+IPv6 subnet router, a subnet route equal to a LAN (192.168.1.0/24), six Mullvad-style exit nodes with Location (current: Stockholm) |
 | prefs-running.json, -stopped, -logged-out, -exit-node | real, redacted | `debug prefs` (keys zeroed as for a non-root reader) |
 | prefs-rich.json | synthetic (from prefs-running) | an operator, an advertised exit node and route, the Mullvad exit node |
+| status-sharing.json, prefs-sharing.json | synthetic (from status-running / prefs-running), fields from tailscale 1.104.4's ipn/prefs.go and ipnstate | step 3: an advertised exit node (not approved), three routes — 192.168.50.0/24 approved and primary, 10.20.0.0/16 approved but not primary (standby), 2001:db8:1::/48 pending —, tags asked and applied, SSH and the web interface on, stateful filtering on, an app connector, posture, a relay port, an unknown field |
 | exit-node-list.txt | real, redacted | `exit-node list` |
 | exit-node-suggest.txt, exit-node-suggest-none.txt | from source (cli/exitnode.go) | `exit-node suggest` |
 | switch-list.txt, switch-list.json | synthetic, in the shape of cli/switch.go | `switch --list` (table, `--json`) |

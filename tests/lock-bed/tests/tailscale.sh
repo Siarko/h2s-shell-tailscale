@@ -13,7 +13,11 @@
 # its card's "Settings…" goes to the module's settings page (settings currentPage); step 2 on
 # that page: the accounts read (through pkexec) and listed, a switch to the other account that
 # the page and the entry follow, renaming this device, a key about to expire (a warning, the admin console), a
-# netcheck run and the diagnostics section opened by a click; and the lock still locks and
+# netcheck run and the diagnostics section opened by a click; step 3: a rename while disconnected
+# (shown as set, "the tailnet shows it after connecting"), a route and the exit node offered through
+# pkexec (waiting for approval, the route kept beside the exit node, approved by the stand-in's
+# admin), the forwarding warning from the bed's fake /proc (H2S_TAILSCALE_FORWARDING_DIR), SSH on,
+# screenshots of This device, Sharing and SSH; and the lock still locks and
 # unlocks with the module loaded.
 
 module_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P) || abort "no module repository"
@@ -45,6 +49,11 @@ WRAPPER
     chmod +x "$tools/$program"
 done
 export H2S_TAILSCALE_TOOLS=$tools
+# IP forwarding as the bed's /proc would say it (the forwarding seam): IPv4 off, IPv6 on
+mkdir -p "$tools/forwarding"
+echo 0 > "$tools/forwarding/ipv4"
+echo 1 > "$tools/forwarding/ipv6"
+export H2S_TAILSCALE_FORWARDING_DIR=$tools/forwarding
 
 stack_start --modules "$module_repo/module" --shell-path "$tools" \
     --settings '{"bar.left": [{"type": "network", "preset": ""}, {"type": "clock", "preset": ""}]}'
@@ -248,6 +257,59 @@ else
 fi
 sleep 1
 screenshot settings-tailscale-diagnostics
+check "… the page built without an error or a warning" test "$(module_errors)" = "[]"
+
+# ---- Step 3 ----
+# The (floating, tall) settings window moved so that a page item is near the top of the screen
+show_item() {
+    local rect
+    rect=$(settings_rect "$1")
+    local y
+    y=$(python3 -I -c 'import json,sys; r=json.loads(sys.argv[1]); print(80 - r.get("y", 0))' "$rect")
+    answer=$(hyprctl dispatch "hl.dsp.window.move({ x = 300, y = $y })" 2>&1 | head -n 1)
+    [ "$answer" = ok ] || log "hyprctl move to $y: $answer"
+    sleep 1
+}
+ts_sharing_field() { shell_ipc tailscale sharing 2> /dev/null | python3 -I -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print(",".join(map(str,v)) if isinstance(v,list) else (str(v).lower() if isinstance(v,bool) else v))' "$1" 2> /dev/null; }
+sharing_is() { [ "$(ts_sharing_field "$1")" = "$2" ]; }
+
+# The coordinator's bug 1: a name set while disconnected is the name shown, with what the
+# tailnet still has said beside it; connecting brings the tailnet along
+shell_ipc tailscale disconnect > /dev/null
+check_within 10 "disconnected (for a rename while off)" ts_is phase stopped
+shell_ipc tailscale setHostname framework > /dev/null
+check_within 10 "rename while off: prefs say framework" profiles_is hostname framework
+check_within 5 "… the tailnet does not have it yet: said so" profiles_is nameNote "the tailnet shows it after connecting"
+show_item tailscaleDeviceName
+screenshot settings-tailscale-renamed-off
+shell_ipc tailscale connect > /dev/null
+check_within 15 "connected again" ts_is state activated
+check_within 10 "… the tailnet has the new name now: nothing pending" profiles_is namePending false
+
+# Sharing: a route offered (IPC, as the page's "Offer"), through pkexec; waiting for approval
+check "sharing: nothing offered at first" sharing_is routes 0
+check_within 10 "… prefs read since the last change (a route edit is accepted only then)" sharing_is prefsCurrent true
+shell_ipc tailscale advertiseRoute 192.168.7.0/24 > /dev/null
+check_within 10 "offer 192.168.7.0/24: listed, waiting for approval" sharing_is routeStates pending
+check "… through pkexec: set --advertise-routes=192.168.7.0/24" grep -qP "^pkexec\t$tools/timeout\t-k\t5\t60\t$tools/tailscale\tset\t--advertise-routes=192\.168\.7\.0/24\$" "$tools/pkexec.log"
+check_within 5 "… IP forwarding read from the bed's fake /proc: IPv4 off" sharing_is ipv4Forwarding false
+check "… the forwarding warning shown" sharing_is forwardingWarning true
+shell_ipc tailscale advertiseExitNode true > /dev/null
+check_within 10 "offer the exit node: waiting for approval" sharing_is exitNodeState pending
+check "… the route kept (set --advertise-exit-node alone)" sharing_is routes 1
+check "… never both flags in one command" test "$(grep -c 'advertise-routes.*advertise-exit-node\|advertise-exit-node.*advertise-routes' "$tools/log")" = 0
+printf '192.168.7.0/24\n' > "$tools/state/approved"
+shell_ipc tailscale refresh > /dev/null
+check_within 10 "an admin approved the route: approved" sharing_is routeStates approved
+check "… the exit node still waiting" sharing_is exitNodeState pending
+shell_ipc tailscale setSsh true > /dev/null
+check_within 10 "Tailscale SSH on" sharing_is ssh true
+check "… set --ssh=true through pkexec, no --accept-risk" grep -qP "^pkexec\t$tools/timeout\t-k\t5\t60\t$tools/tailscale\tset\t--ssh=true\$" "$tools/pkexec.log"
+item_on_screen tailscaleForwardingWarning || log "the forwarding warning has no size"
+show_item tailscaleOfferExitNode
+screenshot settings-tailscale-sharing
+show_item tailscaleSshServer
+screenshot settings-tailscale-ssh
 check "… the page built without an error or a warning" test "$(module_errors)" = "[]"
 shell_ipc settings close > /dev/null
 

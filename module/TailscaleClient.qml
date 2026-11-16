@@ -90,6 +90,14 @@ QtObject {
     property int readRetryMaxMs: 60000
     // Overrides of TailscaleRules.timeLimits (seconds), for the suites
     property var timeLimits: ({})
+    // Where IP forwarding is read (the forwarding seam): a directory holding `ipv4` and `ipv6`
+    // files ("" = H2S_TAILSCALE_FORWARDING_DIR in the environment when it names an absolute
+    // directory, else the real /proc/sys/net/ipv4/ip_forward and
+    // /proc/sys/net/ipv6/conf/all/forwarding)
+    property string forwardingDir: ""
+    // The system's host name ("" = read at start from /proc/sys/kernel/hostname — only with the
+    // programs on PATH; with a tools directory it stays unknown unless the owner sets it)
+    property string systemHostname: ""
     // Open the login page in the browser (setting mod.tailscale.openLoginInBrowser)
     readonly property bool openLoginInBrowser: module ? module.value("openLoginInBrowser") !== false : true
 
@@ -200,7 +208,7 @@ QtObject {
     readonly property var _operationLabels: ({
         "exit-node": "Changing the exit node…", "setting": "Changing a setting…", "operator": "Making you the operator…",
         "start": "Starting the service…", "accounts": "Reading the accounts…", "accounts-auto": "Reading the accounts…",
-        "account": "Changing the account…"
+        "account": "Changing the account…", "sharing": "Changing what this computer offers…"
     })
 
     // THE provider entry (TailscaleRules.entry, with the attention an action found, the
@@ -261,6 +269,7 @@ QtObject {
         _resolveTools();
         _readIdentity();
         _readLan();
+        _readSystemHostname();
     }
 
     function _stop() {
@@ -347,6 +356,20 @@ QtObject {
             _startStream();
         });
     }
+
+    // The OS's name (only with the programs on PATH and when the owner set none: systemHostname)
+    function _readSystemHostname() {
+        if (toolsMode !== "path" || (systemHostname !== "" && !_systemHostnameRead))
+            return;
+        const generation = _generation;
+        _misc.run(["cat", "/proc/sys/kernel/hostname"], result => {
+            if (!_alive(generation) || !result.ok)
+                return;
+            _systemHostnameRead = true;
+            systemHostname = String(result.lines[0] ?? "").trim().slice(0, 253);
+        });
+    }
+    property bool _systemHostnameRead: false
 
     function _readIdentity() {
         const generation = _generation;
@@ -449,6 +472,7 @@ QtObject {
         const generation = _generation;
         const token = ++_readToken;
         const seconds = _limit("read");
+        const serialAtStart = _changeSerial;
         _spawn(_timedArgv(TailscaleRules.commandFor("status", {}), seconds), _watchdogMs(seconds), statusResult => {
             if (!_alive(generation) || token !== _readToken)
                 return;
@@ -460,6 +484,9 @@ QtObject {
                 if (!_alive(generation) || token !== _readToken)
                     return;
                 _applyRead(statusResult, _timedOut(prefsResult) ? { ok: false, code: 124, out: "", err: "" } : prefsResult);
+                // These prefs were read after every operation that ended before the read began
+                if (prefsResult.ok && !_timedOut(prefsResult) && prefs?.ok === true)
+                    _prefsSerial = serialAtStart;
                 _checkStranded(readNumber);
                 _reading = false;
                 _readFailures = 0;
@@ -703,7 +730,7 @@ QtObject {
     }
 
     // A change by name (TailscaleRules.commandFor) — the page's and the chooser's: the user's
-    function _userChange(name, args, operationName, origin) {
+    function _userChange(name, args, operationName, origin, onSuccess) {
         if (!running || busy)
             return false;
         pendingAttention = null;
@@ -712,12 +739,17 @@ QtObject {
             failed("Changing Tailscale", command.error);
             return false;
         }
-        return _runChange(command, _origin(origin ?? "user"), operationName);
+        return _runChange(command, _origin(origin ?? "user"), operationName, onSuccess);
     }
 
     function setExitNode(option) {
         if (option === null || option === undefined)
             return _userChange("exitNodeNone", {}, "exit-node");
+        // The daemon refuses to use an exit node while offering one: said before anything runs
+        if (TailscaleRules.exitNodeUseProblem(prefs) !== "") {
+            failed("Changing Tailscale's exit node", TailscaleRules.exitNodeUseProblem(prefs));
+            return false;
+        }
         return _userChange("exitNode", { node: option.argument }, "exit-node");
     }
 
@@ -863,7 +895,7 @@ QtObject {
 
     // ---- This device ----
 
-    readonly property var device: TailscaleRules.thisDevice(status, prefs, now)
+    readonly property var device: TailscaleRules.thisDevice(status, prefs, now, systemHostname)
     readonly property var keyState: TailscaleRules.keyState(self, now)
 
     // "" = the system's own name again
@@ -873,6 +905,162 @@ QtObject {
 
     function setNickname(name) {
         return _userChange("nickname", { name: String(name ?? "").trim() }, "setting");
+    }
+
+    // ---- Sharing this computer (step 3): every change a `tailscale set` ----
+    //
+    // The exit node and the routes share one preference (AdvertiseRoutes): the exit node is
+    // changed with --advertise-exit-node alone, the routes with --advertise-routes alone (the
+    // whole list of subnet routes each time) — set.go keeps the other half (TailscaleRules,
+    // "Sharing this computer"). IP forwarding is read from /proc (any user may) only when asked:
+    // the page's Sharing section on screen, and after a change that offers something.
+
+    readonly property var sharing: TailscaleRules.sharing(status, prefs)
+    readonly property var sshServer: TailscaleRules.sshServer(status, prefs)
+    // { ipv4, ipv6 (true/false/null), readAt (ms, 0 never) }
+    property var forwarding: ({ ipv4: null, ipv6: null, readAt: 0 })
+    readonly property var forwardingWarning: TailscaleRules.forwardingWarning(sharing, forwarding, busHealth, status, updateManagedBySystem)
+    readonly property string autoUpdateProblem: updateManagedBySystem
+        ? "Not available: Tailscale is updated with the system here and refuses to update itself." : ""
+    readonly property var _switchCommands: ["ssh", "webClient", "snat", "statefulFiltering", "connector", "posture", "autoUpdate", "updateCheck"]
+    property bool _forwardingReading: false
+    property real _forwardingAskedAt: 0
+
+    function _forwardingPaths() {
+        const dir = forwardingDir !== "" ? forwardingDir : String(Quickshell.env("H2S_TAILSCALE_FORWARDING_DIR") ?? "");
+        return dir.startsWith("/") ? [dir.replace(/\/+$/, "") + "/ipv4", dir.replace(/\/+$/, "") + "/ipv6"]
+            : ["/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"];
+    }
+
+    // Reads both files (unprivileged), at most once a second
+    function readForwarding() {
+        if (!running)
+            return false;
+        const moment = Date.now();
+        if (_forwardingReading || moment - _forwardingAskedAt < 1000)
+            return false;
+        _forwardingReading = true;
+        _forwardingAskedAt = moment;
+        const generation = _generation;
+        const paths = _forwardingPaths();
+        _misc.run(["sh", "-c", "printf 'ipv4\\t%s\\n' \"$(cat \"$1\" 2> /dev/null)\"; printf 'ipv6\\t%s\\n' \"$(cat \"$2\" 2> /dev/null)\"",
+                   "sh", paths[0], paths[1]], result => {
+            _forwardingReading = false;
+            if (!_alive(generation))
+                return;
+            const parsed = TailscaleRules.parseForwarding((result.lines ?? []).join("\n"));
+            forwarding = { ipv4: parsed.ipv4, ipv6: parsed.ipv6, readAt: fixedNow > 0 ? fixedNow : moment };
+        });
+        return true;
+    }
+
+    function _afterOffer() {
+        _forwardingAskedAt = 0;
+        readForwarding();
+    }
+
+    function setAdvertiseExitNode(on, origin) {
+        if (on === true && TailscaleRules.exitNodeOfferProblem(prefs) !== "") {
+            failed("Offering this computer as an exit node", TailscaleRules.exitNodeOfferProblem(prefs));
+            return false;
+        }
+        return _userChange("advertiseExitNode", { on: on === true }, "sharing", origin, () => _afterOffer());
+    }
+
+    // Route edits. The list sent is the WHOLE list of subnet routes, so it must never be built
+    // from prefs that are stale or of another profile — it would drop routes, or write one
+    // profile's routes into another. So:
+    //   - refused unless prefs are read and current: no operation (a change, a switch, a login)
+    //     has ended since the read they came from (_changeSerial / _prefsSerial), and the list
+    //     was not cut at the 256 read;
+    //   - the click is an INTENT (add X / remove X); the command is planned
+    //     (TailscaleRules.routeEditPlan) from prefs read again under the operation's lock, right
+    //     before the plain run and again right before the retry through pkexec; a profile that
+    //     changed since the click aborts ("Changed meanwhile"); a route added or removed
+    //     meanwhile ends quietly (nothing to send);
+    //   - once sent, the list is held in `prefs` at once, so a second edit before the next read
+    //     builds on it.
+    // What stays open: once pkexec's password dialog is up, its argv is fixed — a change made
+    // elsewhere while the dialog waits is overwritten by this list.
+    property int _changeSerial: 0
+    property int _prefsSerial: 0
+    readonly property bool prefsCurrent: prefs?.ok === true && _prefsSerial === _changeSerial
+
+    // Adds one subnet route (checked by TailscaleRules.routeProblem first)
+    function addRoute(text, origin) {
+        const problem = TailscaleRules.routeProblem(String(text ?? ""), prefs?.advertiseRoutes ?? []);
+        if (problem.error !== "" && prefs?.ok === true) {
+            failed("Offering a route", problem.error);
+            return false;
+        }
+        return _editRoutes({ add: problem.network !== "" ? problem.network : String(text ?? "") }, origin, "Offering a route");
+    }
+
+    function removeRoute(route, origin) {
+        const removed = TailscaleRules.parseCidr(String(route ?? ""));
+        if (prefs?.ok === true && (!removed || !(prefs.advertiseRoutes ?? []).some(item => TailscaleRules.parseCidr(item)?.network === removed.network))) {
+            failed("Removing a route", "That network is not offered.");
+            return false;
+        }
+        return _editRoutes({ remove: removed ? removed.network : String(route ?? "") }, origin, "Removing a route");
+    }
+
+    function _editRoutes(intent, origin, what) {
+        if (!running || busy)
+            return false;
+        if (prefs?.ok !== true || !prefsCurrent) {
+            failed(what, prefs?.ok !== true ? "Tailscale's settings are not read yet: try again in a moment."
+                : "Tailscale's settings are being read again after the last change: try again in a moment.");
+            return false;
+        }
+        const first = TailscaleRules.routeEditPlan(prefs, intent, "");
+        if (first.kind !== "run") {
+            failed(what, first.kind === "nothing" ? "Nothing to change." : first.error);
+            return false;
+        }
+        pendingAttention = null;
+        const identity = TailscaleRules.prefsIdentity(prefs);
+        const prepare = (token, go) => _readPrefsNow(token, fresh => {
+            const plan = TailscaleRules.routeEditPlan(fresh, intent, identity);
+            if (plan.kind === "run") {
+                go(plan.command);
+                return;
+            }
+            _finish();
+            if (plan.kind !== "nothing")
+                failed(what, plan.error);
+        });
+        return _runChange(first.command, _origin(origin ?? "user"), "sharing", (output, command) => {
+            // The list just sent, held until the next read brings the daemon's own
+            const sent = String(command.argv[2] ?? "").replace(/^--advertise-routes=/, "");
+            prefs = TailscaleRules.prefsWithRoutes(prefs, sent === "" ? [] : sent.split(","));
+            _prefsSerial = _changeSerial;
+            if ("add" in intent)
+                _afterOffer();
+        }, prepare);
+    }
+
+    // One of the plain switches (_switchCommands): Tailscale SSH, the web interface, SNAT,
+    // stateful filtering, the app connector, posture reports, automatic updates, update checks
+    function setSwitch(name, on, origin) {
+        if (!_switchCommands.includes(name)) {
+            failed("Changing Tailscale", "No such switch.");
+            return false;
+        }
+        if (name === "autoUpdate" && on === true && autoUpdateProblem !== "") {
+            failed("Turning on Tailscale's automatic updates", autoUpdateProblem);
+            return false;
+        }
+        if (name === "ssh" && on === true && !sshServer.canTurnOn) {
+            failed("Starting Tailscale's SSH server", sshServer.problem);
+            return false;
+        }
+        return _userChange(name, { on: on === true }, "sharing", origin, name === "connector" && on === true ? () => _afterOffer() : null);
+    }
+
+    // "" turns the peer relay off
+    function setRelayServerPort(text, origin) {
+        return _userChange("relayServerPort", { port: String(text ?? "").trim() }, "sharing", origin);
     }
 
     // ---- Diagnostics: run when asked, never at start or on a clock ----
@@ -1014,9 +1202,10 @@ QtObject {
 
     // Runs `command` (a tailscale command from the table) plainly, by absolute path, under its
     // time limit; denied and asked by the user: through pkexec; denied otherwise: attention
-    // `onSuccess(output)`: called with its standard output once it succeeded (plainly or
-    // through pkexec) — a read that only root or the operator may do (switch --list)
-    function _runChange(command, origin, operationName, onSuccess) {
+    // `onSuccess(output, command)`: called with its standard output (and the command that ran)
+    // once it succeeded (plainly or through pkexec) — a read that only root or the operator may
+    // do (switch --list). `prepare`: see below (a change derived from current prefs)
+    function _runChange(command, origin, operationName, onSuccess, prepare) {
         if (tailscalePath === "") {
             failed(command.description, "Tailscale is not installed.");
             return false;
@@ -1030,44 +1219,16 @@ QtObject {
         _loginOpened = false;
         authUrl = "";
         const pendingConnect = command.name === "connect";
-        _opProcess = _spawn(_timedArgv(command, seconds), _watchdogMs(seconds), result => {
-            if (!_alive(generation) || token !== _opToken)
-                return;
-            _opProcess = null;
-            if (result.ok) {
-                _finish();
-                onSuccess?.(result.out);
-                return;
-            }
-            if (_timedOut(result)) {
-                _finish();
-                failed(command.description, TailscaleRules.timeoutMessage(command.name, seconds));
-                return;
-            }
-            const error = TailscaleRules.errorKind(result.code, result.err);
-            if (error.kind !== "denied") {
-                _finish();
-                failed(command.description, error.message);
-                return;
-            }
-            if (origin !== "user") {
-                _finish();
-                // The list read again by itself: denied is no news
-                if (operationName === "accounts-auto")
-                    return;
-                // Not the provider's connect/disconnect (the IPC): a failure, never a prompt
-                if (operationName !== "connect" && operationName !== "disconnect") {
-                    failed(command.description, error.message + " Asked from outside the page: no password prompt.");
-                    return;
-                }
-                _hold({ kind: "needs-privilege", reason: "Tailscale refused a change asked for by a network: it needs an administrator's password — or make this user Tailscale's operator",
-                        action: operationName === "disconnect" ? "Disconnect" : "Connect" });
-                return;
-            }
-            const elevated = TailscaleRules.privileged(command.argv, tailscalePath, { timeout: timeoutPath, seconds: seconds, description: command.description });
+        // `prepare(token, go)`: a change whose value derives from current prefs (a route edit)
+        // builds its command again from prefs read now — under this operation's lock, before
+        // the plain run and before the retry through pkexec — and calls go(command), or ends
+        // the operation itself (_finish) when there is nothing to do or it changed meanwhile
+        const stage = (current, next) => prepare ? prepare(token, next) : next(current);
+        const elevate = current => {
+            const elevated = TailscaleRules.privileged(current.argv, tailscalePath, { timeout: timeoutPath, seconds: seconds, description: current.description });
             if (!elevated.ok || elevationProblem !== "") {
                 _finish();
-                failed(command.description, elevationProblem !== "" ? elevationProblem : elevated.error);
+                failed(current.description, elevationProblem !== "" ? elevationProblem : elevated.error);
                 return;
             }
             _freeAdmin().run(elevated.argv.slice(1), elevated.prompt, answer => {
@@ -1075,21 +1236,73 @@ QtObject {
                     return;
                 _finish();
                 if (answer.ok)
-                    onSuccess?.((answer.lines ?? []).join("\n"));
+                    onSuccess?.((answer.lines ?? []).join("\n"), current);
                 if (answer.ok || answer.dismissed)
                     return;
                 if (answer.refused)
-                    failed(command.description, TailscaleRules.pkexecOutcome(127).message);
+                    failed(current.description, TailscaleRules.pkexecOutcome(127).message);
                 else if (answer.notFound === true || answer.code < 0 || /\bnot found\b|No such file/i.test(answer.error ?? ""))
                     // PrivilegedAction could not run it at all (no pkexec, a path that is gone)
-                    failed(command.description, "It could not be run as administrator: pkexec, timeout or tailscale was not found.");
+                    failed(current.description, "It could not be run as administrator: pkexec, timeout or tailscale was not found.");
                 else if (answer.code === 124 || answer.code === 137)
-                    failed(command.description, TailscaleRules.timeoutMessage(command.name, seconds));
+                    failed(current.description, TailscaleRules.timeoutMessage(current.name, seconds));
                 else
-                    failed(command.description, TailscaleRules.errorKind(answer.code, answer.error).message);
+                    failed(current.description, TailscaleRules.errorKind(answer.code, answer.error).message);
             }, _environment());
-        }, pendingConnect ? text => _onConnectText(text, token) : null);
+        };
+        const plain = current => {
+            _opProcess = _spawn(_timedArgv(current, seconds), _watchdogMs(seconds), result => {
+                if (!_alive(generation) || token !== _opToken)
+                    return;
+                _opProcess = null;
+                if (result.ok) {
+                    _finish();
+                    onSuccess?.(result.out, current);
+                    return;
+                }
+                if (_timedOut(result)) {
+                    _finish();
+                    failed(current.description, TailscaleRules.timeoutMessage(current.name, seconds));
+                    return;
+                }
+                const error = TailscaleRules.errorKind(result.code, result.err);
+                if (error.kind !== "denied") {
+                    _finish();
+                    failed(current.description, error.message);
+                    return;
+                }
+                if (origin !== "user") {
+                    _finish();
+                    // The list read again by itself: denied is no news
+                    if (operationName === "accounts-auto")
+                        return;
+                    // Not the provider's connect/disconnect (the IPC): a failure, never a prompt
+                    if (operationName !== "connect" && operationName !== "disconnect") {
+                        failed(current.description, error.message + " Asked from outside the page: no password prompt.");
+                        return;
+                    }
+                    _hold({ kind: "needs-privilege", reason: "Tailscale refused a change asked for by a network: it needs an administrator's password — or make this user Tailscale's operator",
+                            action: operationName === "disconnect" ? "Disconnect" : "Connect" });
+                    return;
+                }
+                stage(current, elevate);
+            }, pendingConnect ? text => _onConnectText(text, token) : null);
+        };
+        stage(command, plain);
         return true;
+    }
+
+    // Reads `debug prefs` (any user may) for an operation in flight: done(parsed prefs) — or
+    // nothing when the operation was abandoned meanwhile; a failed read is parsed as not ok
+    function _readPrefsNow(token, done) {
+        const generation = _generation;
+        const seconds = _limit("read");
+        _opProcess = _spawn(_timedArgv(TailscaleRules.commandFor("prefs", {}), seconds), _watchdogMs(seconds), result => {
+            if (!_alive(generation) || token !== _opToken)
+                return;
+            _opProcess = null;
+            done(TailscaleRules.parsePrefs(result.ok ? result.out : ""));
+        });
     }
 
     // A pending connect's output: a login URL shows (and opens, for the user's connect) while
@@ -1107,6 +1320,7 @@ QtObject {
 
     function _finish() {
         operation = "";
+        _changeSerial++;
         authUrl = "";
         _scheduleRead(true);
     }
@@ -1124,6 +1338,7 @@ QtObject {
                 return;
             _opProcess = null;
             operation = "";
+            _changeSerial++;
             if (!result.ok) {
                 failed(command.description, _timedOut(result) ? TailscaleRules.timeoutMessage("startService", seconds)
                     : ((result.err.split("\n")[0] ?? "").trim() || ("systemctl exited with status " + result.code + ".")));
@@ -1335,6 +1550,7 @@ QtObject {
     function _loginDone() {
         _loginTimer.stop();
         operation = "";
+        _changeSerial++;
         authUrl = "";
         _scheduleRead(true);
     }
@@ -1361,6 +1577,7 @@ QtObject {
         if (fixedNow <= 0)
             now = Date.now();
         _readLan();
+        _readSystemHostname();
         refresh();
         if (_stream.running)
             _stream.running = false;
@@ -1450,7 +1667,12 @@ QtObject {
             onRunningChanged: {
                 if (!running)
                     Qt.callLater(() => {
-                        _answer({ ok: false, code: code, out: _out.join(""), err: err.trim(), timedOut: false });
+                        // onExited's queued _end() may have run first and destroyed this object:
+                        // the id then reads as null, or its properties as undefined
+                        if (!process || process._ended !== false)
+                            return;
+                        if (process._answered !== true)
+                            _answer({ ok: false, code: code, out: _out.join(""), err: err.trim(), timedOut: false });
                         _end();
                     });
             }

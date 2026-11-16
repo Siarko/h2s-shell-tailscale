@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.4.0 — unreleased (delivery step 3)
+
+Needs the shell's module API 1.2 (unchanged). The live suite asks for 45 s (`timeLimitMs`, set only
+where the shell's TestCase has it: a shell from before that change gives it 20 s).
+
+- A "Sharing" section on the page: offer this computer as an exit node (`set
+  --advertise-exit-node=`), offer networks as subnet routes (`set --advertise-routes=<the whole
+  list>`: add with a check first — address/prefix, no host bits, no default route, no duplicate,
+  a warning inside Tailscale's own ranges —, remove with the delete button), each with its
+  approval read from status (approved, waiting for an admin, approved but another device serves
+  it, unknown while not connected) and the admin console's page of this machine. The two
+  flags are never sent together: each alone keeps the other half of the shared preference
+  (tailscale 1.104.4's cli/set.go). Offering an exit node while using one (and the reverse) is
+  refused before it runs, with "Stop using it".
+- IP forwarding read from /proc (only while something is offered and the page is shown, or
+  after offering): when it is off, a warning with the NixOS lines
+  (`services.tailscale.useRoutingFeatures = "server"`, or the sysctls) — nothing is written.
+  Tailscale's own "IP forwarding is off" health warning shown there too.
+- The web interface switch (`--webclient`) with its link; under "More" (collapsed): the app
+  connector, source NAT for offered routes, stateful filtering, the peer relay's port
+  (`--relay-server-port=`, empty = off), posture reports (`--report-posture`), the netfilter
+  mode and the tags (read only: tags change only with `tailscale up`).
+- An "SSH" section: Tailscale's SSH server (`set --ssh=`), who may log in (the tailnet's access
+  rules, linked), off with the reason when the tailnet does not allow it, Tailscale's own SSH
+  health warnings. Device rows that run Tailscale SSH get a "Copy ssh command" chip (`ssh
+  <MagicDNS name>`).
+- About: update checks (`--update-check`) and automatic updates (`--auto-update`, off with the
+  reason where Tailscale is updated with the system).
+- Tailscale's refusals shown as it says them (the CLI's "Warning:" lines skipped; the lose-ssh
+  confirmation that cannot be answered without a terminal explained).
+- Fixed (owner's report): a name set while disconnected looked as if the rename had failed —
+  the page now shows the name set (prefs), and says "the tailnet shows it after connecting" or
+  "updating" while status still has the old one; the old MagicDNS name is marked, not offered as
+  a chip. The system's name is read once (/proc/sys/kernel/hostname) to tell the same when going
+  back to it.
+- Fixed (owner's report): "This device"'s label/value rows (name, MagicDNS, connection, key)
+  are together, so their label column no longer shows as a gap beside a lone "Name" row.
+- IPC `sharing`, `advertiseRoute`, `removeRoute`, `advertiseExitNode`, `setSsh`,
+  `readForwarding`; `profiles` says `namePending` / `nameNote`.
+- After the review: a route edit is an intent (add / remove one network) planned from prefs read
+  again just before the command runs and again before the retry through pkexec; refused while
+  prefs are not read, not read again since the last change or account switch, or cut at 256
+  routes, and for a network not offered; aborted when the account changed meanwhile; the list
+  sent is held at once (a second edit before the next read builds on it). The SSH and web
+  interface hints say what they expose; the VPN card shows a new name while the tailnet has the
+  old one; IPv4-mapped IPv6 routes are written as Tailscale prints them; a delayed process
+  answer after its object was destroyed no longer throws.
+- Stand-ins: every new flag of `set` with the real composition, checks and refusals (host bits,
+  an address without prefix, half an exit pair, exit node in use, SSH not allowed, auto-update on
+  NixOS, the lose-ssh abort, `--advertise-tags` unknown to `set`), an admin's approval (a state
+  file), a name set while not Running reaching status only with `up`. Fixtures
+  status-sharing.json and prefs-sharing.json.
+
 ## 0.3.0 — unreleased (delivery step 2)
 
 Needs the shell's module API 1.2 (unchanged: no core change for this step).
