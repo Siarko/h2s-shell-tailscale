@@ -1,9 +1,9 @@
 # Changelog
 
-## 0.6.0 — unreleased (delivery step 5: serve and Funnel, certificates, tailnet lock, an exit node per network)
+## 0.6.0 — unreleased (delivery steps 5 and 6: serve and Funnel, certificates, tailnet lock, an exit node per network; a bar widget and popup)
 
 Needs the shell's module API 1.3 (`Api.networks`, `Api.vpnsUp`: the saved networks and the VPNs up, new
-for the exit node per network). The new live suite asks for 60 s (its three scenarios run one after another).
+for the exit node per network; `module.presetValue` / `setPresetValue` for the bar widget's settings). The new live suite asks for 60 s (its three scenarios run one after another).
 
 - Serve (a collapsed section): what this computer shares, read with `serve status --json` (any user
   may) when the section is open on screen and after each change — each entry with where it listens,
@@ -31,6 +31,18 @@ for the exit node per network). The new live suite asks for 60 s (its three scen
   `tailnetLock`, `readTailnetLock`, `networkExit`, `setNetworkExit <network id> <choice>`.
 - Stand-ins: serve and Funnel (status, add, remove, reset, the CLI's and daemon's refusals), `cert`,
   `lock status --json`, an `openssl` for the end date.
+- Step 6: a bar widget "Tailscale" with a popup, not on the bar by default (Settings → Bar → Add
+  widget). The
+  icon coloured by state (off, connecting, connected, needs attention, nothing to use), a globe
+  while an exit node is in use, a badge for received files, optional text (none, state, exit
+  node). No tooltip.
+- Step 6: the popup — state with Connect or Disconnect (or Log in, Start), the account, the
+  exit-node chooser, this device's addresses, devices online first with a cap and "Send file…",
+  received files with Save, Settings… and Admin console. It renders the client's state; nothing
+  new runs.
+- Step 6: its preset pane (text, badge, device cap) through `module.presetValue` /
+  `setPresetValue`; `TailscaleWidgetRules` (pure); IPC `widget`; the device rows' "Send file…"
+  rule shared (`canSendTo`); Taildrop's `chooseInPage` opens the page's file chooser from the popup.
 
 ## 0.5.0 — unreleased (delivery step 4: Taildrop)
 

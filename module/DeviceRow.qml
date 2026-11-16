@@ -77,7 +77,7 @@ Rectangle {
             // Taildrop (the operator's): this device as the target, then the section's file chooser
             SmallButton {
                 objectName: "taildropDeviceSend"
-                visible: root.client !== null && root.device?.canReceiveFiles === true && root.client.view?.phase === "running" && root.client.taildrop.isOperator
+                visible: root.client !== null && TailscaleWidgetRules.canSendTo(root.device, root.client.view?.phase, root.client.taildrop?.isOperator)
                 label: "Send file…"
                 fontSize: Api.theme.fontSizeXSmall
                 onClicked: root.client.taildrop.chooseFor(root.device.id)

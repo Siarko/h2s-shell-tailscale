@@ -82,6 +82,21 @@ TestCase {
             assertEqual(module.facts["tailscale.exitNode"], undefined, "… no fact with the exit node's name");
             assert(module.setFact("connected", "yes") !== "", "… a fact checked against its declared type");
             assert(Tailscale.client.streamStarts >= 1, "the main's client streams the bus");
+            // Step 6: its bar widget, offered to the bar (the host's widget entries feed
+            // WidgetRegistry, which the bar section editor lists), built as the bar builds it
+            const widgetEntry = (module.host.widgetEntries ?? []).find(entry => entry.type === "tailscale");
+            assertEqual(widgetEntry?.module, "tailscale", "its bar widget \"tailscale\" is among the shell's widget types");
+            assert(String(widgetEntry?.widget).startsWith("file://") && String(widgetEntry?.widget).endsWith("/TailscaleWidget.qml"), "… its widget by URL");
+            assert(String(widgetEntry?.popupPanel).endsWith("/TailscalePopup.qml") && String(widgetEntry?.settings).endsWith("/TailscaleWidgetSettings.qml"),
+                   "… with its popup and its settings pane");
+            assertEqual(JSON.stringify(widgetEntry?.presetDefaults), JSON.stringify({ text: "none", badge: true, devices: 5 }), "… and its presets' defaults");
+            const widgetComponent = Qt.createComponent(widgetEntry.widget, Component.PreferSynchronous);
+            const widget = widgetComponent.status === Component.Ready ? widgetComponent.createObject(null, { module: module }) : null;
+            assert(widget !== null, "the widget builds in the shell (" + widgetComponent.errorString() + ")");
+            assertEqual(widget?.summary.kind, "connected", "… showing the live client's state: connected");
+            if (typeof module.presetValue === "function")
+                assertEqual(module.presetValue("tailscale", "", "devices"), 5, "… its preset read through the handle (module API 1.3)");
+            widget?.destroy();
             // Off: the handle's host is the shell's module host
             assert(module.host.setEnabled("tailscale", false), "turned off");
         });

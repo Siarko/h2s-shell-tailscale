@@ -3,9 +3,12 @@
 The Tailscale module for [h2s-shell](../h2s-shell), the Quickshell desktop shell: Tailscale
 listed among the shell's VPNs (connect, disconnect, log in and out, exit nodes), with a page of
 its own for the main switches, the accounts, this device, sharing this computer (exit node, routes,
-SSH server, web interface), Taildrop (sending files, saving received ones), the devices and diagnostics. The plan is the shell's
+SSH server, web interface), Taildrop (sending files, saving received ones), serve and Funnel,
+certificates, tailnet lock status, an exit node per network, the devices and diagnostics — and a
+bar widget of its own with a popup. The plan is the shell's
 `docs/plans/tailscale.md`; the module system it plugs into is `docs/plans/modules.md`. It needs
-module API 1.3 (the VPN slots, the handle's `resumed()`, the pages' `shown`; since 1.3 the networks and the VPNs up).
+module API 1.3 (the VPN slots, the handle's `resumed()`, the pages' `shown`; since 1.3 the networks
+and the VPNs up, and its widget's presets).
 
 ## What works (delivery step 1)
 
@@ -243,7 +246,44 @@ asks for root or a sudo-capable operator for any config holding one (ipn/localap
 ones are listed and may be removed, never added. Unix sockets, Tailscale Services, foreground
 `serve`: counted, not managed. Funnel over TCP. Certificate renewal. Changing the tailnet lock.
 
-Not yet: a bar widget of its own (delivery step 6 of the plan's §8).
+## What works (delivery step 6: the bar widget)
+
+A bar widget of its own, **Tailscale**, with a popup. It is not on the bar by default.
+
+**Adding it**: Settings → Behaviour → Bar, in the left, center or right section "＋ Add widget",
+then "Tailscale" — offered while the module is loaded. Its ⚙ in the section editor has the
+popup mode (click or hover, as every popup widget) and, once the entry has a preset ("Customize"),
+its settings:
+
+- **Text** beside the icon: None (default), State ("On", "Off", "Connecting", "Log in", …) or
+  Exit node (the exit node's name while one is in use).
+- **Badge**: a count on the icon while received Taildrop files wait (a dot when only the bus said
+  so: not the operator). On by default.
+- **Devices**: how many the popup lists (3, 5, 10 or 20; default 5).
+
+The presets are read and written through the module's handle (`module.presetValue` /
+`setPresetValue`, shell module API 1.3).
+
+**The icon**: Tailscale's VPN glyph (the one the network widget shows for it), coloured like the
+network widget's links: dim while there is nothing to use (not installed, the service stopped,
+the state not read), plain while off, the accent while connected (dimmed while connecting or
+disconnecting), the warning colour when something needs you (logged out, key expired, waiting
+for approval, exit node offline, no access). A small globe beside it while an exit node carries
+the internet traffic. No tooltip: the colour, the optional text and the popup say it.
+
+**The popup**: the state (the entry's own line, as in the network popup) with Connect or
+Disconnect — or the attention's own button (Log in, Start) — and the lock when it will ask for a
+password; the account and tailnet; the exit node (the network popup's chooser, with None); this
+device's addresses and name to copy; the devices, online ones first, each with its address to
+copy and **Send file…** for the operator (it opens the settings page with the file chooser),
+"All devices…" past the cap; received files with **Save** (the operator) and the last save's
+result; **Settings…** (the module's page) and **Admin console**.
+
+The widget and the popup render the live client's state: they start nothing (no timer, no
+process), and the popup does no work while closed. With the module off the widget shows
+nothing (the core's rule for a module's widget); without the daemon, logged out or not installed,
+both say so. Nothing of it is on the lock screen. No middle-click action: no other widget of the
+shell has one.
 
 ## What needs root (asked through pkexec, answered by the shell's polkit agent)
 
@@ -273,6 +313,7 @@ states, never the networks), `advertiseRoute <network>`, `removeRoute <network>`
 `profiles` also says `namePending` and `nameNote`.
 Since step 4: `taildrop` (counts and states: targets, the send's per-file outcomes, waiting count, saves — no names, paths or addresses), `sendFile <device id> <absolute path>` (the operator only, as you: never a prompt), `cancelSend`, `saveReceived` (the operator only: never a prompt).
 Since step 5: `serve` (counts and states: entries, types, ports, Funnel per entry, what is missing — no names or links), `readServe`, `sharePort <port> <local port>`, `setFunnel <port> <true|false>` (under the rule of `setHostname`), `tailnetLock` (read, enabled, signed, locked out, trusted keys), `readTailnetLock`, `networkExit` (rows, networks, decision, runs), `setNetworkExit <network id> <none|auto|node id>`.
+Since step 6: `widget` (the bar widget's state: kind, tone, the exit-node mark, the badge — no names).
 
 
 ## Trying it in a development shell
@@ -292,7 +333,7 @@ rights; the first change asks for an administrator's password.
 
 ```
 module/                 the module itself — what gets installed
-  module.json           the manifest: main, two VPN slots (row, card), the page, a setting, facts, tests
+  module.json           the manifest: main, a bar widget, two VPN slots (row, card), the page, a setting, facts, tests
   qmldir                its types and singletons
   TailscaleRules.qml    pure functions: status/prefs → the VPN entry, devices, exit nodes,
                         the event bus, errors, plans, every command's argv
@@ -314,6 +355,10 @@ module/                 the module itself — what gets installed
   Cert{Rules,Client,Section}.qml         certificates
   Lock{Rules,Client,Section}.qml         tailnet lock (status)
   NetworkExit{Rules,Client,Table}.qml    the exit node by network
+  TailscaleWidget.qml   the bar widget "tailscale" (step 6): icon, state colour, exit-node mark, badge
+  TailscalePopup.qml    its popup
+  TailscaleWidgetSettings.qml  its preset pane (text, badge, device cap)
+  TailscaleWidgetRules.qml  pure: the icon's state, text, badge, the popup's devices, the send request
   tests/                its suites (extend the shell's TestCase: `import qs.tests`)
 fixtures/               redacted real outputs and synthetic ones (see fixtures/README.md)
 tools/

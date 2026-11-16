@@ -10,4 +10,8 @@ import Quickshell
 // A slot contribution reaches the same client as `context.provider.client`.
 Singleton {
     property var client: null
+    // The preset of the bar widget whose popup is open (the popup reads its device cap from
+    // it: a popup panel is not told which widget opened it). Set by TailscaleWidget. Last
+    // writer wins (one popup is open at a time); it affects only the popup's device cap
+    property string popupPreset: ""
 }

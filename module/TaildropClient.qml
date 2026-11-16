@@ -143,6 +143,18 @@ QtObject {
         chooseFilesRequested();
     }
 
+    // The bar popup's "Send file…": this device as the target, and a short-lived request that
+    // the page's Taildrop section opens its file chooser once it is on screen (the popup opens
+    // the page). When it was asked (ms since 1970), 0 for none; honoured only within
+    // TailscaleWidgetRules.chooseRequestMs and only while it still makes sense
+    // (chooseRequestState), so a request never opens a dialog by itself much later
+    property real chooseRequestedAt: 0
+
+    function chooseInPage(deviceId) {
+        targetId = String(deviceId ?? "");
+        chooseRequestedAt = Date.now();
+    }
+
     function addPaths(input) {
         const parsed = TaildropRules.parsePaths(input);
         const next = chosen.slice();

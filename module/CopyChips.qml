@@ -12,6 +12,9 @@ Flow {
 
     // [string], or { label, text }: the chip shows the label and copies the text
     property var texts: []
+    // The widest a chip may be: a longer label (a long MagicDNS name) is cut in the middle. Its
+    // own width by default; set it where the chips do not get a width from their parent
+    property real chipMaxWidth: width
     property string _copied: ""
 
     spacing: 6
@@ -24,7 +27,7 @@ Flow {
         }
         Rectangle {
             required property var modelData
-            implicitWidth: _label.implicitWidth + 10
+            implicitWidth: _label.width + 10
             implicitHeight: _label.implicitHeight + 4
             radius: Api.theme.row.radius
             color: _copyArea.lit ? Api.theme.surfaceHover : Api.theme.surfaceSunken
@@ -32,6 +35,8 @@ Flow {
                 id: _label
                 textFormat: Text.PlainText
                 anchors.centerIn: parent
+                width: Math.min(implicitWidth, Math.max(24, root.chipMaxWidth - 10))
+                elide: Text.ElideMiddle
                 text: root._copied === parent.modelData.text ? "Copied" : parent.modelData.label
                 font.family: Api.theme.fontFamily
                 font.pixelSize: Api.theme.fontSizeXSmall

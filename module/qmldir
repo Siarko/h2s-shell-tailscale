@@ -21,3 +21,4 @@ LockSection 1.0 LockSection.qml
 singleton NetworkExitRules 1.0 NetworkExitRules.qml
 NetworkExitClient 1.0 NetworkExitClient.qml
 NetworkExitTable 1.0 NetworkExitTable.qml
+singleton TailscaleWidgetRules 1.0 TailscaleWidgetRules.qml
