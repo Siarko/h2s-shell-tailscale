@@ -28,6 +28,18 @@ The new live suite asks for 30 s.
 - Stand-ins: `file cp` (checks, the 403, bus progress, TS_FAKE_SEND_DELAY / _FAIL / _REFUSE, a copy
   in sent/), curl's Taildrop inbox (files/: list, fetch, delete; 403 unless the operator),
   TS_FAKE_BUS_FOLLOW.
+- Step 6 (its settings need the shell's module API 1.3; on 1.2 it works with the defaults): a bar
+  widget "Tailscale" with a popup, not on the bar by default (Settings → Bar → Add widget). The
+  icon coloured by state (off, connecting, connected, needs attention, nothing to use), a globe
+  while an exit node is in use, a badge for received files, optional text (none, state, exit
+  node). No tooltip.
+- Step 6: the popup — state with Connect or Disconnect (or Log in, Start), the account, the
+  exit-node chooser, this device's addresses, devices online first with a cap and "Send file…",
+  received files with Save, Settings… and Admin console. It renders the client's state; nothing
+  new runs.
+- Step 6: its preset pane (text, badge, device cap) through `module.presetValue` /
+  `setPresetValue`; `TailscaleWidgetRules` (pure); IPC `widget`; the device rows' "Send file…"
+  rule shared (`canSendTo`); Taildrop's `chooseInPage` opens the page's file chooser from the popup.
 
 ## 0.4.0 — unreleased (delivery step 3)
 

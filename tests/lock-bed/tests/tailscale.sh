@@ -22,8 +22,10 @@
 # then as the operator a file sent to peer4 as the user (never pkexec) and two waiting files saved
 # into the bed's download folder (H2S_TAILSCALE_DOWNLOAD_DIR) — ".bashrc" as
 # "bashrc", owned by the user, nothing left over, never as root —, screenshots of each; an
-# arrival while locked (noticed, not saved, nothing of the module on the lock screen); and the lock
-# still locks and unlocks with the module loaded.
+# arrival while locked (noticed, not saved, nothing of the module on the lock screen); step 6: the
+# module's bar widget on the bed's bar (connected, the Taildrop badge), its popup opened by a click
+# (screenshots), a waiting file saved and the exit node chosen and cleared from it, left open over
+# the lock (the lock screen covers it); and the lock still locks and unlocks with the module loaded.
 
 module_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P) || abort "no module repository"
 [ -f "$module_repo/module/module.json" ] || abort "no module at $module_repo/module"
@@ -64,7 +66,7 @@ mkdir -p "$WORK/downloads"
 export H2S_TAILSCALE_DOWNLOAD_DIR=$WORK/downloads
 
 stack_start --modules "$module_repo/module" --shell-path "$tools" \
-    --settings '{"bar.left": [{"type": "network", "preset": ""}, {"type": "clock", "preset": ""}]}'
+    --settings '{"bar.left": [{"type": "network", "preset": ""}, {"type": "clock", "preset": ""}, {"type": "tailscale", "preset": ""}]}'
 
 ts_state() { shell_ipc tailscale state 2> /dev/null; }
 ts_field() { ts_state | python3 -I -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print(str(v).lower() if isinstance(v,bool) else v)' "$1" 2> /dev/null; }
@@ -379,6 +381,64 @@ screenshot settings-tailscale-taildrop-saved
 check "… the page built without an error or a warning" test "$(module_errors)" = "[]"
 shell_ipc settings close > /dev/null
 
+# ---- Step 6: the module's own bar widget and its popup ----
+# On the bed's bar through its settings (bar.left above); found where it is by the shell's
+# `shelltest cellRect`, its popup's items by `shelltest popupItemRect`
+ts_widget_field() { shell_ipc tailscale widget 2> /dev/null | python3 -I -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print(str(v).lower() if isinstance(v,bool) else v)' "$1" 2> /dev/null; }
+widget_is() { [ "$(ts_widget_field "$1")" = "$2" ]; }
+click_rect() { # click_rect <rect JSON>: a click at its centre
+    move_pointer "$(python3 -I -c 'import json,sys; r=json.loads(sys.argv[1]); print(r["x"] + r["width"] // 2)' "$1")" \
+        "$(python3 -I -c 'import json,sys; r=json.loads(sys.argv[1]); print(r["y"] + r["height"] // 2)' "$1")"
+    send_input "click left"
+}
+popup_content_is() { shell_ipc shelltest popupState | python3 -I -c 'import json,sys; s=json.load(sys.stdin); sys.exit(0 if s["open"] and s["content"] == sys.argv[1] else 1)' "$1"; }
+widget_cell() { shell_ipc shelltest cellRect tailscale; }
+widget_shown() { python3 -I -c 'import json,sys; r=json.loads(sys.argv[1]); sys.exit(0 if r.get("width",0) > 0 else 1)' "$(widget_cell)"; }
+# This computer stops offering itself as an exit node: the daemon refuses to use one meanwhile
+shell_ipc tailscale advertiseExitNode false > /dev/null
+check_within 10 "widget: this computer no longer offers an exit node" sharing_is exitNode false
+arrive "notes.txt" "notes"
+check_within 10 "widget: a file waits (for the badge)" drop_is waitingCount 1
+check_within 10 "the Tailscale widget is on the bar" widget_shown
+check "… it shows connected" widget_is kind connected
+check "… in the accent" widget_is tone accent
+check "… with the badge: one file waiting" widget_is badge 1
+widget_rect=$(widget_cell)
+log "tailscale widget: $widget_rect"
+click_rect "$widget_rect"
+check_within 5 "a click on it opens its popup" popup_content_is tailscale
+check_within 5 "… Disconnect offered" item_shown tailscalePopupDisconnect
+check "… this device's addresses" item_shown tailscalePopupSelf
+check "… the devices" item_shown tailscalePopupDevice
+check "… Save for the waiting file (the operator)" item_shown tailscalePopupSave
+check "… Settings…" item_shown tailscalePopupSettings
+sleep 1
+screenshot widget-popup
+click_rect "$(item_rect tailscalePopupSave)"
+check_within 10 "Save in the popup: the file saved" test -f "$WORK/downloads/notes.txt"
+check_within 5 "… the badge gone" widget_is badge ""
+# The exit node from the popup's chooser: the header opens the list, the first node chosen
+check_within 5 "the popup's exit-node chooser" item_shown tailscaleExitNodeHeader
+click_rect "$(item_rect tailscaleExitNodeHeader)"
+check_within 5 "… its list open" item_shown tailscaleExitNode-2
+pkexec_before=$(grep -c . "$tools/pkexec.log")
+click_rect "$(item_rect tailscaleExitNode-2)"
+check_within 10 "an exit node chosen in the popup: in use" ts_is exitNode true
+check "… set --exit-node=<its address>, run plainly" grep -qx "set --exit-node=100\.64\.0\.[0-9]*" "$tools/log"
+check_within 5 "… the widget shows it (its mark)" widget_is kind exit-node
+check "… run as the operator, never through pkexec" test "$(grep -c . "$tools/pkexec.log")" = "$pkexec_before"
+sleep 1
+screenshot widget-popup-exit-node
+check_within 5 "the popup still open" popup_content_is tailscale
+click_rect "$(item_rect tailscaleExitNodeHeader)"
+check_within 5 "… the list open again" item_shown tailscaleExitNode-0
+click_rect "$(item_rect tailscaleExitNode-0)"
+check_within 10 "\"None\" in the popup: no exit node" ts_is exitNode false
+check_within 5 "… the widget back to connected" widget_is kind connected
+check "… the popup built without an error or a warning" test "$(module_errors)" = "[]"
+# Left open for the lock below: the lock screen must cover it
+
+
 check "the stand-ins were called (their log)" test "$(grep -c . "$tools/log")" -gt 3
 outside_calls() { grep -cv "^$tools/[a-z-]*\$" "$tools/calls"; }
 check "every program the module ran was one of the seam's: each call's path under $tools" test "$(grep -c . "$tools/calls")" -gt 3 -a "$(outside_calls)" = 0
@@ -393,8 +453,10 @@ check_within 5 "lock by IPC locks the compositor" compositor_locked
 check_within 5 "the compositor confirmed it" state_is secure true
 # A file arriving while locked: the module adds nothing to the lock screen (no slot there); its
 # notification is the shell's, shown as the lock screen's privacy setting allows; nothing saved
+log "popup while locked: $(shell_ipc shelltest popupState) (under the lock surface: the screenshot shows only the lock screen)"
+notices_before=$(ts_drop_field notices)
 arrive "while-locked.txt" "x"
-check_within 10 "an arrival while locked: noticed (the shell's notification)" drop_is notices 3
+check_within 10 "an arrival while locked: noticed (the shell's notification)" drop_is notices "$((notices_before + 1))"
 sleep 1
 screenshot locked-after-arrival
 check "… not saved by itself (auto-save is off)" test ! -e "$WORK/downloads/while-locked.txt"

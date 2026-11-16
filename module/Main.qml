@@ -220,6 +220,15 @@ QtObject {
             main.client.runDiagnostics();
         }
 
+        // Step 6, the bar widget's state as it shows it (TailscaleWidgetRules, the same the
+        // widget reads) — no names: { kind, tone, mark, badge }
+        function widget(): string {
+            const summary = TailscaleWidgetRules.summaryOf(main.client);
+            const drop = main.client.taildrop;
+            const badge = TailscaleWidgetRules.badge(drop.waitingCount, drop.busWaiting, true);
+            return JSON.stringify({ kind: summary.kind, tone: summary.tone, mark: summary.mark, badge: badge.shown ? (badge.text || "dot") : "" });
+        }
+
         function diagnostics(): string {
             const result = main.client.diagnostics;
             return JSON.stringify({

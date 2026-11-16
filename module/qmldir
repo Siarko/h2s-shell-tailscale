@@ -9,3 +9,4 @@ SshSection 1.0 SshSection.qml
 singleton TaildropRules 1.0 TaildropRules.qml
 TaildropClient 1.0 TaildropClient.qml
 TaildropSection 1.0 TaildropSection.qml
+singleton TailscaleWidgetRules 1.0 TailscaleWidgetRules.qml

@@ -17,6 +17,8 @@ ColumnLayout {
     property var client: null
     // Kept for the page's interface: Taildrop never asks for a password
     property string need: ""
+    // On screen (the page's `shown`): the popup's "Send file…" waits for it
+    property bool shown: false
 
     readonly property var taildrop: client?.taildrop ?? null
     readonly property bool _connected: client?.view?.phase === "running"
@@ -357,6 +359,35 @@ ColumnLayout {
         color: Api.theme.textMuted
     }
 
+    // The bar popup's "Send file…" (TaildropClient.chooseRequestedAt): the file chooser opened
+    // once this section is on screen, only within a few seconds of the click and only while it
+    // still makes sense (TailscaleWidgetRules.chooseRequestState); checked when the request
+    // comes, when this section is built, comes on screen or the conditions change — no timer
+    property int choosersOpened: 0
+    function _chooseIfWanted() {
+        if (!taildrop)
+            return;
+        const state = TailscaleWidgetRules.chooseRequestState({
+            requestedAt: taildrop.chooseRequestedAt, now: Date.now(), operator: _operator, connected: _connected,
+            targetExists: taildrop.target !== null && taildrop.target !== undefined, shown: shown && visible
+        });
+        if (state === "expire" || state === "open")
+            taildrop.chooseRequestedAt = 0;
+        if (state === "open") {
+            choosersOpened++;
+            _fileDialog.open();
+        }
+    }
+    onShownChanged: _chooseIfWanted()
+    onVisibleChanged: _chooseIfWanted()
+    on_OperatorChanged: _chooseIfWanted()
+    on_ConnectedChanged: _chooseIfWanted()
+    Component.onCompleted: Qt.callLater(_chooseIfWanted)
+    Component.onDestruction: {
+        if (taildrop)
+            taildrop.chooseRequestedAt = 0;
+    }
+
     FileDialog {
         id: _fileDialog
         title: "Files to send"
@@ -378,6 +409,9 @@ ColumnLayout {
         target: root.taildrop
         function onChooseFilesRequested() {
             _fileDialog.open();
+        }
+        function onChooseRequestedAtChanged() {
+            root._chooseIfWanted();
         }
     }
 }
