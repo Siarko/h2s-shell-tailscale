@@ -227,9 +227,9 @@ TestCase {
             assert(fresh.warnings.some(warning => warning.kind === "exit-node-offline"), "exit node offline for 10 s: the warning");
             check("exit-node-offline", "exit-node", { exitNodeOfflineSince: now - 120000 },
                   { state: "activated", attention: "exit-node-offline", status: "Via peer4 (offline)" }, "exit node offline for 2 min: attention");
-            const expiring = check("key-expiring", "running", {}, { state: "activated", status: "Tailnet only" }, "key expiring");
-            const keyWarning = expiring.warnings.find(warning => warning.kind === "key-expiring");
-            assert(keyWarning && keyWarning.days === 3, "key expiring: a warning in 3 days, not attention");
+            // Within reauthSoonDays (7): a warning and the status line, never attention (TailscaleAccountsTest has the edges)
+            const expiring = check("key-expiring", "running", {}, { state: "activated", attention: null, status: "Tailnet only · key expires in 3 days" }, "key expiring in 3 days");
+            assert(expiring.warnings.some(warning => warning.kind === "key-expiring" && warning.days === 3), "key expiring in 3 days: a warning");
             const health = check("health-warnings", "running", {}, { state: "activated", status: "Tailnet only" }, "health warnings");
             assertEqual(health.warnings.filter(warning => warning.kind === "health").length, 2, "health warnings: both");
             const update = check("update-available", "running", { updateManagedBySystem: true }, { state: "activated", status: "Tailnet only" }, "update");
@@ -290,7 +290,7 @@ TestCase {
             assertEqual(rules.entry(rules.parseStatus(organisation), prefs("running"), { now: now }).name, "Tailscale · Example Org",
                         "entry: a named organisation tailnet: \"Tailscale · <its name>\"");
             assertEqual(rules.entryTailnet(status("running"), {}), "", "entryTailnet: never an e-mail address");
-            assertEqual(rules.tailnetName(status("running"), {}), "user@example.com", "tailnetName (the card's): the account's tailnet as it is");
+            assertEqual(rules.tailnetName(status("running"), {}), "example-tailnet.ts.net", "tailnetName (the card's and the page's): a personal tailnet by its MagicDNS suffix, never the e-mail address it is named after");
             assertEqual(rules.entry(null, null, { daemon: "not-running", lastTailnet: "user@example.com" }).name, "Tailscale",
                         "entry: an e-mail address remembered from before is not shown");
             same(running.detail, { iface: "tailscale0", interfaceName: "tailscale0", addresses: ["100.64.0.1", "fd7a:115c:a1e0::1"],

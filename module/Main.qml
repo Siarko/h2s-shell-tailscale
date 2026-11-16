@@ -103,6 +103,54 @@ QtObject {
         function refresh(): void {
             main.client.refresh();
         }
+
+        // The accounts as read (ids only, no names or addresses): { read, ids, selected,
+        // outdated, hostname (prefs' --hostname: the user's own choice), keyState, loginInterrupted }
+        function profiles(): string {
+            const client = main.client;
+            const list = client.accounts ?? [];
+            return JSON.stringify({
+                read: client.accounts !== null, ids: list.map(account => account.id), selected: list.find(account => account.selected)?.id ?? "",
+                outdated: client.accountsOutdated, hostname: client.prefs?.hostname ?? "", keyState: client.keyState.state,
+                loginInterrupted: client.loginInterrupted !== null
+            });
+        }
+
+        // These change Tailscale or read what only root may: as the page's buttons, but never
+        // a password prompt from a script — only while this user needs none (the operator) or
+        // the tools seam names stand-ins (the lock-bed test); and asked as origin "network"
+        // (_ipcOrigin) outside the seam, so a denial (a stale canChange) is a failure, not a prompt
+        function readProfiles(): void {
+            if (main._ipcMayChange())
+                main.client.readAccounts(main._ipcOrigin());
+        }
+
+        function switchProfile(id: string): void {
+            if (main._ipcMayChange())
+                main.client.switchAccount(id, main._ipcOrigin());
+        }
+
+        function setHostname(name: string): void {
+            if (main._ipcMayChange())
+                main.client.setHostname(name, main._ipcOrigin());
+        }
+
+        // Diagnostics need no privileges; their state without addresses or names
+        function runDiagnostics(): void {
+            main.client.runDiagnostics();
+        }
+
+        function diagnostics(): string {
+            const result = main.client.diagnostics;
+            return JSON.stringify({
+                running: result.running, ran: result.ranAt > 0, netcheckRows: result.netcheck.length, dnsRows: result.dns.length,
+                nearest: result.nearest?.code ?? "", errors: result.errors.length, health: main.client.health.length
+            });
+        }
+    }
+
+    function _ipcMayChange() {
+        return client.canChange || _ipcOrigin() === "user";
     }
 
     function _ipcOrigin() {

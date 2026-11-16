@@ -93,7 +93,21 @@ run "$work/out" "$work/err" "$TS" up --timeout=5s
 check "up with any flag (even --timeout) → the revert error" grep -q "requires mentioning all" "$work/err"
 check "switch --list --json replays its fixture" cmp -s <("$TS" switch --list --json) "$FIXTURES/switch-list.json"
 check "switch --list replays the table" cmp -s <("$TS" switch --list) "$FIXTURES/switch-list.txt"
-check "switch to another account" grep -q "^Success.$" <("$TS" switch c3d4)
+check "switch to another account: says so" grep -q "^Switching to account \"user1@example.org\"$" <("$TS" switch c3d4)
+check "… and the list marks it" grep -q "user1@example.org\*$" <("$TS" switch --list)
+check "… its own status (the work tailnet)" grep -q "example-org.ts.net" <("$TS" status --json)
+check "… its login in the prefs" grep -q "\"LoginName\": \"user1@example.org\"" <("$TS" debug prefs)
+"$TS" set --nickname=office --hostname=box > /dev/null
+check "set --nickname names the account in use" grep -q "\"nickname\": \"office\"" <("$TS" switch --list --json)
+check "set --hostname renames this computer in status" grep -q "\"HostName\": \"box\"" <("$TS" status --json)
+"$TS" login > /dev/null 2>&1
+check "login while logged in adds an account (e5f6), in use" grep -q "^e5f6 .*user2@example.net\*$" <("$TS" switch --list)
+"$TS" switch remove c3d4
+check "switch remove drops an account" test "$("$TS" switch --list | grep -c c3d4)" = 0
+printf "a1b2\n" > "$work/state/current"; printf "running\n" > "$work/state/scenario"
+TS_FAKE_LOGIN_SAME=1 "$TS" login > /dev/null 2>&1
+check "login with the same account: back on its own profile" grep -q "user1@example.com\*$" <("$TS" switch --list)
+check "… with login's defaults (accept routes off): the old prefs lost" grep -q "\"RouteAll\": false" <("$TS" debug prefs)
 run "$work/out" "$work/err" "$TS" switch zz99
 check "switch to an unknown account fails with the source's text" grep -q 'No profile named "zz99"' "$work/err"
 
@@ -141,7 +155,10 @@ check "scenario rich: prefs-rich" cmp -s <(TS_FAKE_STATE=rich "$TS" debug prefs)
 check "ping replays pongs" grep -q "^pong from" <("$TS" ping --c=3 --timeout=5s laptop)
 run "$work/out" "$work/err" env TS_FAKE_PING=timeout "$TS" ping --c=3 old-desktop
 check "ping timeout: exit 1, no reply" test "$status" = 1
-check "netcheck replays JSON" cmp -s <("$TS" netcheck --format=json) "$FIXTURES/netcheck.json"
+check "netcheck replays the real shape (a comment, then JSON)" cmp -s <("$TS" netcheck --format=json 2> /dev/null) "$FIXTURES/netcheck-real.json"
+check "dns status --json replays its fixture" cmp -s <("$TS" dns status --json) "$FIXTURES/dns-status.json"
+check "debug derp-map replays its fixture" cmp -s <("$TS" debug derp-map) "$FIXTURES/derp-map.json"
+check "version --json replays its fixture" cmp -s <("$TS" version --json) "$FIXTURES/version.json"
 run "$work/out" "$work/err" "$TS" file cp /tmp/a "/tmp/with space" laptop:
 check "file cp with a target: ok" test "$status" = 0
 check "file cp: paths arrive as separate arguments" grep -qF "file cp /tmp/a /tmp/with space laptop:" "$work/log"

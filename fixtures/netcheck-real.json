@@ -1,0 +1,40 @@
+# Warning: this JSON format is not yet considered a stable interface
+{
+	"Now": "2026-11-16T17:56:20.556537977Z",
+	"UDP": true,
+	"IPv6": false,
+	"IPv4": true,
+	"IPv6CanSend": false,
+	"IPv4CanSend": true,
+	"OSHasIPv6": true,
+	"ICMPv4": false,
+	"MappingVariesByDestIP": false,
+	"UPnP": false,
+	"PMP": false,
+	"PCP": false,
+	"PreferredDERP": 14,
+	"RegionLatency": {
+		"1": 184843305,
+		"4": 30015544,
+		"8": 32365386,
+		"14": 25432679,
+		"18": 37875516,
+		"28": 30049561
+	},
+	"RegionV4Latency": {
+		"1": 184843305,
+		"4": 30015544,
+		"8": 32365386,
+		"14": 25432679,
+		"18": 37875516,
+		"28": 30049561
+	},
+	"RegionV6Latency": {},
+	"GlobalV4Counters": {
+		"198.51.100.77:37078": 65
+	},
+	"GlobalV6Counters": null,
+	"GlobalV4": "198.51.100.77:37078",
+	"GlobalV6": "",
+	"CaptivePortal": false
+}

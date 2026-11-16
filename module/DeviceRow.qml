@@ -6,14 +6,17 @@ import qs.components
 
 // One device of the tailnet on the page's list (TailscaleRules.peers' entry): its name, owner
 // and system, online or last seen, how traffic goes (direct, relayed), its addresses with
-// copy, its traffic while the page is open, and a mark when it can be an exit node
+// copy, its traffic while the page is open, a mark when it can be an exit node, and "Ping"
+// (one Tailscale ping: direct or relayed, the time)
 Rectangle {
     id: root
 
     property var device: null
     // Show the bytes (the page watches: the counters are re-read)
     property bool showTraffic: false
-    property string _copied: ""
+    // TailscaleClient, for "Ping" (null: no button)
+    property var client: null
+    readonly property var _ping: client && device ? (client.pings[device.id] ?? null) : null
 
     implicitHeight: _column.implicitHeight + 12
     radius: Api.theme.row.radius
@@ -57,10 +60,28 @@ Rectangle {
             }
             Text {
                 textFormat: Text.PlainText
+                objectName: "tailscalePingResult"
+                visible: root._ping !== null
+                text: "ping: " + (root._ping?.text ?? "")
+                font.family: Api.theme.fontFamily
+                font.pixelSize: Api.theme.fontSizeXSmall
+                color: root._ping?.ok === false && root._ping?.running === false ? Api.theme.warning : Api.theme.textSecondary
+            }
+            Text {
+                textFormat: Text.PlainText
                 text: root.device?.online ? (root._connection || "online") : ("last seen " + (root.device?.lastSeenText ?? "never"))
                 font.family: Api.theme.fontFamily
                 font.pixelSize: Api.theme.fontSizeXSmall
                 color: root.device?.connection === "relayed" ? Api.theme.warning : Api.theme.textMuted
+            }
+            // `tailscale ping --c=1 --timeout=3s`: how a packet gets there now (direct or relayed)
+            SmallButton {
+                objectName: "tailscalePing"
+                visible: root.client !== null && root.device?.online === true
+                label: "Ping"
+                fontSize: Api.theme.fontSizeXSmall
+                available: !(root._ping?.running ?? false)
+                onClicked: root.client.ping(root.device)
             }
         }
         Text {
@@ -73,40 +94,9 @@ Rectangle {
             font.pixelSize: Api.theme.fontSizeSmall
             color: root.device?.keyExpired ? Api.theme.warning : Api.theme.textMuted
         }
-        Flow {
+        CopyChips {
             Layout.fillWidth: true
-            spacing: 6
-            Repeater {
-                model: ScriptModel {
-                    values: (root.device?.addresses ?? []).concat(root.device?.dnsName ? [root.device.dnsName] : []).map(text => ({ text: text }))
-                    objectProp: "text"
-                }
-                Rectangle {
-                    required property var modelData
-                    implicitWidth: _address.implicitWidth + 10
-                    implicitHeight: _address.implicitHeight + 4
-                    radius: Api.theme.row.radius
-                    color: _copyArea.lit ? Api.theme.surfaceHover : Api.theme.surfaceSunken
-                    Text {
-                        textFormat: Text.PlainText
-                        id: _address
-                        anchors.centerIn: parent
-                        text: root._copied === parent.modelData.text ? "Copied" : parent.modelData.text
-                        font.family: Api.theme.fontFamily
-                        font.pixelSize: Api.theme.fontSizeXSmall
-                        color: Api.theme.textSecondary
-                    }
-                    PointerArea {
-                        id: _copyArea
-                        anchors.fill: parent
-                        centred: false
-                        onClicked: {
-                            Api.copy(parent.modelData.text);
-                            root._copied = parent.modelData.text;
-                        }
-                    }
-                }
-            }
+            texts: (root.device?.addresses ?? []).concat(root.device?.dnsName ? [root.device.dnsName] : [])
         }
         Text {
             textFormat: Text.PlainText

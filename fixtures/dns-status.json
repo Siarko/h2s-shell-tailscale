@@ -1,0 +1,37 @@
+{
+  "TailscaleDNS": true,
+  "CurrentTailnet": {
+    "MagicDNSEnabled": true,
+    "MagicDNSSuffix": "example-tailnet.ts.net",
+    "SelfDNSName": "self.example-tailnet.ts.net."
+  },
+  "SplitDNSRoutes": {
+    "example.com": [
+      {
+        "Addr": "192.168.1.53"
+      }
+    ],
+    "ts.net.": [
+      {
+        "Addr": "192.0.2.53"
+      },
+      {
+        "Addr": "2620:111:8007::53"
+      }
+    ]
+  },
+  "SearchDomains": [
+    "example-tailnet.ts.net"
+  ],
+  "ExtraRecords": [
+    {
+      "Name": "start.example-tailnet.ts.net.",
+      "Value": "100.64.0.20"
+    }
+  ],
+  "ExitNodeFilteredSet": [
+    ".ts.net",
+    ".tailscale.net"
+  ],
+  "SystemDNSError": "Access denied: dns-osconfig dump access denied"
+}

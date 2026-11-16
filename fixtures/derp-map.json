@@ -1,0 +1,10 @@
+{
+	"Regions": {
+		"1": { "RegionID": 1, "RegionCode": "nyc", "RegionName": "New York City", "Nodes": [ { "Name": "1f", "RegionID": 1, "HostName": "derp1f.example.com" } ] },
+		"4": { "RegionID": 4, "RegionCode": "fra", "RegionName": "Frankfurt", "Nodes": [ { "Name": "4a", "RegionID": 4, "HostName": "derp4a.example.com" } ] },
+		"8": { "RegionID": 8, "RegionCode": "lhr", "RegionName": "London", "Nodes": [] },
+		"14": { "RegionID": 14, "RegionCode": "ams", "RegionName": "Amsterdam", "Nodes": [] },
+		"18": { "RegionID": 18, "RegionCode": "par", "RegionName": "Paris", "Nodes": [] },
+		"28": { "RegionID": 28, "RegionCode": "waw", "RegionName": "Warsaw", "Nodes": [] }
+	}
+}

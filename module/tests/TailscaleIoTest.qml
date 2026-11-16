@@ -176,8 +176,8 @@ TestCase {
                 ["switchAccount", { id: "c3d4" }, ["tailscale", "switch", "c3d4"]],
                 ["switchList", {}, ["tailscale", "switch", "--list", "--json"]],
                 ["removeAccount", { id: "c3d4" }, ["tailscale", "switch", "remove", "c3d4"]],
-                ["ping", { target: "laptop", count: 3 }, ["tailscale", "ping", "--c=3", "--timeout=5s", "laptop"]],
-                ["ping", { target: "100.64.0.11" }, ["tailscale", "ping", "--c=5", "--timeout=5s", "100.64.0.11"]],
+                ["ping", { target: "laptop", count: 3 }, ["tailscale", "ping", "--c=3", "--timeout=3s", "laptop"]],
+                ["ping", { target: "100.64.0.11" }, ["tailscale", "ping", "--c=1", "--timeout=3s", "100.64.0.11"]],
                 ["netcheck", {}, ["tailscale", "netcheck", "--format=json"]],
                 ["fileCp", { files: ["/home/u/a.txt", "/home/u/with space.pdf"], target: "laptop" }, ["tailscale", "file", "cp", "/home/u/a.txt", "/home/u/with space.pdf", "laptop:"]],
                 ["fileTargets", {}, ["tailscale", "file", "cp", "--targets"]],
@@ -198,8 +198,10 @@ TestCase {
                 ["prefs", {}, ["tailscale", "debug", "prefs"]],
                 ["exitNodeSuggest", {}, ["tailscale", "exit-node", "suggest"]],
                 ["exitNodeList", {}, ["tailscale", "exit-node", "list"]],
-                ["dnsStatus", {}, ["tailscale", "dns", "status"]],
-                ["version", {}, ["tailscale", "version"]],
+                ["dnsStatus", {}, ["tailscale", "dns", "status", "--json"]],
+                ["version", {}, ["tailscale", "version", "--json"]],
+                ["derpMap", {}, ["tailscale", "debug", "derp-map"]],
+                ["nickname", { name: "home" }, ["tailscale", "set", "--nickname=home"]],
                 ["startService", {}, ["systemctl", "start", "tailscaled.service"]]
             ];
             for (const row of table)

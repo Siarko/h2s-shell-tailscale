@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.3.0 — unreleased (delivery step 2)
+
+Needs the shell's module API 1.2 (unchanged: no core change for this step).
+
+- Accounts on the page: the account in use and its tailnet under the state; the list on "Show
+  accounts" (`switch --list --json`, through pkexec unless you are the operator; kept in memory
+  only, read again by itself only for the operator), switch, remove another account (delete
+  button), add an account (a bare `login`), a nickname for the account in use (`set
+  --nickname=`, prefilled). A login from a logged-in account that did not finish leaves
+  Tailscale on a new, empty profile (`login` moves there first, before its link): the next read
+  decides, the page says so and offers "Switch back". "Add account" says it disconnects.
+- A personal tailnet is named by its MagicDNS suffix on the card and the page, no longer by the
+  e-mail address it is named after (the address stays in the account line).
+- This device: its name, rename (`set --hostname=`, checked as a DNS label first; back to the
+  system's name), addresses and MagicDNS name to copy, online and home relay, the key's expiry.
+- A key that expires: a warning from 14 days, within 7 days on the entry's status line too, and
+  the admin console's link on the page — no "Renew" (a bare `login` would disconnect and, with
+  the same account, reset this device's settings). Beside an expired key's "Log in": that
+  logging in again resets the settings.
+- Diagnostics, collapsed and run only when asked: client version, netcheck (with the relays'
+  names from `debug derp-map`), `dns status --json`, every health warning with its title, the
+  update notice; "Copy diagnostics" (no keys, no links). No `bugreport`.
+- Ping a device from its row (`ping --c=1 --timeout=3s`): direct or relayed, the time.
+- After the review: IPC changes are asked as origin "network" outside the stand-ins (a denial
+  is a failure, never a prompt); the list is read again by itself without a prompt; an account
+  is not removed while the list is out of date or when it is the one in use; "Copy
+  diagnostics" also drops scheme-less links and addresses in health texts; shorter netcheck
+  texts; the stand-in's `login` moves to the empty profile first and resets the prefs of a
+  same-account login, each profile keeping its own prefs.
+- IPC `profiles`, `readProfiles`, `switchProfile`, `setHostname`, `runDiagnostics`,
+  `diagnostics`.
+- `ping` defaults to one ping within 3 s (was 5 within 5 s); `dns status` and `version` are
+  read as JSON; netcheck's JSON is found after the "# Warning" line the real CLI prints.
+- Stand-ins: accounts (profiles, switch, `login` adding one or rejoining the same, remove,
+  nickname), `--hostname` shown in status, `dns status --json`, `debug derp-map`, `version
+  --json`, netcheck in the real shape (and failing). Redacted fixtures from tailscale 1.104.4
+  for netcheck, DNS status, the relay map and version; a second account's status.
+
 ## 0.2.0 — unreleased (delivery step 1)
 
 Needs the shell's module API 1.2 (the handle's `resumed()`, the pages' `shown`).

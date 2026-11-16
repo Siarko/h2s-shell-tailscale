@@ -108,9 +108,14 @@ TestCase {
 
     // Lines of the stand-in tailscale's log that are not reads
     function changesIn(s) {
-        const reads = [/^status --json$/, /^debug prefs$/, /^exit-node suggest$/, /^version$/];
+        const reads = [/^status --json$/, /^debug prefs$/, /^exit-node suggest$/, /^version( --json)?$/, /^netcheck --format=json$/, /^dns status --json$/,
+            /^debug derp-map$/, /^ping --c=1 --timeout=3s \S+$/, /^switch --list --json$/];
         return (s.logLines ?? []).filter(line => !line.startsWith("curl ") && !line.startsWith("xdg-open ") && !line.startsWith("systemctl ")
             && !reads.some(pattern => pattern.test(line)));
+    }
+
+    function same(actual, expected, message) {
+        assertEqual(JSON.stringify(actual), JSON.stringify(expected), message);
     }
 
     function count(lines, pattern) {
@@ -180,8 +185,8 @@ TestCase {
         for (const s of _all) {
             const changes = changesIn(s);
             assertEqual(changes.filter(line => /^up\b/.test(line) && line !== "up").length, 0, s.name + ": `up` never with a flag");
-            const others = changes.filter(line => !/^(set |up$|down$|login$|logout$)/.test(line));
-            assertEqual(others.join(" | "), "", s.name + ": every change is a `set` (or bare up/down/login/logout)");
+            const others = changes.filter(line => !/^(set |up$|down$|login$|logout$|switch [A-Za-z0-9]|switch remove [A-Za-z0-9])/.test(line));
+            assertEqual(others.join(" | "), "", s.name + ": every change is a `set` (or bare up/down/login/logout, switch <id>, switch remove <id>)");
             s.client?.destroy();
         }
         _shell.run(["rm", "-rf", "--", base], () => suite.finish());
@@ -311,13 +316,16 @@ TestCase {
             assertEqual(operator.pkexecLines.length, 0, "operator: no pkexec at all");
         });
 
-        // ---- key expiring / expired ----
+        // ---- key about to expire: a warning and the status line, no attention, nothing run ----
         const expiring = scenario("key-expiring", { state: "key-expiring", fixedNow: fixedNow });
         then(expiring, "read", () => expiring.client.status !== null, () => {
-            assert(expiring.client.warnings.some(warning => warning.kind === "key-expiring"), "key expiring: a warning");
-            assertEqual(_entry(expiring).attention, null, "… not attention");
-            assertEqual(expiring.client.keyExpiry?.days, 3, "… in 3 days");
+            assertEqual(_entry(expiring).attention, null, "key expiring in 3 days: no attention (nothing renews it without harm)");
+            assertEqual(_entry(expiring).status, "Tailnet only · key expires in 3 days", "… the status line says it");
+            assert(expiring.client.warnings.some(warning => warning.kind === "key-expiring"), "… a warning");
+            assertEqual(expiring.client.keyState.state, "soon", "… the key's state: soon");
+            assert(!expiring.client.attend(), "attend: nothing to do");
         });
+        thenLogs(expiring, "nothing run", () => assertEqual(changesIn(expiring).length, 0, "no login, no change"));
         const expired = scenario("key-expired", { state: "key-expired", fixedNow: fixedNow });
         then(expired, "read", () => expired.client.status !== null, () => {
             assertEqual(expired.client.view.attention?.kind, "key-expired", "key expired: attention");
@@ -441,7 +449,7 @@ TestCase {
 
         // ---- the stream dying and coming back ----
         const dying = scenario("stream-dies", { state: "running", env: { TS_FAKE_BUS_END: "die" } });
-        then(dying, "restarted", () => dying.client.streamStarts >= 3, () => {
+        then(dying, "restarted (and read: under the load of the other scenarios a read may come after the third start)", () => dying.client.streamStarts >= 3 && dying.client.status !== null && !dying.client._reading, () => {
             assert(dying.client.status !== null && _entry(dying).state === "activated", "a dying stream: the state still read");
         });
 
@@ -574,6 +582,226 @@ TestCase {
                 off.processes = Number(result.lines[0] ?? -1);
                 off.listed = true;
             });
+        });
+
+        // ---- accounts: read (denied → pkexec), switch, add, remove; the page follows ----
+        const accounts = scenario("accounts", { state: "running" });
+        then(accounts, "read", () => accounts.client.status !== null, () => {
+            assertEqual(accounts.client.accounts, null, "accounts: not read by themselves (the list needs a password)");
+            assertEqual(accounts.client.currentAccount.loginName, "user1@example.com", "… the account in use known anyway (prefs)");
+            assertEqual(accounts.client.currentAccount.tailnet, "example-tailnet.ts.net", "… its tailnet by the MagicDNS suffix");
+            assert(accounts.client.readAccounts(), "Show accounts: starts");
+        });
+        then(accounts, "listed", () => accounts.client.accounts !== null && !accounts.client.busy, () => {
+            assertEqual(accounts.client.accounts.map(account => account.id + (account.selected ? "*" : "")).join(" "), "a1b2* c3d4", "the two accounts, the one in use marked");
+            assert(!accounts.client.accountsOutdated, "… matching the account in use");
+            assert(accounts.client.switchAccount("c3d4"), "switch to c3d4: starts");
+        });
+        then(accounts, "switched, the state follows", () => !accounts.client.busy && accounts.client.currentAccount.loginName === "user1@example.org"
+                && accounts.client.currentAccount.tailnet === "example.org", () => {
+            assertEqual(accounts.client.accounts.find(account => account.selected)?.id, "c3d4", "the list updated in place (no second prompt)");
+            assertEqual(_entry(accounts).name, "Tailscale · example.org", "the entry names the organisation's tailnet");
+            assertEqual(accounts.client.currentAccount.tailnet, "example.org", "… and the page's account line");
+            assert(!accounts.client.accountsOutdated, "… the list still matches");
+            assert(!accounts.client.removeAccount("c3d4"), "the account in use cannot be removed");
+            assert(accounts.failures.some(failure => /cannot be removed/.test(failure.reason)), "… said so");
+            accounts.failures = [];
+            assert(accounts.client.removeAccount("a1b2"), "remove a1b2: starts");
+        });
+        then(accounts, "removed", () => !accounts.client.busy && accounts.client.accounts.length === 1, () => {
+            assertEqual(accounts.client.accounts[0].id, "c3d4", "the list without it");
+            assert(accounts.client.addAccount(), "add account: starts a login");
+        });
+        then(accounts, "the new account's login URL", () => accounts.client.authUrl !== "", () => {
+            assertEqual(accounts.client.operation, "login", "adding: a login");
+        });
+        then(accounts, "added", () => !accounts.client.busy && accounts.client.currentAccount.loginName === "user2@example.net", () => {
+            assert(accounts.client.accountsOutdated, "after adding: the list is out of date (a new account in use)");
+            assertEqual(accounts.failures.length, 0, "no failure");
+        });
+        thenLogs(accounts, "after the accounts", () => {
+            assertEqual(count(accounts.pkexecLines, elevatedLine(15, "switch\\t--list\\t--json")), 1, "the list through pkexec, ONCE, under the read limit");
+            assertEqual(count(accounts.pkexecLines, elevatedLine(60, "switch\\tc3d4")), 1, "switch through pkexec");
+            assertEqual(count(accounts.pkexecLines, elevatedLine(60, "switch\\tremove\\ta1b2")), 1, "remove through pkexec");
+            assertEqual(count(accounts.logLines, /^switch remove c3d4$/), 0, "the account in use never removed");
+            assertEqual(count(accounts.pkexecLines, elevatedLine(60, "login")), 1, "add: a bare login through pkexec");
+        });
+
+        // ---- the operator: the list re-read by itself after a change (no prompt) ----
+        const accountsOperator = scenario("accounts-operator", { state: "running" });
+        then(accountsOperator, "read", () => accountsOperator.client.status !== null && accountsOperator.client.userName !== "", () => {
+            accountsOperator.client.environment = Object.assign({}, accountsOperator.env, { TS_FAKE_USER: accountsOperator.client.userName });
+            accountsOperator.client.becomeOperator();
+        });
+        then(accountsOperator, "the operator", () => accountsOperator.client.canChange && !accountsOperator.client.busy, () => accountsOperator.client.readAccounts());
+        then(accountsOperator, "listed", () => accountsOperator.client.accounts !== null && !accountsOperator.client.busy, () => accountsOperator.client.removeAccount("c3d4"));
+        then(accountsOperator, "removed, the list read again by itself", () => !accountsOperator.client.busy && accountsOperator.client.accounts.length === 1
+                && accountsOperator.readCount === 2, () => {}, () => {
+            accountsOperator.readCount = 0;
+            const poll = () => _shell.run(["sh", "-c", "grep -c '^switch --list --json$' \"$1\" || true", "sh", accountsOperator.log], result => {
+                accountsOperator.readCount = Number(result.lines[0] ?? 0);
+                if (accountsOperator.readCount < 2 && accountsOperator.steps.length > 0)
+                    Qt.callLater(poll);
+            });
+            poll();
+        });
+        then(accountsOperator, "an account added", () => accountsOperator.client.addAccount(), () => {});
+        then(accountsOperator, "added", () => !accountsOperator.client.busy && accountsOperator.client.currentAccount.loginName === "user2@example.net", () => {
+            // The operator is a setting of the profile: the new account's has none (truthful)
+            assert(!accountsOperator.client.canChange, "the new account's profile: no operator (a per-profile setting)");
+            assert(accountsOperator.client.accountsOutdated, "… so the list is not read by itself: out of date");
+        });
+        thenLogs(accountsOperator, "one pkexec", () => assertEqual(accountsOperator.pkexecLines.length, 1, "operator: nothing through pkexec but becoming it"));
+
+        // ---- a login to add an account, cancelled after its URL: the way back ----
+        const interrupted = scenario("login-interrupted", { state: "running", env: { TS_FAKE_OPERATOR: "1", TS_FAKE_LOGIN_DELAY: "8" } });
+        then(interrupted, "read", () => interrupted.client.status !== null, () => interrupted.client.readAccounts());
+        then(interrupted, "listed", () => interrupted.client.accounts !== null && !interrupted.client.busy, () => interrupted.client.addAccount());
+        then(interrupted, "the URL", () => interrupted.client.authUrl !== "", () => interrupted.client.cancelLogin());
+        then(interrupted, "cancelled: logged out, on an empty profile", () => !interrupted.client.busy && interrupted.client.view.phase === "logged-out", () => {
+            same(interrupted.client.loginInterrupted, { id: "a1b2", title: "example-tailnet.ts.net" }, "the way back offered: the account before");
+            assertEqual(interrupted.failures.length, 0, "cancelling is not a failure");
+            assert(interrupted.client.switchAccount("a1b2"), "Back to it: starts");
+        });
+        then(interrupted, "back", () => !interrupted.client.busy && interrupted.client.view.phase === "running", () => {
+            assertEqual(interrupted.client.loginInterrupted, null, "back: nothing to offer any more");
+        });
+
+        // ---- dismissed prompt while reading the accounts: nothing shown, nothing stuck ----
+        const accountsDismissed = scenario("accounts-dismissed", { state: "running", env: { TS_FAKE_PKEXEC: "dismiss" } });
+        then(accountsDismissed, "read", () => accountsDismissed.client.status !== null, () => accountsDismissed.client.readAccounts());
+        then(accountsDismissed, "answered", () => !accountsDismissed.client.busy, () => {
+            assertEqual(accountsDismissed.client.accounts, null, "dismissed: still not read");
+            assertEqual(accountsDismissed.failures.length, 0, "… no failure shown");
+            assertEqual(accountsDismissed.client.operation, "", "… not busy");
+        });
+
+        // ---- hostname and nickname: `set`, the page follows ----
+        const hostname = scenario("hostname", { state: "running" });
+        then(hostname, "read", () => hostname.client.status !== null, () => {
+            assertEqual(hostname.client.device.hostName, "self", "this device: its name");
+            assertEqual(hostname.client.device.customHostname, "", "… the system's");
+            assert(!hostname.client.setHostname("bad.name"), "a name with a dot: refused before anything runs");
+            assert(hostname.failures.some(failure => /dots/.test(failure.reason)), "… saying why");
+            hostname.failures = [];
+            assert(hostname.client.setHostname("box"), "rename to box: starts");
+        });
+        then(hostname, "renamed", () => !hostname.client.busy && hostname.client.device?.hostName === "box", () => {
+            assertEqual(hostname.client.device.customHostname, "box", "… set here (prefs)");
+            assertEqual(hostname.client.device.dnsName, "box.example-tailnet.ts.net", "… its MagicDNS name follows");
+            assert(hostname.client.setNickname("home"), "nickname: starts");
+        });
+        then(hostname, "nicknamed", () => !hostname.client.busy, () => assertEqual(hostname.failures.length, 0, "no failure"));
+        thenLogs(hostname, "after renaming", () => {
+            assertEqual(count(hostname.pkexecLines, elevatedLine(60, "set\\t--hostname=box")), 1, "rename: `set --hostname=box` through pkexec");
+            assertEqual(count(hostname.pkexecLines, elevatedLine(60, "set\\t--nickname=home")), 1, "nickname: `set --nickname=home` through pkexec");
+            assertEqual(count(hostname.logLines, /bad\.name/), 0, "the refused name never ran");
+        });
+
+        // ---- diagnostics: on demand only; ping a device ----
+        const diagnostics = scenario("diagnostics", { state: "running", fixtureBus: true });
+        then(diagnostics, "read", () => diagnostics.client.status !== null && diagnostics.client.events >= 15, () => {
+            assertEqual(diagnostics.client.diagnostics.ranAt, 0, "diagnostics: nothing run at start");
+            assert(Array.isArray(diagnostics.client.busHealth), "health: the bus's list taken (its last message: none)");
+            assertEqual(diagnostics.client.health.length, 0, "… so no warnings, even though status has none either");
+            assert(diagnostics.client.runDiagnostics(), "run: starts");
+            assert(!diagnostics.client.runDiagnostics(), "… not twice at once");
+            assert(!diagnostics.client.busy, "… not the operation lock: changes stay possible");
+            const laptop = diagnostics.client.devices.find(device => device.online);
+            diagnostics.pinged = laptop.id;
+            assert(diagnostics.client.ping(laptop), "ping a device: starts");
+        });
+        then(diagnostics, "ran", () => diagnostics.client.diagnostics.ranAt > 0 && !diagnostics.client.pings[diagnostics.pinged]?.running, () => {
+            const result = diagnostics.client.diagnostics;
+            assertEqual(result.errors.join(" | "), "", "no errors");
+            assertEqual(result.clientVersion, "1.104.4", "the client's version");
+            assertEqual(result.nearest?.code, "ams", "the nearest relay, named from the relay map");
+            assert(result.netcheck.length >= 6 && result.dns.length >= 4, "netcheck and DNS rows");
+            assertEqual(diagnostics.client.pings[diagnostics.pinged].text, "direct, 4 ms", "ping: direct, its time");
+            const report = diagnostics.client.diagnosticsReport;
+            assert(report.indexOf("Amsterdam (ams)") >= 0 && report.indexOf("MagicDNS: on") >= 0, "the report to copy holds the checks");
+            assert(!/https?:\/\//.test(report) && report.indexOf("198.51.100") < 0, "… no links, no public address");
+        });
+        thenLogs(diagnostics, "after the checks", () => {
+            assertEqual(count(diagnostics.logLines, /^netcheck --format=json$/), 1, "netcheck once");
+            assertEqual(count(diagnostics.logLines, /^dns status --json$/), 1, "dns status once");
+            assertEqual(count(diagnostics.logLines, /^debug derp-map$/), 1, "the relay map once");
+            assertEqual(count(diagnostics.logLines, /^ping --c=1 --timeout=3s 100\.64\.0\.\d+$/), 1, "ping: one, 3 s, by address");
+            assertEqual(diagnostics.pkexecLines.length, 0, "nothing of it through pkexec");
+        });
+
+        // ---- a netcheck that fails: said, not stuck ----
+        const netcheckFails = scenario("netcheck-fails", { state: "running", env: { TS_FAKE_NETCHECK: "fail", TS_FAKE_PING: "timeout" } });
+        then(netcheckFails, "read", () => netcheckFails.client.status !== null, () => {
+            netcheckFails.client.runDiagnostics();
+            const device = netcheckFails.client.devices.find(item => item.online);
+            netcheckFails.pinged = device.id;
+            netcheckFails.client.ping(device);
+        });
+        then(netcheckFails, "ran", () => netcheckFails.client.diagnostics.ranAt > 0 && !netcheckFails.client.pings[netcheckFails.pinged]?.running, () => {
+            assert(netcheckFails.client.diagnostics.errors.some(error => /^netcheck/.test(error)), "netcheck's failure said: " + netcheckFails.client.diagnostics.errors.join(" | "));
+            assert(netcheckFails.client.diagnostics.dns.length > 0, "… the other checks still ran");
+            assertEqual(netcheckFails.client.pings[netcheckFails.pinged].text, "no reply", "ping without a reply: \"no reply\"");
+        });
+
+        // ---- a login moves to the empty profile BEFORE its URL: cancelled before the URL ----
+        const early = scenario("login-cancelled-early", { state: "running", env: { TS_FAKE_OPERATOR: "1", TS_FAKE_LOGIN_URL_DELAY: "8" } });
+        then(early, "read", () => early.client.status !== null, () => early.client.readAccounts());
+        then(early, "listed", () => early.client.accounts !== null && !early.client.busy, () => early.client.addAccount());
+        waitMs(early, 700);
+        then(early, "still no URL", () => early.client.authUrl === "", () => early.client.cancelLogin());
+        then(early, "the next read: no login → Switch back", () => early.client.loginInterrupted !== null, () => {
+            same(early.client.loginInterrupted, { id: "a1b2", title: "example-tailnet.ts.net" }, "offered without a URL ever seen: the state decided");
+            assertEqual(early.failures.length, 0, "cancelling is not a failure");
+        });
+
+        // ---- the plain login moved, then was refused; the password prompt dismissed ----
+        const refusedAfter = scenario("login-dismissed-after-move", { state: "running", env: { TS_FAKE_OPERATOR: "1", TS_FAKE_LOGIN_DENY_AFTER_SWITCH: "1", TS_FAKE_PKEXEC: "dismiss" } });
+        then(refusedAfter, "read", () => refusedAfter.client.status !== null, () => refusedAfter.client.addAccount());
+        then(refusedAfter, "dismissed, then read", () => !refusedAfter.client.busy && refusedAfter.client.loginInterrupted !== null, () => {
+            same(refusedAfter.client.loginInterrupted, { id: "", title: "" }, "Switch back offered (the list not read: Show accounts)");
+            assertEqual(refusedAfter.failures.length, 0, "dismissed: nothing shown");
+            assertEqual(refusedAfter.client.view.phase, "logged-out", "… the daemon on the empty profile");
+        });
+
+        // ---- the plain login refused before any move (not the operator), prompt dismissed ----
+        const refusedBefore = scenario("login-dismissed-no-move", { state: "running", env: { TS_FAKE_PKEXEC: "dismiss" } });
+        then(refusedBefore, "read", () => refusedBefore.client.status !== null, () => refusedBefore.client.addAccount());
+        then(refusedBefore, "dismissed", () => !refusedBefore.client.busy, () => {});
+        waitMs(refusedBefore, 600);
+        then(refusedBefore, "nothing moved", () => !refusedBefore.client._reading, () => {
+            assertEqual(refusedBefore.client.loginInterrupted, null, "still on the account: nothing offered");
+            assertEqual(refusedBefore.client.view.phase, "running", "… still connected");
+        });
+
+        // ---- the same account again: merged, with login's default settings ----
+        const sameAccount = scenario("login-same-account", { state: "running", env: { TS_FAKE_OPERATOR: "1", TS_FAKE_LOGIN_SAME: "1" } });
+        then(sameAccount, "read", () => sameAccount.client.prefs !== null, () => sameAccount.client.setHostname("box"));
+        then(sameAccount, "renamed", () => !sameAccount.client.busy && sameAccount.client.device?.customHostname === "box", () => {
+            assert(sameAccount.client.prefs.acceptRoutes, "before: routes accepted (the fixture)");
+            sameAccount.client.addAccount();
+        });
+        then(sameAccount, "logged in again", () => !sameAccount.client.busy && sameAccount.client.view.phase === "running" && sameAccount.client.device?.customHostname === "", () => {
+            assertEqual(sameAccount.client.currentAccount.loginName, "user1@example.com", "the same account");
+            assertEqual(sameAccount.client.prefs.acceptRoutes, false, "its settings reset: routes no longer accepted (documents the reset)");
+            assertEqual(sameAccount.client.device.hostName, "self", "… the name set here gone");
+            assertEqual(sameAccount.client.loginInterrupted, null, "nothing interrupted");
+        });
+
+        // ---- the IPC's origin: a denial is a failure, never a prompt ----
+        const ipcOrigin = scenario("ipc-origin", { state: "running" });
+        then(ipcOrigin, "read", () => ipcOrigin.client.status !== null, () => {
+            assert(ipcOrigin.client.switchAccount("c3d4", "network"), "switch (origin network): runs plainly");
+        });
+        then(ipcOrigin, "denied", () => !ipcOrigin.client.busy && ipcOrigin.failures.length > 0, () => {
+            assert(/no password prompt/.test(ipcOrigin.failures[0].reason), "a failure saying so: " + ipcOrigin.failures[0].reason);
+            assertEqual(ipcOrigin.client.pendingAttention, null, "… no attention");
+            ipcOrigin.client.setHostname("box", "network");
+        });
+        then(ipcOrigin, "denied again", () => !ipcOrigin.client.busy && ipcOrigin.failures.length > 1, () => {});
+        thenLogs(ipcOrigin, "no prompt", () => {
+            assertEqual(ipcOrigin.pkexecLines.length, 0, "origin network: nothing through pkexec");
+            assertEqual(count(ipcOrigin.logLines, /^switch c3d4$/), 1, "… the plain switch tried once");
         });
 
         _clock.start();

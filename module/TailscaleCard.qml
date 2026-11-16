@@ -54,8 +54,8 @@ ColumnLayout {
         value: root.client?.view.phase === "running" ? (root.client.view.exitNode ? root.client.view.exitNode.name + (root.client.view.exitNode.online ? "" : " (offline)") : "None") : ""
     }
     DetailRow {
-        label: "Key expires"
-        value: !root.self ? "" : root.self.keyExpiry > 0 ? root._date(root.self.keyExpiry) + (root.client.keyExpiry ? " — " + root.client.keyExpiry.text : "") : "never (expiry disabled)"
+        label: "Key"
+        value: !root.self ? "" : (root.self.keyExpiry > 0 ? root._date(root.self.keyExpiry) + " — " : "") + (root.client.keyState?.text ?? "")
     }
 
     Repeater {

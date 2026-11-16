@@ -22,6 +22,15 @@
 #   TS_FAKE_LOGIN_RESULT "fail": the login ends with an error instead of success
 #   TS_FAKE_BUS_DELAY    seconds between the objects `debug watch-ipn` prints (default 0)
 #   TS_FAKE_PING         "timeout": ping gets no reply
+#   TS_FAKE_NETCHECK     "fail": netcheck fails
+#   TS_FAKE_LOGIN_URL_DELAY  seconds a `login` waits before it prints its URL (after the move
+#                        to the empty profile)
+#   TS_FAKE_LOGIN_DENY_AFTER_SWITCH  1: a `login` not as root moves to the empty profile, then
+#                        is denied
+#   TS_FAKE_LOGIN_SAME   1: a `login` from a logged-in profile logs in with the same account:
+#                        merged into its profile with login's default prefs (the old ones
+#                        lost, as the daemon does); else it adds account e5f6
+#                        (user2@example.net). Each profile keeps its prefs (prefs.<id>)
 #   TS_FAKE_UP_DELAY     seconds a bare `up` from Stopped waits before it reaches Running (a
 #                        daemon that cannot get there: offline, a captive portal); default 0.
 #                        Also a file "up-delay" in the state dir holding the seconds
@@ -32,7 +41,8 @@
 #   TS_FAKE_LOG          a file each call's arguments are appended to (one line per call)
 #
 # State dir files: scenario (the status fixture's name), prefs (key=value overrides of the
-# prefs fixture), resume (the scenario `up` returns to).
+# prefs fixture), resume (the scenario `up` returns to), profiles and current (the accounts:
+# see profiles_init), login-from (the account a pending `login` started from).
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -93,9 +103,26 @@ pause() {
 
 status_fixture() {
     case $scenario in
-        login-pending) echo "$F/status-needs-login.json" ;;
-        *) echo "$F/status-$scenario.json" ;;
+        login-pending) echo "$F/status-needs-login.json"; return ;;
     esac
+    # The account in use may have a fixture of its own (status-running-work.json)
+    suffix=$(profile_field "$(current_profile)" 5)
+    if [ -n "$suffix" ] && [ -f "$F/status-$scenario-$suffix.json" ]; then
+        echo "$F/status-$scenario-$suffix.json"
+    else
+        echo "$F/status-$scenario.json"
+    fi
+}
+
+# The status fixture, with a --hostname set earlier as this computer's name (Self's HostName
+# and the first label of its DNSName: the first of each in the fixtures)
+print_status() {
+    hostname=$(get_pref Hostname)
+    if [ -n "$hostname" ]; then
+        sed "0,/\"HostName\": \"[^\"]*\"/s//\"HostName\": \"$hostname\"/; 0,/\"DNSName\": \"[^.\"]*\./s//\"DNSName\": \"$hostname./" "$(status_fixture)"
+    else
+        cat "$(status_fixture)"
+    fi
 }
 
 prefs_base() {
@@ -108,6 +135,32 @@ prefs_base() {
         rich) echo "$F/prefs-rich.json" ;;
         *) echo "$F/prefs-running.json" ;;
     esac
+}
+
+
+# Accounts (profiles): "profiles" in the state dir, one per line — id, nickname, tailnet,
+# account, the status fixture's suffix ("" the plain one; "work": status-running-work.json) —
+# tab-separated; "current" the id in use ("" a new, empty profile: `login` while logged in
+# starts one). Two accounts to begin with, as switch-list.json.
+profiles_init() {
+    [ -f "$STATE_DIR/profiles" ] && return 0
+    printf 'a1b2\t\texample-tailnet.ts.net\tuser1@example.com\t\nc3d4\twork\texample.org\tuser1@example.org\twork\n' > "$STATE_DIR/profiles"
+    [ -f "$STATE_DIR/current" ] || printf 'a1b2\n' > "$STATE_DIR/current"
+}
+current_profile() { profiles_init; cat "$STATE_DIR/current" 2> /dev/null || true; }
+profile_field() { # profile_field <id> <column 1-5>
+    awk -F '\t' -v id="$1" -v column="$2" '$1 == id { print $column; exit }' "$STATE_DIR/profiles"
+}
+profile_exists() { profiles_init; [ -n "$1" ] && awk -F '\t' -v id="$1" '$1 == id { found = 1 } END { exit !found }' "$STATE_DIR/profiles"; }
+print_profiles() { # --json or the table
+    profiles_init
+    current=$(current_profile)
+    if [ "${1:-}" = json ]; then
+        awk -F '\t' -v current="$current" 'BEGIN { printf "[" } { printf "%s\n  {\n    \"id\": \"%s\",\n    \"nickname\": \"%s\",\n    \"tailnet\": \"%s\",\n    \"account\": \"%s\",\n    \"selected\": %s\n  }", (NR > 1 ? "," : ""), $1, $2, $3, $4, ($1 == current ? "true" : "false") } END { print "\n]" }' "$STATE_DIR/profiles"
+    else
+        printf 'ID    Tailnet                 Account\n'
+        awk -F '\t' -v current="$current" '{ printf "%-5s %-23s %s%s\n", $1, $3, $4, ($1 == current ? "*" : "") }' "$STATE_DIR/profiles"
+    fi
 }
 
 json_string() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -134,6 +187,14 @@ print_prefs() {
             && script="$script s/^\\(  \"OperatorUser\": \\)\"[^\"]*\"/\\1\"$operator\"/;" \
             || script="$script s/^\\(  \"Hostname\": .*\\)$/\\1\\n  \"OperatorUser\": \"$operator\",/;"
     fi
+    # The account in use names the prefs' login (an empty profile: none)
+    if [ -f "$STATE_DIR/current" ]; then
+        account=$(profile_field "$(current_profile)" 4)
+        # The account's nickname is the prefs' ProfileName (`set --nickname`)
+        nickname=$(profile_field "$(current_profile)" 2)
+        [ -n "$nickname" ] && script="$script s/^\\(  \"Hostname\": .*\\)$/\\1\\n  \"ProfileName\": \"$nickname\",/;"
+        script="$script s/^\\(      \"LoginName\": \\)\"[^\"]*\"/\\1\"$account\"/;"
+    fi
     sed "$script" "$base"
 }
 
@@ -158,8 +219,39 @@ exit_node_id() { # the argument of --exit-node → a node id, or "" when no node
     esac
 }
 
+# The current profile's prefs overrides kept under its id (an empty profile: none kept)
+save_profile_prefs() {
+    [ -n "$1" ] || return 0
+    if [ -f "$STATE_DIR/prefs" ]; then cp "$STATE_DIR/prefs" "$STATE_DIR/prefs.$1"; else : > "$STATE_DIR/prefs.$1"; fi
+}
+# login's defaults, over whatever fixture the scenario reads (accept routes off, no exit node,
+# no hostname, no operator)
+default_prefs() {
+    printf 'RouteAll=false\nCorpDNS=true\nShieldsUp=false\nExitNodeAllowLANAccess=false\nRunSSH=false\nExitNodeID=\nHostname=\nWantRunning=false\n' > "$STATE_DIR/prefs"
+}
+
 login_flow() {
+    profiles_init
+    case $scenario in
+        needs-login | login-pending | key-expired) ;;
+        *)
+            # Logged in: `login` first moves to a new, empty profile (cli/login.go:
+            # SwitchToEmptyProfile) — before any URL: the connection drops at once. The one
+            # before keeps its prefs (saved per profile); the empty one has login's defaults
+            from=$(current_profile)
+            printf '%s\n' "$from" > "$STATE_DIR/login-from"
+            save_profile_prefs "$from"
+            default_prefs
+            : > "$STATE_DIR/current" ;;
+    esac
     save_scenario login-pending
+    # A login refused after that move (TS_FAKE_LOGIN_DENY_AFTER_SWITCH=1, not as root): the
+    # daemon stays on the empty profile
+    if [ "${TS_FAKE_LOGIN_DENY_AFTER_SWITCH:-0}" = 1 ] && [ "${TS_FAKE_ROOT:-0}" != 1 ]; then
+        denied "prefs write access denied" login
+    fi
+    # The URL may come late (TS_FAKE_LOGIN_URL_DELAY seconds): the move happened already
+    [ "${TS_FAKE_LOGIN_URL_DELAY:-0}" != 0 ] && pause "$TS_FAKE_LOGIN_URL_DELAY"
     printf '\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/REDACTED\n\n' >&2
     # Killable while it waits (the module ends a login that takes too long): the sleep goes too
     sleep "${TS_FAKE_LOGIN_DELAY:-2}" &
@@ -172,6 +264,23 @@ login_flow() {
         echo "backend error: example login failure" >&2
         exit 1
     fi
+    from=$(cat "$STATE_DIR/login-from" 2> /dev/null || true)
+    rm -f "$STATE_DIR/login-from"
+    if [ -z "$(current_profile)" ]; then
+        if [ -n "$from" ] && [ "${TS_FAKE_LOGIN_SAME:-0}" = 1 ]; then
+            # The same account again: the daemon merges the new profile into its old one
+            # — with the new profile's prefs, login's defaults (ipnlocal/profiles.go): the old
+            # exit node, routes, hostname, nickname and operator are gone
+            printf '%s\n' "$from" > "$STATE_DIR/current"
+            rm -f "$STATE_DIR/prefs.$from"
+            awk -F '\t' -v OFS='\t' -v id="$from" '$1 == id { $2 = "" } { print }' "$STATE_DIR/profiles" > "$STATE_DIR/profiles.new"
+            mv "$STATE_DIR/profiles.new" "$STATE_DIR/profiles"
+        else
+            # Another account (TS_FAKE_LOGIN_SAME=1: the same one)
+            grep -q '^e5f6	' "$STATE_DIR/profiles" || printf 'e5f6\t\texample.net\tuser2@example.net\t\n' >> "$STATE_DIR/profiles"
+            printf 'e5f6\n' > "$STATE_DIR/current"
+        fi
+    fi
     set_pref LoggedOut false
     set_pref WantRunning true
     save_scenario running
@@ -182,13 +291,22 @@ command=${1:-}
 [ $# -gt 0 ] && shift
 case $command in
     version)
-        printf '1.104.4\n  tailscale commit: 0000000000000000000000000000000000000000\n  long version: 1.104.4-stand-in\n' ;;
+        case " $* " in
+            *" --json "*) cat "$F/version.json" ;;
+            *) printf '1.104.4\n  tailscale commit: 0000000000000000000000000000000000000000\n  long version: 1.104.4-stand-in\n' ;;
+        esac ;;
+    dns)
+        need_daemon
+        case " $* " in
+            *status*--json* | *--json*status*) cat "$F/dns-status.json" ;;
+            *) echo "stand-in: only dns status --json is replayed" >&2; exit 2 ;;
+        esac ;;
     status)
         need_daemon
         hang=${TS_FAKE_STATUS_HANG:-$(cat "$STATE_DIR/status-hang" 2> /dev/null || echo 0)}
         [ "$hang" != 0 ] && pause "$hang"
         case " $* " in
-            *" --json "* | *" --json=true "*) cat "$(status_fixture)" ;;
+            *" --json "* | *" --json=true "*) print_status ;;
             *) echo "# stand-in: only status --json is replayed" ;;
         esac ;;
     ip)
@@ -198,6 +316,7 @@ case $command in
         need_daemon
         case ${1:-} in
             prefs) print_prefs ;;
+            derp-map) cat "$F/derp-map.json" ;;
             watch-ipn)
                 while IFS= read -r line; do
                     printf '%s\n' "$line"
@@ -219,18 +338,29 @@ case $command in
         case ${1:-} in
             --list)
                 case " $* " in
-                    *" --json "*) cat "$F/switch-list.json" ;;
-                    *) cat "$F/switch-list.txt" ;;
+                    *" --json "*) print_profiles json ;;
+                    *) print_profiles ;;
                 esac ;;
             remove)
-                case ${2:-} in
-                    a1b2) printf 'Already on account "user1@example.com"\n' ;;
-                    c3d4) : ;;
-                    *) printf 'No profile named "%s"\n' "${2:-}" >&2; exit 1 ;;
-                esac ;;
-            a1b2) printf 'Already on account "user1@example.com"\n' ;;
-            c3d4) printf 'Switching to account "user1@example.org"\nSuccess.\n' ;;
-            *) printf 'No profile named "%s"\n' "${1:-}" >&2; exit 1 ;;
+                profile_exists "${2:-}" || { printf 'No profile named "%s"\n' "${2:-}" >&2; exit 1; }
+                awk -F '\t' -v id="$2" '$1 != id' "$STATE_DIR/profiles" > "$STATE_DIR/profiles.new"
+                mv "$STATE_DIR/profiles.new" "$STATE_DIR/profiles"
+                # The one in use removed: an empty profile (the module never asks for that)
+                if [ "$(current_profile)" = "$2" ]; then : > "$STATE_DIR/current"; save_scenario needs-login; fi
+                ;;
+            *)
+                profile_exists "${1:-}" || { printf 'No profile named "%s"\n' "${1:-}" >&2; exit 1; }
+                if [ "$(current_profile)" = "$1" ]; then
+                    printf 'Already on account "%s"\n' "$(profile_field "$1" 4)"
+                else
+                    # Each profile has its prefs: the old one's kept, the new one's restored
+                    save_profile_prefs "$(current_profile)"
+                    if [ -f "$STATE_DIR/prefs.$1" ]; then mv "$STATE_DIR/prefs.$1" "$STATE_DIR/prefs"; else : > "$STATE_DIR/prefs"; fi
+                    printf '%s\n' "$1" > "$STATE_DIR/current"
+                    printf 'Switching to account "%s"\n' "$(profile_field "$1" 4)"
+                    # Every account of the stand-in is a logged-in, running one
+                    case $scenario in needs-login | login-pending) save_scenario running ;; esac
+                fi ;;
         esac ;;
     set)
         need_daemon
@@ -248,6 +378,11 @@ case $command in
                     bool_flag "$argument" > /dev/null ;;
                 --advertise-routes=*) : ;;
                 --hostname=*) set_pref Hostname "${argument#--hostname=}" ;;
+                --nickname=*)
+                    profiles_init
+                    nickname=${argument#--nickname=}
+                    awk -F '\t' -v OFS='\t' -v id="$(current_profile)" -v name="$nickname" '$1 == id { $2 = name } { print }' "$STATE_DIR/profiles" > "$STATE_DIR/profiles.new"
+                    mv "$STATE_DIR/profiles.new" "$STATE_DIR/profiles" ;;
                 --operator=*) set_pref OperatorUser "${argument#--operator=}" ;;
                 --exit-node=*)
                     value=${argument#--exit-node=}
@@ -333,7 +468,10 @@ case $command in
         cat "$F/ping-direct.txt" ;;
     netcheck)
         need_daemon
-        cat "$F/netcheck.json" ;;
+        [ "${TS_FAKE_NETCHECK:-}" = fail ] && { echo "netcheck: UDP test failure: example (stand-in)" >&2; exit 1; }
+        # As the real one: a log line on stderr, the JSON after a comment on stdout
+        echo "2026/11/16 18:56:18 portmap: monitor: gateway and self IP changed (stand-in)" >&2
+        cat "$F/netcheck-real.json" ;;
     file)
         need_daemon
         case ${1:-} in

@@ -36,6 +36,11 @@ Provenance:
 | login-output.txt, machine-auth-output.txt | from source (cli/up.go) | what `login` / `up` print while waiting |
 | ping-direct.txt, ping-peer-relay.txt, ping-timeout.txt | synthetic, formats from cli/ping.go | `ping` |
 | netcheck.json | synthetic, fields of net/netcheck's Report (recalled, not verified) | `netcheck --format=json` |
+| netcheck-real.json | real, redacted (1.104.4; regions cut to six, the public address 198.51.100.77) | `netcheck --format=json` as it really prints: a "# Warning" comment line, then the JSON |
+| derp-map.json | real shape, cut to six regions, node host names example.com | `debug derp-map` (region ids → codes and names) |
+| dns-status.json | real, redacted (the split-DNS domain example.com, its resolver 192.168.1.53, Tailscale's 192.0.2.53) | `dns status --json` |
+| version.json | real | `version --json` |
+| status-running-work.json, status-key-expiring-work.json | derived from status-running / -key-expiring: tailnet "example.org", suffix example-org.ts.net, login user1@example.org | the second account (stand-in profile c3d4) |
 
 (¹) The redaction set every non-zero time to 2026-01-01; in these files Self.KeyExpiry was
 moved to 2027-05-01 by hand, so that "now" = 2026-11-15 does not read as an expired key.

@@ -9,8 +9,10 @@ import qs.components
 // left list has VPN right beside it, the way back. A plain column at the page's width,
 // scrolled by its implicitHeight. It still takes a `context` should a shell frame it as a
 // provider page (network.vpn.page), but the module no longer contributes that slot.
-// Sections: Connection, Exit node, Network, Devices, Administration, About. The devices' traffic is read only while this page is on screen
-// (`shown`, module API 1.2: client.watch() / unwatch()).
+// Sections: Connection (the account in use under the state), Accounts, This device, Exit node,
+// Network, Devices, Diagnostics (collapsed, run only when asked), Administration, About. The
+// devices' traffic is read only while this page is on screen (`shown`, module API 1.2:
+// client.watch() / unwatch()).
 ColumnLayout {
     id: root
     objectName: "tailscalePage"
@@ -28,11 +30,19 @@ ColumnLayout {
     readonly property bool _free: client !== null && !client.busy
     readonly property string _operatorLine: "services.tailscale.extraSetFlags = [ \"--operator=" + (client?.userName || "<user>") + "\" ];"
     property string _deviceFilter: ""
+    readonly property bool _present: client !== null && client.cli === "present"
+    readonly property var device: client?.device ?? null
+    property bool _diagnosticsOpen: false
+    readonly property string _nicknameNow: client?.currentAccount?.nickname ?? ""
     // On screen (given and kept current by the core: module API 1.2)
     property bool shown: false
     property var _watched: null
 
     spacing: 4
+
+    function _date(ms) {
+        return ms > 0 ? new Date(ms).toLocaleDateString(Qt.locale(), Locale.ShortFormat) : "";
+    }
 
     // The traffic counters are read while the page is on screen
     onClientChanged: _follow()
@@ -107,6 +117,19 @@ ColumnLayout {
             onConfirmed: root.client.logout()
         }
     }
+    // The account in use and its tailnet (TailscaleRules.tailnetName: a personal tailnet by
+    // its MagicDNS suffix, not by the e-mail address it is named after)
+    Text {
+        textFormat: Text.PlainText
+        objectName: "tailscaleCurrentAccount"
+        visible: text !== "" && root._loggedIn
+        Layout.fillWidth: true
+        elide: Text.ElideRight
+        text: root.client ? [root.client.currentAccount.loginName, root.client.currentAccount.tailnet].filter(part => part !== "").join(" · ") : ""
+        font.family: Api.theme.fontFamily
+        font.pixelSize: Api.theme.fontSizeSmall
+        color: Api.theme.textMuted
+    }
     Text {
         textFormat: Text.PlainText
         visible: text !== ""
@@ -116,6 +139,17 @@ ColumnLayout {
         font.family: Api.theme.fontFamily
         font.pixelSize: Api.theme.fontSizeSmall
         color: Api.theme.warning
+    }
+    // Logging in with the same account merges into the old profile with login's defaults
+    // (ipnlocal/profiles.go): said where the button is
+    Hint {
+        objectName: "tailscaleLoginResets"
+        visible: root.view?.attention?.kind === "key-expired"
+        text: "Logging in again resets this device's Tailscale settings (exit node, routes, name)."
+    }
+    Hint {
+        visible: (root.client?.loginNote ?? "") !== ""
+        text: root.client?.loginNote ?? ""
     }
     // The login link while a login waits for the browser (or one the daemon offers)
     RowLayout {
@@ -164,6 +198,239 @@ ColumnLayout {
         hint: "Off: the link is only shown, here and in the network popup"
         checked: root.module ? root.module.value("openLoginInBrowser") !== false : true
         onToggled: root.module?.setValue("openLoginInBrowser", !checked)
+    }
+
+
+    // ── Accounts ──
+    // The list needs root or the operator (switch --list): read when asked, kept in memory
+    SectionTitle {
+        visible: root._present
+        text: "Accounts"
+    }
+    Text {
+        textFormat: Text.PlainText
+        objectName: "tailscaleLoginInterrupted"
+        visible: root.client?.loginInterrupted != null
+        Layout.fillWidth: true
+        wrapMode: Text.WordWrap
+        text: "The login was not finished: Tailscale is now on a new, empty profile"
+            + ((root.client?.loginInterrupted?.title ?? "") !== "" ? " (before: " + root.client.loginInterrupted.title + ")." : ".")
+        font.family: Api.theme.fontFamily
+        font.pixelSize: Api.theme.fontSizeSmall
+        color: Api.theme.warning
+    }
+    RowLayout {
+        visible: root._present && (root.client.accounts === null || root.client.accountsOutdated || (root.client.loginInterrupted?.id ?? "") !== "")
+        spacing: 8
+        PrivilegedMark {
+            need: root.need
+        }
+        SmallButton {
+            objectName: "tailscaleBackToAccount"
+            visible: (root.client?.loginInterrupted?.id ?? "") !== ""
+            // No name in the label: a button's text is not plain (the warning above names it)
+            label: "Switch back"
+            available: root._free
+            onClicked: root.client.switchAccount(root.client.loginInterrupted.id)
+        }
+        SmallButton {
+            objectName: "tailscaleReadAccounts"
+            visible: root.client?.accounts === null || root.client?.accountsOutdated === true
+            label: root.client?.accounts === null ? "Show accounts" : "Read again"
+            available: root._free
+            onClicked: root.client.readAccounts()
+        }
+        Text {
+            textFormat: Text.PlainText
+            visible: root.client?.accountsOutdated === true
+            text: "The list is out of date."
+            font.family: Api.theme.fontFamily
+            font.pixelSize: Api.theme.fontSizeSmall
+            color: Api.theme.textMuted
+        }
+    }
+    Repeater {
+        model: ScriptModel {
+            objectProp: "id"
+            values: TailscaleRules.accountRows(root.client?.accounts ?? [])
+        }
+        RowLayout {
+            id: _account
+            required property var modelData
+            objectName: "tailscaleAccount-" + modelData.id
+            Layout.fillWidth: true
+            spacing: 8
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 0
+                Text {
+                    textFormat: Text.PlainText
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                    text: _account.modelData.title
+                    font.family: Api.theme.fontFamily
+                    font.pixelSize: Api.theme.fontSizeBody
+                    font.bold: _account.modelData.selected
+                    color: Api.theme.textPrimary
+                }
+                Text {
+                    textFormat: Text.PlainText
+                    visible: text !== ""
+                    Layout.fillWidth: true
+                    elide: Text.ElideRight
+                    text: _account.modelData.subtitle
+                    font.family: Api.theme.fontFamily
+                    font.pixelSize: Api.theme.fontSizeSmall
+                    color: Api.theme.textMuted
+                }
+            }
+            Text {
+                textFormat: Text.PlainText
+                visible: _account.modelData.selected
+                text: "in use"
+                font.family: Api.theme.fontFamily
+                font.pixelSize: Api.theme.fontSizeSmall
+                color: Api.theme.accent
+            }
+            PrivilegedMark {
+                visible: !_account.modelData.selected
+                need: root.need
+            }
+            SmallButton {
+                objectName: "tailscaleSwitch-" + _account.modelData.id
+                visible: !_account.modelData.selected
+                label: "Switch"
+                available: root._free
+                onClicked: root.client.switchAccount(_account.modelData.id)
+            }
+            DeleteButton {
+                visible: _account.modelData.removable
+                label: "Remove"
+                confirmLabel: "Remove?"
+                cancelTip: "Cancel — keep the account"
+                available: root._free
+                onConfirmed: root.client.removeAccount(_account.modelData.id)
+            }
+        }
+    }
+    RowLayout {
+        visible: root._present && root._loggedIn
+        spacing: 8
+        PrivilegedMark {
+            need: root.need
+        }
+        SmallButton {
+            objectName: "tailscaleAddAccount"
+            label: "Add account"
+            available: root._free
+            onClicked: root.client.addAccount()
+        }
+        Hint {
+            Layout.fillWidth: true
+            text: "Disconnects until the new login is done; this account is kept."
+        }
+    }
+    RowLayout {
+        visible: root._present && root._loggedIn
+        Layout.fillWidth: true
+        spacing: 8
+        InputField {
+            id: _nickname
+            Layout.fillWidth: true
+            placeholder: "Nickname of this account"
+            // The one it has (prefs' ProfileName), set again whenever that changes
+            text: root._nicknameNow
+            problem: TailscaleRules.nicknameProblem(text) !== ""
+        }
+        PrivilegedMark {
+            need: root.need
+        }
+        SmallButton {
+            label: "Set"
+            available: root._free && !_nickname.problem && _nickname.text.trim() !== root._nicknameNow
+            onClicked: root.client.setNickname(_nickname.text)
+        }
+    }
+
+    // ── This device ──
+    SectionTitle {
+        visible: root.device !== null
+        text: "This device"
+    }
+    DetailRow {
+        label: "Name"
+        value: root.device ? root.device.hostName + (root.device.customHostname !== "" ? " (set here)" : " (the system's)") : ""
+    }
+    RowLayout {
+        visible: root.device !== null
+        Layout.fillWidth: true
+        spacing: 8
+        InputField {
+            id: _hostname
+            objectName: "tailscaleHostnameField"
+            Layout.fillWidth: true
+            placeholder: "New name: letters, digits, dashes"
+            problem: TailscaleRules.hostnameProblem(text.trim()) !== ""
+        }
+        PrivilegedMark {
+            need: root.need
+        }
+        SmallButton {
+            objectName: "tailscaleRename"
+            label: "Rename"
+            available: root._free && _hostname.text.trim() !== "" && !_hostname.problem
+            onClicked: root.client.setHostname(_hostname.text)
+        }
+        SmallButton {
+            visible: (root.device?.customHostname ?? "") !== ""
+            label: "Use the system's"
+            available: root._free
+            onClicked: root.client.setHostname("")
+        }
+    }
+    Text {
+        textFormat: Text.PlainText
+        visible: text !== ""
+        Layout.fillWidth: true
+        wrapMode: Text.WordWrap
+        text: TailscaleRules.hostnameProblem(_hostname.text.trim())
+        font.family: Api.theme.fontFamily
+        font.pixelSize: Api.theme.fontSizeSmall
+        color: Api.theme.warning
+    }
+    CopyChips {
+        visible: root.device !== null
+        Layout.fillWidth: true
+        texts: root.device ? [root.device.ipv4, root.device.ipv6, root.device.dnsName] : []
+    }
+    DetailRow {
+        label: "Connection"
+        value: !root.device ? "" : (root.device.online ? "online" : "offline") + (root.device.relay !== "" ? " · home relay " + root.device.relay : "")
+    }
+    RowLayout {
+        visible: root.device !== null
+        Layout.fillWidth: true
+        spacing: 8
+        DetailRow {
+            label: "Key"
+            value: !root.device ? "" : (root.device.keyExpiry > 0 ? root._date(root.device.keyExpiry) + " — " : "") + root.device.key.text
+        }
+    }
+    // No button renews the key here: a bare `login` would drop the connection and reset this
+    // device's settings (tailscale.md §8 step 2) — the admin console renews it, or turns it off
+    RowLayout {
+        visible: ["warning", "soon", "expired"].includes(root.device?.key.state ?? "")
+        Layout.fillWidth: true
+        spacing: 8
+        Hint {
+            Layout.fillWidth: true
+            text: "Key expiry can be renewed or turned off in the admin console."
+        }
+        SmallButton {
+            objectName: "tailscaleAdminConsole"
+            label: "Open the admin console"
+            onClicked: root.client.openUrl(TailscaleRules.adminMachinesUrl)
+        }
     }
 
     // ── Exit node ──
@@ -246,6 +513,138 @@ ColumnLayout {
             Layout.fillWidth: true
             device: modelData
             showTraffic: true
+            client: root.client
+        }
+    }
+
+
+    // ── Diagnostics (collapsed; run only when asked) ──
+    RowLayout {
+        visible: root._present
+        Layout.topMargin: 16
+        Layout.fillWidth: true
+        spacing: 8
+        SectionTitle {
+            Layout.topMargin: 0
+            Layout.bottomMargin: 0
+            Layout.fillWidth: true
+            text: "Diagnostics"
+        }
+        SmallButton {
+            objectName: "tailscaleDiagnosticsToggle"
+            label: root._diagnosticsOpen ? "Hide" : "Show"
+            onClicked: root._diagnosticsOpen = !root._diagnosticsOpen
+        }
+    }
+    ColumnLayout {
+        objectName: "tailscaleDiagnostics"
+        visible: root._present && root._diagnosticsOpen
+        Layout.fillWidth: true
+        spacing: 4
+        RowLayout {
+            spacing: 8
+            SmallButton {
+                objectName: "tailscaleRunDiagnostics"
+                label: root.client?.diagnostics.running ? "Checking…" : (root.client?.diagnostics.ranAt > 0 ? "Check again" : "Check the network")
+                available: root.client !== null && !root.client.diagnostics.running
+                onClicked: root.client.runDiagnostics()
+            }
+            SmallButton {
+                label: "Copy diagnostics"
+                tooltip: "Versions, the checks above (with the tailnet's DNS name, resolver addresses, domains), health — no keys, no links"
+                onClicked: Api.copy(root.client.diagnosticsReport)
+            }
+        }
+        DetailRow {
+            label: "Client version"
+            value: root.client?.diagnostics.clientVersion ?? ""
+        }
+        Text {
+            textFormat: Text.PlainText
+            text: "Health"
+            font.family: Api.theme.fontFamily
+            font.pixelSize: Api.theme.fontSizeSmall
+            font.bold: true
+            color: Api.theme.textPrimary
+        }
+        Hint {
+            visible: (root.client?.health.length ?? 0) === 0
+            text: "No warnings."
+        }
+        Repeater {
+            model: ScriptModel {
+                values: (root.client?.health ?? []).map(warning => ({ key: warning.title + "\n" + warning.text, title: warning.title, text: warning.text }))
+                objectProp: "key"
+            }
+            Text {
+                required property var modelData
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: [modelData.title, modelData.text].filter(part => part !== "").join(": ")
+                font.family: Api.theme.fontFamily
+                font.pixelSize: Api.theme.fontSizeSmall
+                color: Api.theme.warning
+            }
+        }
+        Text {
+            textFormat: Text.PlainText
+            visible: (root.client?.diagnostics.netcheck.length ?? 0) > 0
+            text: "Network (netcheck)"
+            font.family: Api.theme.fontFamily
+            font.pixelSize: Api.theme.fontSizeSmall
+            font.bold: true
+            color: Api.theme.textPrimary
+        }
+        Repeater {
+            model: ScriptModel {
+                values: root.client?.diagnostics.netcheck ?? []
+                objectProp: "label"
+            }
+            DetailRow {
+                required property var modelData
+                label: modelData.label
+                value: modelData.value
+            }
+        }
+        Text {
+            textFormat: Text.PlainText
+            visible: (root.client?.diagnostics.dns.length ?? 0) > 0
+            text: "DNS"
+            font.family: Api.theme.fontFamily
+            font.pixelSize: Api.theme.fontSizeSmall
+            font.bold: true
+            color: Api.theme.textPrimary
+        }
+        Repeater {
+            model: ScriptModel {
+                values: root.client?.diagnostics.dns ?? []
+                objectProp: "label"
+            }
+            DetailRow {
+                required property var modelData
+                label: modelData.label
+                value: modelData.value
+            }
+        }
+        Repeater {
+            model: ScriptModel {
+                values: (root.client?.diagnostics.errors ?? []).map(text => ({ text: text }))
+                objectProp: "text"
+            }
+            Text {
+                required property var modelData
+                textFormat: Text.PlainText
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: modelData.text
+                font.family: Api.theme.fontFamily
+                font.pixelSize: Api.theme.fontSizeSmall
+                color: Api.theme.warning
+            }
+        }
+        Hint {
+            text: "Not offered: tailscale bugreport — it uploads logs to Tailscale."
         }
     }
 

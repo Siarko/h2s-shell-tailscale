@@ -3,3 +3,4 @@ singleton Tailscale 1.0 Tailscale.qml
 TailscaleClient 1.0 TailscaleClient.qml
 ExitNodeChooser 1.0 ExitNodeChooser.qml
 DeviceRow 1.0 DeviceRow.qml
+CopyChips 1.0 CopyChips.qml

@@ -156,6 +156,9 @@ QtObject {
     property var pendingAttention: null
     // The last error the daemon sent on the bus (shown as a warning)
     property string busError: ""
+    // The health warnings the bus sent last (titles and texts; null: none sent yet — status's
+    // Health lines then)
+    property var busHealth: null
     property string _lastTailnet: ""
 
     // Counters, for the tests and the IPC state
@@ -196,7 +199,8 @@ QtObject {
     // What the entry's status line says while an operation the rules do not know runs
     readonly property var _operationLabels: ({
         "exit-node": "Changing the exit node…", "setting": "Changing a setting…", "operator": "Making you the operator…",
-        "start": "Starting the service…"
+        "start": "Starting the service…", "accounts": "Reading the accounts…", "accounts-auto": "Reading the accounts…",
+        "account": "Changing the account…"
     })
 
     // THE provider entry (TailscaleRules.entry, with the attention an action found, the
@@ -261,6 +265,10 @@ QtObject {
 
     function _stop() {
         _generation++;
+        loginInterrupted = null;
+        _strandCheck = null;
+        _loginFrom = null;
+        loginNote = "";
         _readTimer.stop();
         _readRetry.stop();
         _streamRestart.stop();
@@ -281,6 +289,8 @@ QtObject {
         _reading = false;
         _readAgain = false;
         _watchers = 0;
+        diagnostics = Object.assign({}, diagnostics, { running: false });
+        pings = ({});
     }
 
     function _alive(generation) {
@@ -435,6 +445,7 @@ QtObject {
         _reading = true;
         _readRetry.stop();
         reads++;
+        const readNumber = reads;
         const generation = _generation;
         const token = ++_readToken;
         const seconds = _limit("read");
@@ -449,6 +460,7 @@ QtObject {
                 if (!_alive(generation) || token !== _readToken)
                     return;
                 _applyRead(statusResult, _timedOut(prefsResult) ? { ok: false, code: 124, out: "", err: "" } : prefsResult);
+                _checkStranded(readNumber);
                 _reading = false;
                 _readFailures = 0;
                 stale = false;
@@ -604,6 +616,8 @@ QtObject {
         }
         if (digest.errMessage !== "")
             busError = digest.errMessage;
+        if (digest.health !== null)
+            busHealth = digest.health;
         if (digest.suggestedExitNode !== "")
             suggestedId = digest.suggestedExitNode;
         _scheduleRead();
@@ -622,6 +636,7 @@ QtObject {
     onViewChanged: {
         if (pendingAttention !== null && view.phase !== _pendingPhase)
             pendingAttention = null;
+        // Connected again after the interrupted login (not the state read before it ended)
     }
 
     function _hold(attention) {
@@ -680,15 +695,15 @@ QtObject {
             return false;
         if (busy)
             return false;
-        if (plan.command.name === "login")
-            return _startLogin(origin);
+        if (["login", "addAccount"].includes(plan.command.name))
+            return _startLogin(origin, plan.command.name);
         if (plan.command.name === "startService")
             return _startService();
         return _runChange(plan.command, origin, operationName);
     }
 
     // A change by name (TailscaleRules.commandFor) — the page's and the chooser's: the user's
-    function _userChange(name, args, operationName) {
+    function _userChange(name, args, operationName, origin) {
         if (!running || busy)
             return false;
         pendingAttention = null;
@@ -697,7 +712,7 @@ QtObject {
             failed("Changing Tailscale", command.error);
             return false;
         }
-        return _runChange(command, "user", operationName);
+        return _runChange(command, _origin(origin ?? "user"), operationName);
     }
 
     function setExitNode(option) {
@@ -755,6 +770,229 @@ QtObject {
         return _startService();
     }
 
+    // ---- Accounts (profiles) ----
+    //
+    // The list (`switch --list --json`) is denied to all but root and the operator, so it is
+    // read only when the user asks (readAccounts: through pkexec when denied) — or by itself
+    // while this user may change Tailscale (no prompt then). It is kept in memory only (it
+    // holds e-mail addresses), and after a switch or a removal it is updated in place rather
+    // than read again (another prompt).
+
+    // [{ id, nickname, tailnet, account, selected }] — null: not read
+    property var accounts: null
+    // The account in use as status and prefs say it (any user may read those)
+    readonly property var currentAccount: TailscaleRules.currentAccount(status, prefs)
+    // The list read before no longer matches the account in use (switched elsewhere, a new one
+    // added): offered to read again
+    readonly property bool accountsOutdated: accounts !== null && !TailscaleRules.accountsCurrent(accounts, currentAccount.loginName)
+
+    // `origin`: "user" (the page's buttons, the default) may be asked a password; anything
+    // else (the IPC) never — a denial is then a failure, not a prompt
+    function readAccounts(origin) {
+        if (!running || busy)
+            return false;
+        return _runChange(TailscaleRules.commandFor("switchList", {}), _origin(origin ?? "user"), "accounts", output => {
+            accounts = TailscaleRules.parseSwitchList(output);
+        });
+    }
+
+    // After a change: read again when that asks for no password — as origin "network", so a
+    // canChange that is already stale (a new profile has no operator) never prompts; a denial
+    // then just leaves the list as it is (marked out of date when it no longer matches)
+    function _accountsChanged() {
+        if (canChange)
+            Qt.callLater(() => {
+                if (!busy && running)
+                    _runChange(TailscaleRules.commandFor("switchList", {}), "network", "accounts-auto", output => {
+                        accounts = TailscaleRules.parseSwitchList(output);
+                    });
+            });
+    }
+
+    function switchAccount(id, origin) {
+        if (!running || busy)
+            return false;
+        const command = TailscaleRules.commandFor("switchAccount", { id: id });
+        if (!command.ok) {
+            failed("Switching Tailscale account", command.error);
+            return false;
+        }
+        pendingAttention = null;
+        return _runChange(command, _origin(origin ?? "user"), "account", () => {
+            accounts = accounts !== null ? TailscaleRules.accountsAfter(accounts, { switched: id }) : null;
+            loginInterrupted = null;
+            _accountsChanged();
+        });
+    }
+
+    // Not the account in use (TailscaleRules.accountRows: removable)
+    function removeAccount(id) {
+        if (!running || busy)
+            return false;
+        const row = TailscaleRules.accountRows(accounts ?? []).find(account => account.id === id);
+        const listed = (accounts ?? []).find(account => account.id === id);
+        const inUse = (row && !row.removable) || (listed && currentAccount.loginName !== ""
+            && String(listed.account).toLowerCase() === currentAccount.loginName.toLowerCase());
+        if (inUse) {
+            failed("Removing a Tailscale account", "The account in use cannot be removed: switch to another first, or log out.");
+            return false;
+        }
+        // Which one is in use is not sure while the list is out of date
+        if (accountsOutdated) {
+            failed("Removing a Tailscale account", "The list of accounts is out of date: read it again first.");
+            return false;
+        }
+        const command = TailscaleRules.commandFor("removeAccount", { id: id });
+        if (!command.ok) {
+            failed("Removing a Tailscale account", command.error);
+            return false;
+        }
+        return _runChange(command, "user", "account", () => {
+            accounts = accounts !== null ? TailscaleRules.accountsAfter(accounts, { removed: id }) : null;
+            _accountsChanged();
+        });
+    }
+
+    // Another account: a bare `tailscale login` while logged in starts a new profile
+    function addAccount() {
+        if (!running || busy)
+            return false;
+        pendingAttention = null;
+        return _startLogin("user", "addAccount");
+    }
+
+    // ---- This device ----
+
+    readonly property var device: TailscaleRules.thisDevice(status, prefs, now)
+    readonly property var keyState: TailscaleRules.keyState(self, now)
+
+    // "" = the system's own name again
+    function setHostname(name, origin) {
+        return _userChange("hostname", { name: String(name ?? "").trim() }, "setting", origin);
+    }
+
+    function setNickname(name) {
+        return _userChange("nickname", { name: String(name ?? "").trim() }, "setting");
+    }
+
+    // ---- Diagnostics: run when asked, never at start or on a clock ----
+    //
+    // runDiagnostics(): `version --json`, `debug derp-map` (once: the relay names), `netcheck
+    // --format=json`, `dns status --json`, one after another, each under its time limit
+    // (netcheck probes every relay region: timeLimits.diagnose). Reads only, any user may run
+    // them; they do not take the operation lock (nothing they do conflicts with a change),
+    // but one run at a time.
+
+    // { running, ranAt (ms, 0 never), clientVersion, netcheck (summary rows), nearest, dns
+    // (rows), errors [text] }
+    property var diagnostics: ({ running: false, ranAt: 0, clientVersion: "", netcheck: [], nearest: null, dns: [], errors: [] })
+    property var _derpMap: null
+    readonly property var health: TailscaleRules.healthList(busHealth, status)
+    readonly property string updateNotice: {
+        const version = status?.clientVersion ?? null;
+        return version && version.runningLatest === false && version.latestVersion !== ""
+            ? "Tailscale " + version.latestVersion + " is available" + (updateManagedBySystem ? " (updated with the system)" : "") : "";
+    }
+    // The text "Copy diagnostics" copies (TailscaleRules.diagnosticsText: no keys, no links)
+    readonly property string diagnosticsReport: TailscaleRules.diagnosticsText({
+        clientVersion: diagnostics.clientVersion, daemonVersion: status?.version ?? "", backendState: status?.backendState ?? "",
+        netcheck: diagnostics.netcheck, dns: diagnostics.dns, health: health, update: updateNotice
+    })
+
+    function runDiagnostics() {
+        if (!running || cli !== "present" || diagnostics.running)
+            return false;
+        const generation = _generation;
+        const result = { running: true, ranAt: 0, clientVersion: "", netcheck: [], nearest: null, dns: [], errors: [] };
+        diagnostics = Object.assign({}, result);
+        const steps = [
+            { name: "version", limit: "read", apply: output => result.clientVersion = TailscaleRules.parseVersion(output).long },
+            { name: "derpMap", limit: "read", skip: () => _derpMap !== null, apply: output => _derpMap = TailscaleRules.parseDerpMap(output) },
+            { name: "netcheck", limit: "diagnose", apply: output => {
+                const summary = TailscaleRules.netcheckSummary(TailscaleRules.parseNetcheck(output), _derpMap ?? {});
+                if (!summary.ok)
+                    result.errors.push("netcheck: its answer could not be read.");
+                result.netcheck = summary.rows;
+                result.nearest = summary.nearest;
+            } },
+            { name: "dnsStatus", limit: "read", apply: output => {
+                const dns = TailscaleRules.parseDnsStatus(output);
+                if (!dns.ok)
+                    result.errors.push("dns status: its answer could not be read.");
+                result.dns = TailscaleRules.dnsSummary(dns);
+            } }
+        ];
+        const next = () => {
+            if (!_alive(generation))
+                return;
+            const step = steps.shift();
+            if (!step) {
+                result.running = false;
+                result.ranAt = fixedNow > 0 ? fixedNow : Date.now();
+                diagnostics = Object.assign({}, result);
+                return;
+            }
+            if (step.skip?.()) {
+                next();
+                return;
+            }
+            const command = TailscaleRules.commandFor(step.name, {});
+            const seconds = _limit(step.limit);
+            _spawn(_timedArgv(command, seconds), _watchdogMs(seconds), answer => {
+                if (!_alive(generation))
+                    return;
+                if (answer.ok)
+                    step.apply(answer.out);
+                else
+                    result.errors.push(command.argv.slice(1, 3).join(" ") + ": " + (_timedOut(answer)
+                        ? TailscaleRules.timeoutMessage(step.name, seconds) : TailscaleRules.errorKind(answer.code, answer.err).message));
+                diagnostics = Object.assign({}, result, { running: true });
+                next();
+            });
+        };
+        next();
+        return true;
+    }
+
+    // ---- Ping a device (from its row): one ping, `tailscale ping --c=1 --timeout=3s` ----
+
+    // { <device id>: { running, ok, text } }
+    property var pings: ({})
+
+    function ping(device) {
+        if (!running || cli !== "present" || !device || typeof device.id !== "string")
+            return false;
+        if (pings[device.id]?.running)
+            return false;
+        const target = device.ipv4 || (device.addresses ?? [])[0] || "";
+        const command = TailscaleRules.commandFor("ping", { target: target });
+        const id = device.id;
+        const record = value => {
+            const next = Object.assign({}, pings);
+            next[id] = value;
+            pings = next;
+        };
+        if (!command.ok) {
+            record({ running: false, ok: false, text: command.error });
+            return false;
+        }
+        record({ running: true, ok: false, text: "pinging…" });
+        const generation = _generation;
+        const seconds = _limit("ping");
+        _spawn(_timedArgv(command, seconds), _watchdogMs(seconds), answer => {
+            if (!_alive(generation))
+                return;
+            const parsed = TailscaleRules.parsePing(answer.out);
+            const summary = TailscaleRules.pingSummary(parsed);
+            if (summary.ok || parsed.timedOut || parsed.noReply || answer.ok)
+                record({ running: false, ok: summary.ok, text: summary.text });
+            else
+                record({ running: false, ok: false, text: _timedOut(answer) ? "no answer within " + seconds + " s"
+                    : TailscaleRules.errorKind(answer.code, answer.err).message });
+        });
+        return true;
+    }
+
     // Stops waiting for the operation in flight: its token bumped (its late answer ignored),
     // its plain process ended (a root one cannot be: it ends at its timeout), busy cleared
     function _abandonOperation() {
@@ -776,7 +1014,9 @@ QtObject {
 
     // Runs `command` (a tailscale command from the table) plainly, by absolute path, under its
     // time limit; denied and asked by the user: through pkexec; denied otherwise: attention
-    function _runChange(command, origin, operationName) {
+    // `onSuccess(output)`: called with its standard output once it succeeded (plainly or
+    // through pkexec) — a read that only root or the operator may do (switch --list)
+    function _runChange(command, origin, operationName, onSuccess) {
         if (tailscalePath === "") {
             failed(command.description, "Tailscale is not installed.");
             return false;
@@ -796,6 +1036,7 @@ QtObject {
             _opProcess = null;
             if (result.ok) {
                 _finish();
+                onSuccess?.(result.out);
                 return;
             }
             if (_timedOut(result)) {
@@ -811,6 +1052,14 @@ QtObject {
             }
             if (origin !== "user") {
                 _finish();
+                // The list read again by itself: denied is no news
+                if (operationName === "accounts-auto")
+                    return;
+                // Not the provider's connect/disconnect (the IPC): a failure, never a prompt
+                if (operationName !== "connect" && operationName !== "disconnect") {
+                    failed(command.description, error.message + " Asked from outside the page: no password prompt.");
+                    return;
+                }
                 _hold({ kind: "needs-privilege", reason: "Tailscale refused a change asked for by a network: it needs an administrator's password — or make this user Tailscale's operator",
                         action: operationName === "disconnect" ? "Disconnect" : "Connect" });
                 return;
@@ -825,6 +1074,8 @@ QtObject {
                 if (!_alive(generation) || token !== _opToken)
                     return;
                 _finish();
+                if (answer.ok)
+                    onSuccess?.((answer.lines ?? []).join("\n"));
                 if (answer.ok || answer.dismissed)
                     return;
                 if (answer.refused)
@@ -918,19 +1169,40 @@ QtObject {
         });
     }
 
-    // ---- Logging in ----
+    // ---- Logging in (also: adding an account, renewing the key) ----
 
     property string _loginText: ""
     property bool _loginElevated: false
     property bool _loginOpened: false
+    // Which: "login" | "addAccount" (both a bare `tailscale login`)
+    property string _loginCommand: "login"
+    // The login started from a logged-in profile, and the account it was (the list's selected
+    // row, when the list was read: { id, title }; else { id: "", title: "" })
+    property var _loginFrom: null
+    // A login that started from a logged-in profile and then did not finish (cancelled, timed
+    // out, failed) after it printed its URL: `tailscale login` had by then moved this computer
+    // to a new, empty profile — the page offers the way back ({ id, title }; id "" when the
+    // accounts were not read: "Show accounts" then). null otherwise; cleared once connected
+    // again or another account is chosen.
+    property var loginInterrupted: null
+    // A login from a logged-in profile that did not finish: the next read decides whether it
+    // left the daemon on the empty profile ({ from, afterRead }), see _checkStranded
+    property var _strandCheck: null
+    // One line after a cancelled login that runs as administrator (it cannot be stopped)
+    property string loginNote: ""
     readonly property bool loggingIn: operation === "login"
     // The login's time limit, in whole seconds (timeout(1)'s, also around the root one)
     readonly property int _loginSeconds: Math.max(1, Math.ceil(loginTimeoutMs / 1000))
 
-    function _startLogin(origin) {
+    function _startLogin(origin, commandName) {
         if (origin !== "user" || tailscalePath === "")
             return false;
         const token = ++_opToken;
+        _loginCommand = commandName === "addAccount" ? "addAccount" : "login";
+        loginNote = "";
+        const loggedIn = ["running", "starting", "stopped", "needs-approval"].includes(view.phase);
+        const selected = (accounts ?? []).find(account => account.selected) ?? null;
+        _loginFrom = loggedIn ? { id: selected?.id ?? "", title: selected ? (TailscaleRules.accountRows([selected])[0]?.title ?? "") : "" } : null;
         operation = "login";
         _opOrigin = origin;
         authUrl = "";
@@ -938,7 +1210,7 @@ QtObject {
         _loginElevated = false;
         _loginOpened = false;
         _loginTimer.restart();
-        _opProcess = _spawn(_timedArgv(TailscaleRules.commandFor("login", {}), _loginSeconds), _watchdogMs(_loginSeconds),
+        _opProcess = _spawn(_timedArgv(TailscaleRules.commandFor(_loginCommand, {}), _loginSeconds), _watchdogMs(_loginSeconds),
             result => _loginExited(token, result), text => _onLoginText(text, token));
         return true;
     }
@@ -953,7 +1225,38 @@ QtObject {
         }
         if (operation !== "login")
             return;
+        // One run through pkexec cannot be stopped from here: its browser page still works
+        if (_loginElevated)
+            loginNote = "Close the login page in the browser: the login runs on as administrator until its time limit.";
+        _loginGaveUp();
         _abandonOperation();
+    }
+
+    // The login did not finish (cancelled, timed out, failed, a prompt dismissed). A bare
+    // `login` moves the daemon to a new, empty profile FIRST (cli/login.go), before any URL —
+    // or not at all, when Tailscale refused it before. So the state decides, not what was
+    // seen: the next read after this, if it shows no login, sets loginInterrupted
+    // (_checkStranded)
+    function _loginGaveUp() {
+        if (_loginFrom !== null) {
+            _strandCheck = { from: _loginFrom, afterRead: reads };
+            _scheduleRead(true);
+        }
+        _loginFrom = null;
+    }
+
+    // After a read: a login given up from a logged-in profile left it on the empty profile when
+    // status or prefs show no login now (loginInterrupted: "Switch back"); the old account
+    // still in use: nothing. A login shown again ends an interruption.
+    function _checkStranded(readNumber) {
+        const loggedIn = currentAccount.loginName !== "" && !["logged-out", "needs-login", "key-expired", "unknown"].includes(view.phase);
+        if (_strandCheck !== null && readNumber > _strandCheck.afterRead) {
+            if (!loggedIn)
+                loginInterrupted = _strandCheck.from;
+            _strandCheck = null;
+        } else if (loginInterrupted !== null && loggedIn && operation !== "login") {
+            loginInterrupted = null;
+        }
     }
 
     function _maybeOpenLogin() {
@@ -978,23 +1281,31 @@ QtObject {
         if (!running || token !== _opToken)
             return;
         _opProcess = null;
-        const description = TailscaleRules.commandFor("login", {}).description;
+        const description = TailscaleRules.commandFor(_loginCommand, {}).description;
         const code = result.code;
         if (code === 0 || TailscaleRules.parseLoginOutput(_loginText).success) {
+            _loginFrom = null;
+            loginInterrupted = null;
+            // A new account (or a renewed key) changes the list: read again when that asks
+            // for no password; otherwise the page offers to
+            if (accounts !== null)
+                _accountsChanged();
             _loginDone();
             return;
         }
         if (_timedOut(result)) {
+            _loginGaveUp();
             _loginDone();
-            failed(description, TailscaleRules.timeoutMessage("login", _loginSeconds));
+            failed(description, TailscaleRules.timeoutMessage(_loginCommand, _loginSeconds));
             return;
         }
         if (!_loginElevated) {
             const error = TailscaleRules.errorKind(code, _loginText);
             if (error.kind === "denied") {
-                const elevated = TailscaleRules.privileged(["tailscale", "login"], tailscalePath,
+                const elevated = TailscaleRules.privileged(TailscaleRules.commandFor(_loginCommand, {}).argv, tailscalePath,
                     { timeout: timeoutPath, seconds: _loginSeconds, description: description });
                 if (!elevated.ok || elevationProblem !== "") {
+                    _loginGaveUp();
                     _loginDone();
                     failed(description, elevationProblem !== "" ? elevationProblem : elevated.error);
                     return;
@@ -1006,11 +1317,15 @@ QtObject {
                     answer => _loginExited(token, answer), text => _onLoginText(text, token));
                 return;
             }
+            _loginGaveUp();
             _loginDone();
             failed(description, error.message);
             return;
         }
         const outcome = TailscaleRules.pkexecOutcome(code);
+        // Dismissed: nothing ran as root — but the plain attempt before it may already have
+        // moved to the empty profile (refused after the move): the state decides
+        _loginGaveUp();
         _loginDone();
         if (outcome.outcome === "dismissed")
             return;
@@ -1184,8 +1499,9 @@ QtObject {
         onTriggered: {
             if (root.operation !== "login")
                 return;
+            root._loginGaveUp();
             root._abandonOperation();
-            root.failed(TailscaleRules.commandFor("login", {}).description, TailscaleRules.timeoutMessage("login", root.loginTimeoutMs / 1000));
+            root.failed(TailscaleRules.commandFor(root._loginCommand, {}).description, TailscaleRules.timeoutMessage(root._loginCommand, root.loginTimeoutMs / 1000));
         }
     }
 

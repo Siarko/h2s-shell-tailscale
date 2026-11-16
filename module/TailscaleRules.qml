@@ -46,6 +46,13 @@ import QtQuick
 //     BrowseToURL, LoginFinished, ErrMessage, Prefs, Health { Warnings { code: {
 //     Severity, Title, Text, ImpactsConnectivity } } }, SuggestedExitNode, ClientVersion,
 //     OutgoingFiles, FilesWaiting, IncomingFiles, Engine, Version. Anything else: "changed".
+//   switch --list --json: [{ id, nickname, tailnet, account, selected }] (root or the operator
+//     only). netcheck --format=json: UDP, IPv4, IPv6, OSHasIPv6, MappingVariesByDestIP, UPnP,
+//     PMP, PCP, CaptivePortal, PreferredDERP, RegionLatency (ns), after a "# Warning" line.
+//     debug derp-map: Regions { id: { RegionCode, RegionName } }. dns status --json:
+//     TailscaleDNS, CurrentTailnet { MagicDNSEnabled, MagicDNSSuffix, SelfDNSName }, Resolvers
+//     [{ Addr }], SplitDNSRoutes { domain: [{ Addr }] }, SearchDomains, SystemDNSError.
+//     version --json: short, long. Each missing: false, "", [] or unknown.
 //
 // TIME: status times are RFC 3339 text; they are read as milliseconds (0 = Go's zero time
 // "0001-01-01T00:00:00Z", missing or unreadable). All durations here are milliseconds.
@@ -101,8 +108,10 @@ Singleton {
     //             Past it the daemon keeps trying by itself (WantRunning stays set), so
     //             stopping the CLI loses nothing — the entry follows the daemon's state
     //   login     the time a person gets to finish the login in the browser
+    //   diagnose  netcheck: it probes every relay region (a few seconds when healthy)
+    //   ping      one `ping --timeout=3s`, with room for the CLI to start and ask
     //   killAfter timeout(1)'s -k: KILL this long after TERM, for a program that ignores TERM
-    readonly property var timeLimits: ({ read: 15, change: 60, up: 60, login: 600, killAfter: 5 })
+    readonly property var timeLimits: ({ read: 15, change: 60, up: 60, login: 600, diagnose: 30, ping: 10, killAfter: 5 })
     // An account (profile) id from `switch --list`: never starting with "-", which the CLI
     // would read as a flag
     readonly property var accountIdPattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
@@ -581,9 +590,17 @@ Singleton {
             warnings.push({ kind: "unknown-state", text: "Tailscale reports a state this module does not know: " + (backend || "none") });
         }
 
+        // A key about to expire: a warning, never attention — nothing renews it without harm (a
+        // bare `login` while logged in drops the connection at once and, with the same
+        // account, resets this device's settings: tailscale.md §8 step 2). Within
+        // reauthSoonDays the entry's status line says it too (the popup row, the card).
         const expiry = keyExpiryWarning(self, now);
-        if (expiry && expiry.kind === "key-expiring" && view.phase !== "logged-out")
+        const key = keyState(self, now);
+        if (expiry && expiry.kind === "key-expiring" && view.phase !== "logged-out") {
             warnings.push(expiry);
+            if (key.state === "soon" && view.state === "activated" && view.status !== "")
+                view.status += " · key " + key.text;
+        }
         for (const text of _strings(status.health, 64))
             warnings.push({ kind: "health", text: text });
         if (_isObject(status.clientVersion) && status.clientVersion.runningLatest === false && _string(status.clientVersion.latestVersion, 64) !== "") {
@@ -599,13 +616,16 @@ Singleton {
 
     // ---- The provider entry ----
 
-    // The tailnet's name for the entry: CurrentTailnet.Name (for a personal tailnet that is
-    // the account's e-mail address), else the MagicDNS suffix, else facts.lastTailnet (what
-    // the live side remembers, so a logged-out or stopped entry keeps its name), else "".
+    // The tailnet as the card and the page show it: CurrentTailnet.Name when it is a name (an
+    // organisation's tailnet); for a personal tailnet that name IS the account's e-mail
+    // address, which belongs in the account row — then the tailnet's MagicDNS suffix
+    // ("tail1234.ts.net") names it; else facts.lastTailnet (what the live side remembers, so
+    // a logged-out or stopped entry keeps its name), else "".
     function tailnetName(status, facts) {
         const tailnet = _isObject(status) && _isObject(status.tailnet) ? status.tailnet : {};
         const remembered = _string(_get(facts, "lastTailnet"), 200);
-        return _string(tailnet.name, 200) || _string(tailnet.magicDnsSuffix, 200) || _string(_isObject(status) ? status.magicDnsSuffix : "", 200)
+        const name = _string(tailnet.name, 200);
+        return (isEmailLike(name) ? "" : name) ||_string(tailnet.magicDnsSuffix, 200) || _string(_isObject(status) ? status.magicDnsSuffix : "", 200)
             || (isEmailLike(remembered) ? "" : remembered);
     }
 
@@ -955,6 +975,318 @@ Singleton {
         return result;
     }
 
+    // The accounts as the page lists them: accountRows(accounts) → [{ id, title, subtitle,
+    // selected, removable }]. Title: the nickname, else the tailnet when it is a name, else
+    // the account; the subtitle the account's e-mail address (it belongs here, on the page's
+    // own list — never in the VPN entry's name) and the tailnet when it adds something. The
+    // current account cannot be removed from here (Tailscale would leave this computer on an
+    // empty profile): switch first, or log out.
+    function accountRows(accounts) {
+        const list = Array.isArray(accounts) ? accounts : [];
+        return list.filter(account => _isObject(account) && typeof account.id === "string" && accountIdPattern.test(account.id)).map(account => {
+            const tailnet = _string(account.tailnet, 200);
+            const login = _string(account.account, 200);
+            const nickname = _string(account.nickname, 200);
+            const tailnetIsName = tailnet !== "" && !isEmailLike(tailnet);
+            const title = nickname || (tailnetIsName ? tailnet : "") || login || account.id;
+            const subtitle = [login !== title ? login : "", tailnetIsName && tailnet !== title ? tailnet : ""].filter(part => part !== "").join(" · ");
+            return { id: account.id, title: title, subtitle: subtitle, selected: account.selected === true, removable: account.selected !== true };
+        });
+    }
+
+    // After a switch or a removal the list read before is updated in place (reading it again
+    // asks for a password while this user is not the operator): accountsAfter(accounts,
+    // change) — change { switched: id } | { removed: id } → a new list
+    function accountsAfter(accounts, change) {
+        const list = Array.isArray(accounts) ? accounts.filter(account => _isObject(account)) : [];
+        const switched = _string(_get(change, "switched"), 64);
+        const removed = _string(_get(change, "removed"), 64);
+        if (switched !== "" && list.some(account => account.id === switched))
+            return list.map(account => Object.assign({}, account, { selected: account.id === switched }));
+        if (removed !== "")
+            return list.filter(account => account.id !== removed || account.selected === true);
+        return list.slice();
+    }
+
+    // The account in use, from what any user may read (status, prefs — the list itself needs
+    // root or the operator): { loginName, displayName, tailnet (tailnetName), nickname }
+    function currentAccount(status, prefs) {
+        const self = _isObject(status) && _isObject(status.self) ? status.self : null;
+        const users = _isObject(status) && _isObject(status.users) ? status.users : {};
+        const user = self && self.userId !== "" && Object.prototype.hasOwnProperty.call(users, self.userId) ? users[self.userId] : null;
+        return {
+            loginName: _string(_get(prefs, "loginName"), 200) || _string(user?.loginName, 200),
+            displayName: _string(user?.displayName, 200),
+            tailnet: tailnetName(status, {}),
+            nickname: _string(_get(prefs, "profileName"), 200)
+        };
+    }
+
+    // Whether the list read before still matches the daemon: false once the account in use
+    // (status/prefs) is not the one the list marks — another program switched, or a login
+    // added one. Unknown either way: true (nothing to say)
+    function accountsCurrent(accounts, loginName) {
+        const list = Array.isArray(accounts) ? accounts : [];
+        const selected = list.find(account => _isObject(account) && account.selected === true);
+        if (!selected || typeof loginName !== "string" || loginName === "")
+            return true;
+        return _string(selected.account, 200).toLowerCase() === loginName.toLowerCase();
+    }
+
+    // ---- This device ----
+
+    // How long before the key expires it is "about to": the entry's status line says so from
+    // this many days on (never attention: see stateOf); keyExpiryWarningDays warns
+    readonly property int reauthSoonDays: 7
+
+    // The key's state: keyState(self, now) → { state, days, text }:
+    //   "unknown"   no self, or no clock
+    //   "disabled"  key expiry is off for this computer (KeyExpiry missing / zero time)
+    //   "valid"     more than keyExpiryWarningDays away
+    //   "warning"   within keyExpiryWarningDays (a warning)
+    //   "soon"      within reauthSoonDays (≤ 7 days, the first second of day 8 is "warning"):
+    //               the entry's status line says it too
+    //   "expired"   past (or the control server says so)
+    // `days` whole days left, rounded up (0 expired); `text` "expires in 3 days", "expired".
+    function keyState(self, now) {
+        const moment = _number(now, 0);
+        if (!_isObject(self) || moment <= 0)
+            return { state: "unknown", days: 0, text: "" };
+        const expiry = _number(self.keyExpiry, 0);
+        if (self.expired === true || (expiry > 0 && expiry <= moment))
+            return { state: "expired", days: 0, text: "expired" };
+        if (expiry <= 0)
+            return { state: "disabled", days: 0, text: "never (expiry off)" };
+        const remaining = expiry - moment;
+        const days = Math.ceil(remaining / 86400000);
+        const text = remaining < 86400000 ? "expires within a day" : (days === 1 ? "expires in 1 day" : "expires in " + days + " days");
+        const state = days <= reauthSoonDays ? "soon" : (days <= keyExpiryWarningDays ? "warning" : "valid");
+        return { state: state, days: days, text: text };
+    }
+
+    // This computer for the page's "This device": thisDevice(status, prefs, now) → null (not
+    // read) | { hostName (what Tailscale calls it now), customHostname (prefs' --hostname; ""
+    // = the system's), dnsName (MagicDNS), ipv4, ipv6, online, relay (home DERP region code),
+    // keyExpiry (ms), key (keyState) }
+    function thisDevice(status, prefs, now) {
+        const self = _isObject(status) && _isObject(status.self) ? status.self : null;
+        if (!self)
+            return null;
+        const addresses = _strings(status.addresses, 16).length > 0 ? _strings(status.addresses, 16) : self.addresses;
+        return {
+            hostName: self.hostName,
+            customHostname: _string(_get(prefs, "hostname"), 256),
+            dnsName: self.dnsName,
+            ipv4: addresses.find(address => _parseIpv4(address) !== null) ?? "",
+            ipv6: addresses.find(address => _parseIpv6(address) !== null) ?? "",
+            online: self.online,
+            relay: self.relay,
+            keyExpiry: self.keyExpiry,
+            key: keyState(self, now)
+        };
+    }
+
+    // A name for `tailscale set --hostname=`, checked as Tailscale's DNS label rules do
+    // (util/dnsname: letters, digits and inner dashes, at most 63 bytes) — one label: Tailscale
+    // names the device by its first label only, so a dot is refused rather than cut. "" is
+    // allowed: back to the system's own name. → "" or what is wrong, as one sentence
+    function hostnameProblem(name) {
+        if (typeof name !== "string")
+            return "Not a name.";
+        if (name === "")
+            return "";
+        if (name.length > 63)
+            return "At most 63 characters.";
+        if (name.indexOf(".") >= 0)
+            return "One name without dots: Tailscale uses only the part before the first dot.";
+        const bad = /[^A-Za-z0-9-]/.exec(name);
+        if (bad)
+            return "Only letters a–z, digits and dashes: " + JSON.stringify(bad[0]) + " is not allowed.";
+        if (name.startsWith("-") || name.endsWith("-"))
+            return "It must start and end with a letter or a digit.";
+        return "";
+    }
+
+    // A nickname for the account in use (`tailscale set --nickname=`): plain text, ≤ 64
+    // characters, no control characters, not starting with "-" (a flag) → "" or why not.
+    // "" is allowed: no nickname
+    function nicknameProblem(name) {
+        if (typeof name !== "string")
+            return "Not a name.";
+        if (name.length > 64)
+            return "At most 64 characters.";
+        if (/[\u0000-\u001f\u007f]/.test(name))
+            return "No control characters.";
+        if (name.startsWith("-"))
+            return "It cannot start with a dash.";
+        return "";
+    }
+
+    // ---- Diagnostics ----
+
+    // `tailscale debug derp-map` (tailcfg.DERPMap) → { "<region id>": { code, name } }
+    function parseDerpMap(input) {
+        const result = {};
+        const parsed = _parseJson(typeof input === "string" ? _fromFirstBrace(input) : input);
+        const regions = _get(parsed.value, "Regions");
+        for (const key of _keys(regions).slice(0, 512)) {
+            if (!/^\d{1,6}$/.test(key))
+                continue;
+            const region = _get(regions, key);
+            if (!_isObject(region))
+                continue;
+            result[key] = { code: _string(_get(region, "RegionCode"), 32), name: _string(_get(region, "RegionName"), 100) };
+        }
+        return result;
+    }
+
+    // Some JSON outputs start with a comment line ("# Warning: this JSON format is not yet
+    // considered a stable interface", netcheck) or a log line: the JSON from the first "{"
+    function _fromFirstBrace(text) {
+        const at = text.indexOf("{");
+        return at < 0 ? text : text.slice(at);
+    }
+
+    // What the latency of a netcheck run means for the page: netcheckSummary(netcheck,
+    // derpMap) → { ok, rows [{ label, value }], nearest { id, code, name, ms } | null }.
+    // Never this computer's public address (it would show on a shared screen and land in a
+    // copied report).
+    function netcheckSummary(netcheck, derpMap) {
+        if (!_isObject(netcheck) || netcheck.ok !== true)
+            return { ok: false, rows: [], nearest: null };
+        const regions = _isObject(derpMap) ? derpMap : {};
+        const named = region => {
+            const known = Object.prototype.hasOwnProperty.call(regions, String(region.id)) ? regions[String(region.id)] : null;
+            return known && known.name ? known.name + (known.code ? " (" + known.code + ")" : "") : "region " + region.id;
+        };
+        const yesNo = value => value === true ? "yes" : (value === false ? "no" : "unknown");
+        const preferred = netcheck.regions.find(region => region.id === netcheck.preferredDerp) ?? null;
+        const nearest = netcheck.preferredDerp > 0 ? {
+            id: netcheck.preferredDerp, code: regions[String(netcheck.preferredDerp)]?.code ?? "",
+            name: named({ id: netcheck.preferredDerp }), ms: preferred ? preferred.ms : null
+        } : null;
+        const mapping = netcheck.portMapping.length > 0 ? netcheck.portMapping.join(", ") : "none";
+        const rows = [
+            { label: "UDP", value: netcheck.udp ? "yes" : "no — relayed only" },
+            { label: "IPv4", value: yesNo(netcheck.ipv4) },
+            { label: "IPv6", value: netcheck.ipv6 ? "yes" : (netcheck.osHasIpv6 === true ? "no (the network lacks it)" : "no") },
+            { label: "NAT", value: netcheck.mappingVariesByDestIp === true ? "hard — direct connections less likely"
+                : netcheck.mappingVariesByDestIp === false ? "easy" : "unknown" },
+            { label: "Port mapping", value: mapping },
+            { label: "Nearest relay", value: nearest ? nearest.name + (nearest.ms !== null ? ", " + nearest.ms + " ms" : "") : "none" }
+        ];
+        if (netcheck.captivePortal === true)
+            rows.push({ label: "Captive portal", value: "yes — log in to the network" });
+        const others = netcheck.regions.filter(region => region.id !== netcheck.preferredDerp).slice(0, 3);
+        if (others.length > 0)
+            rows.push({ label: "Next relays", value: others.map(region => named(region) + " " + region.ms + " ms").join(", ") });
+        return { ok: true, rows: rows, nearest: nearest };
+    }
+
+    // `tailscale dns status --json` → { ok, tailscaleDns, magicDns, suffix, selfDnsName,
+    // resolvers [address], splitRoutes [{ domain, resolvers [address] }], searchDomains [],
+    // systemError }. Real shape from tailscale 1.104.4 (redacted fixture); "Resolvers" is
+    // omitted when the tailnet sets none (seen) — its entries are { Addr } as the split
+    // routes' are (assumed, the same type)
+    function parseDnsStatus(input) {
+        const result = { ok: false, tailscaleDns: false, magicDns: false, suffix: "", selfDnsName: "", resolvers: [], splitRoutes: [],
+            searchDomains: [], systemError: "" };
+        const parsed = _parseJson(typeof input === "string" ? _fromFirstBrace(input) : input);
+        if (!_isObject(parsed.value))
+            return result;
+        const raw = parsed.value;
+        const addresses = list => (Array.isArray(list) ? list : []).slice(0, 32)
+            .map(item => typeof item === "string" ? item : _string(_get(item, "Addr"), 256)).filter(text => text !== "");
+        result.ok = true;
+        result.tailscaleDns = _bool(_get(raw, "TailscaleDNS"));
+        const tailnet = _get(raw, "CurrentTailnet");
+        result.magicDns = _bool(_get(tailnet, "MagicDNSEnabled"));
+        result.suffix = _dnsName(_get(tailnet, "MagicDNSSuffix"));
+        result.selfDnsName = _dnsName(_get(tailnet, "SelfDNSName"));
+        result.resolvers = addresses(_get(raw, "Resolvers"));
+        const routes = _get(raw, "SplitDNSRoutes");
+        result.splitRoutes = _keys(routes).slice(0, 64).map(domain => ({ domain: domain.slice(0, 256).replace(/\.$/, ""), resolvers: addresses(_get(routes, domain)) }))
+            .sort((a, b) => _compareText(a.domain, b.domain));
+        result.searchDomains = _strings(_get(raw, "SearchDomains"), 32).map(domain => domain.replace(/\.$/, ""));
+        result.systemError = _string(_get(raw, "SystemDNSError"), 300);
+        return result;
+    }
+
+    // The page's rows for it: dnsSummary(dns) → [{ label, value }]
+    function dnsSummary(dns) {
+        if (!_isObject(dns) || dns.ok !== true)
+            return [];
+        const rows = [
+            { label: "Tailscale DNS", value: dns.tailscaleDns ? "in use" : "not in use" },
+            { label: "MagicDNS", value: dns.magicDns ? "on" + (dns.suffix !== "" ? " — " + dns.suffix : "") : "off" },
+            { label: "Resolvers", value: dns.resolvers.length > 0 ? dns.resolvers.join(", ") : "the system's" }
+        ];
+        if (dns.splitRoutes.length > 0)
+            rows.push({ label: "Split DNS", value: dns.splitRoutes.map(route => route.domain + " → " + (route.resolvers.join(", ") || "Tailscale")).join("; ") });
+        rows.push({ label: "Search domains", value: dns.searchDomains.length > 0 ? dns.searchDomains.join(", ") : "none" });
+        return rows;
+    }
+
+    // `tailscale version --json` → { ok, short, long }
+    function parseVersion(input) {
+        const parsed = _parseJson(typeof input === "string" ? _fromFirstBrace(input) : input);
+        if (!_isObject(parsed.value))
+            return { ok: false, short: "", long: "" };
+        const short = _string(_get(parsed.value, "short"), 64) || _string(_get(parsed.value, "majorMinorPatch"), 64);
+        return { ok: short !== "", short: short, long: _string(_get(parsed.value, "long"), 128) || short };
+    }
+
+    // A ping's result for a device row: pingSummary(parsed) — parsePing's — → { ok, text }:
+    // "direct, 4 ms", "relayed (DERP fra), 31 ms", "via a peer relay, 12 ms", "no reply"
+    function pingSummary(parsed) {
+        const replies = _isObject(parsed) && Array.isArray(parsed.replies) ? parsed.replies : [];
+        const last = replies.length > 0 ? replies[replies.length - 1] : null;
+        if (!last)
+            return { ok: false, text: "no reply" };
+        const route = last.via === "direct" ? "direct" : last.via === "derp" ? "relayed (DERP " + _clip(String(last.detail), 20) + ")"
+            : last.via === "peer-relay" ? "via a peer relay" : "replied";
+        return { ok: true, text: route + ", " + last.ms + " ms" };
+    }
+
+    // The health warnings to show, all of them with their text: the bus's (titles and texts,
+    // newer) when it sent any, else status's Health lines. → [{ title, text, severity }]
+    function healthList(busHealth, status) {
+        if (Array.isArray(busHealth))
+            return busHealth.filter(warning => _isObject(warning) && (warning.title || warning.text))
+                .map(warning => ({ title: _string(warning.title, 200), text: _string(warning.text, 500), severity: _string(warning.severity, 16) }));
+        return _strings(_isObject(status) ? status.health : [], 64).map(text => ({ title: "", text: text, severity: "" }));
+    }
+
+    // The text "Copy diagnostics" puts on the clipboard: versions, state, the netcheck and DNS
+    // summaries, health — no keys, no login or other URLs, no public address (input has none
+    // of those but a health text could carry a URL: cut). report { clientVersion,
+    // daemonVersion, backendState, netcheck rows, dns rows, health list, update }
+    function diagnosticsText(report) {
+        // Links with or without a scheme (a health text may name login.tailscale.com/a/…)
+        const strip = text => String(text ?? "").replace(/\b(?:https?:\/\/\S+|[a-z0-9.-]+\.(?:com|net|org|io)\/\S*)/gi, "<link>").replace(/\b(nodekey|privkey|nlpriv|discokey|mkey|tskey)[:-][0-9A-Za-z-]+/gi, "<key>");
+        const lines = ["Tailscale diagnostics"];
+        lines.push("Client: " + strip(_get(report, "clientVersion") || "unknown") + ", daemon: " + strip(_get(report, "daemonVersion") || "unknown"));
+        if (_get(report, "update"))
+            lines.push(strip(_get(report, "update")));
+        lines.push("State: " + strip(_get(report, "backendState") || "unknown"));
+        const section = (title, rows) => {
+            if (!Array.isArray(rows) || rows.length === 0)
+                return;
+            lines.push("", title);
+            for (const row of rows)
+                lines.push("  " + strip(row.label) + ": " + strip(row.value));
+        };
+        section("Network (netcheck)", _get(report, "netcheck"));
+        section("DNS", _get(report, "dns"));
+        const health = _get(report, "health");
+        if (Array.isArray(health) && health.length > 0) {
+            lines.push("", "Health");
+            for (const warning of health)
+                lines.push("  " + withoutAddresses(strip([warning.title, warning.text].filter(part => part).join(": "))));
+        }
+        return lines.join("\n").slice(0, 8000);
+    }
+
     // ---- The IPN bus ----
 
     // A splitter for a stream of JSON objects, one per line or pretty-printed over many
@@ -1194,12 +1526,16 @@ Singleton {
         };
     }
 
-    // `tailscale netcheck --format=json` (netcheck.Report) → { ok, udp, ipv4, ipv6,
-    // mappingVariesByDestIp (null unknown), preferredDerp, globalV4, regions [{ id, ms }]
-    // fastest first }. Field names from the source (net/netcheck); synthetic fixture.
+    // `tailscale netcheck --format=json` (netcheck.Report) → { ok, udp, ipv4, ipv6, osHasIpv6
+    // (null unknown), mappingVariesByDestIp (null unknown), portMapping ["UPnP", "NAT-PMP",
+    // "PCP" — those found], captivePortal (null unknown), preferredDerp, globalV4, regions
+    // [{ id, ms }] fastest first }. The shape seen from tailscale 1.104.4 (redacted fixture
+    // netcheck-real.json): the JSON comes after a "# Warning: …" line on stdout, and a log line
+    // may come before it.
     function parseNetcheck(input) {
-        const result = { ok: false, udp: false, ipv4: false, ipv6: false, mappingVariesByDestIp: null, preferredDerp: 0, globalV4: "", regions: [] };
-        const parsed = _parseJson(input);
+        const result = { ok: false, udp: false, ipv4: false, ipv6: false, osHasIpv6: null, mappingVariesByDestIp: null, portMapping: [],
+            captivePortal: null, preferredDerp: 0, globalV4: "", regions: [] };
+        const parsed = _parseJson(typeof input === "string" ? _fromFirstBrace(input) : input);
         if (!_isObject(parsed.value))
             return result;
         const raw = parsed.value;
@@ -1207,6 +1543,11 @@ Singleton {
         result.udp = _bool(_get(raw, "UDP"));
         result.ipv4 = _bool(_get(raw, "IPv4"));
         result.ipv6 = _bool(_get(raw, "IPv6"));
+        const osIpv6 = _get(raw, "OSHasIPv6");
+        result.osHasIpv6 = typeof osIpv6 === "boolean" ? osIpv6 : null;
+        result.portMapping = [["UPnP", "UPnP"], ["PMP", "NAT-PMP"], ["PCP", "PCP"]].filter(pair => _get(raw, pair[0]) === true).map(pair => pair[1]);
+        const portal = _get(raw, "CaptivePortal");
+        result.captivePortal = typeof portal === "boolean" ? portal : null;
         const mapping = _get(raw, "MappingVariesByDestIP");
         result.mappingVariesByDestIp = typeof mapping === "boolean" ? mapping : null;
         result.preferredDerp = Math.trunc(_number(_get(raw, "PreferredDERP")));
@@ -1391,9 +1732,9 @@ Singleton {
         return typeof name === "string" && /^[a-z_][a-z0-9_-]{0,31}$/.test(name);
     }
 
-    // A host name for `set --hostname=` (one DNS label; "" = the system's own)
+    // A host name for `set --hostname=` (hostnameProblem: one DNS label; "" = the system's own)
     function validHostname(name) {
-        return typeof name === "string" && (name === "" || /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(name));
+        return hostnameProblem(name) === "";
     }
 
     // A peer named for ping, file cp, exit node: an IP address, or a DNS-like name. Never
@@ -1429,7 +1770,7 @@ Singleton {
     // The names commandFor knows
     readonly property var commandNames: ["connect", "disconnect", "login", "addAccount", "logout", "exitNode", "exitNodeNone",
         "exitNodeAuto", "allowLan", "acceptRoutes", "acceptDns", "shieldsUp", "hostname", "advertiseExitNode",
-        "advertiseRoutes", "ssh", "webClient", "updateCheck", "operator", "switchAccount", "switchList", "removeAccount",
+        "advertiseRoutes", "ssh", "webClient", "updateCheck", "operator", "switchAccount", "switchList", "removeAccount", "nickname", "derpMap",
         "ping", "netcheck", "fileCp", "fileGet", "fileTargets", "serveStatus", "serveReset", "serveAdd", "serveRemove",
         "funnelStatus", "funnelReset", "funnelAdd", "funnelRemove", "cert", "lockStatus", "status", "prefs",
         "exitNodeSuggest", "exitNodeList", "dnsStatus", "version", "watch", "startService"]
@@ -1458,8 +1799,10 @@ Singleton {
         case "login":
             return _command(name, ["tailscale", "login"], true, true, "Logging in to Tailscale", { longRunning: true, timeLimit: "login" });
         case "addAccount":
-            // `login` while logged in adds an account (a new profile) — up.go keeps the
-            // profile name only for `up`
+            // A bare `login` always moves the daemon to a new, empty profile first
+            // (cli/login.go: SwitchToEmptyProfile) — the connection drops until the login is
+            // done; another account there becomes a new profile, the same one is merged into
+            // its old profile with login's default settings (ipnlocal/profiles.go)
             return _command(name, ["tailscale", "login"], true, true, "Adding a Tailscale account", { longRunning: true, timeLimit: "login" });
         case "logout":
             return _command(name, ["tailscale", "logout"], true, true, "Logging out of Tailscale");
@@ -1495,7 +1838,7 @@ Singleton {
         case "hostname": {
             const hostname = value("name") ?? "";
             if (!validHostname(hostname))
-                return _refused(name, "a host name is letters, digits and inner dashes, up to 63");
+                return _refused(name, hostnameProblem(hostname));
             return set("--hostname=" + hostname, hostname === "" ? "Using the system's host name for Tailscale" : "Naming this computer " + hostname + " in Tailscale");
         }
         case "advertiseRoutes": {
@@ -1517,6 +1860,13 @@ Singleton {
             if (checked.length > 256)
                 return _refused(name, "too many routes");
             return set("--advertise-routes=" + checked.join(","), checked.length > 0 ? "Offering routes " + checked.join(", ") + " to the tailnet" : "No longer offering routes to the tailnet");
+        }
+        case "nickname": {
+            const nickname = value("name") ?? "";
+            if (nicknameProblem(nickname) !== "")
+                return _refused(name, nicknameProblem(nickname));
+            // No nickname in the description: it ends up in notifications
+            return set("--nickname=" + nickname, nickname === "" ? "Removing the account's nickname" : "Naming the Tailscale account");
         }
         case "operator": {
             const user = value("user");
@@ -1541,12 +1891,13 @@ Singleton {
         }
         case "ping": {
             const target = value("target");
-            const count = value("count") ?? 5;
+            // One ping within 3 s by default: the row says how it went (direct or relayed, the time)
+            const count = value("count") ?? 1;
             if (!validTarget(target))
                 return _refused(name, "not a device's address or name");
             if (typeof count !== "number" || !Number.isInteger(count) || count < 1 || count > 30)
                 return _refused(name, "count must be 1–30");
-            return _command(name, ["tailscale", "ping", "--c=" + count, "--timeout=5s", target], false, false, "Pinging " + target);
+            return _command(name, ["tailscale", "ping", "--c=" + count, "--timeout=3s", target], false, false, "Pinging a device");
         }
         case "netcheck":
             return _command(name, ["tailscale", "netcheck", "--format=json"], false, false, "Checking the network");
@@ -1604,9 +1955,12 @@ Singleton {
         case "exitNodeList":
             return _command(name, ["tailscale", "exit-node", "list"], false, false, "Listing exit nodes");
         case "dnsStatus":
-            return _command(name, ["tailscale", "dns", "status"], false, false, "Reading Tailscale's DNS state");
+            return _command(name, ["tailscale", "dns", "status", "--json"], false, false, "Reading Tailscale's DNS state");
         case "version":
-            return _command(name, ["tailscale", "version"], false, false, "Reading Tailscale's version");
+            return _command(name, ["tailscale", "version", "--json"], false, false, "Reading Tailscale's version");
+        case "derpMap":
+            // The relay regions' names for netcheck's region ids (readable by any user)
+            return _command(name, ["tailscale", "debug", "derp-map"], false, false, "Reading Tailscale's relay map");
         case "watch":
             // The bus through the CLI (pretty-printed objects: jsonFeed); --initial gives the
             // state and prefs first; peer changes off (status is re-read on any message)
@@ -1700,7 +2054,7 @@ Singleton {
         if (days > keyExpiryWarningDays)
             return null;
         const when = remaining < 86400000 ? "within a day" : (days === 1 ? "in 1 day" : "in " + days + " days");
-        return { kind: "key-expiring", days: days, text: "This computer's Tailscale key expires " + when + ": log in again before then" };
+        return { kind: "key-expiring", days: days, text: "This computer's Tailscale key expires " + when + ": renew it, or turn expiry off, in the admin console" };
     }
 
     // Accepted subnet routes that cover the local network — a known trap: traffic for the

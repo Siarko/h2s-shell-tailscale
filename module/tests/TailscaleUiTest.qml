@@ -29,6 +29,11 @@ TestCase {
             width: 600
         }
     }
+    property Component _page: Component {
+        TailscalePage {
+            width: 700
+        }
+    }
     // The width rich text would take for the same string ("x" in bold, an image)
     property Component _reference: Component {
         Text {
@@ -97,5 +102,29 @@ TestCase {
         const card = _card.createObject(null, { context: { provider: { client: fakeClient }, otherVpnsUp: [] } });
         checkPlain(card, "card");
         card.destroy();
+
+        // The page (step 2's sections too): accounts, this device, the devices with a ping
+        // result, diagnostics open — every crafted name plain
+        const pageClient = {
+            view: { phase: "running", exitNode: null, attention: null }, prefs: { acceptDns: true, operatorUser: "" }, canChange: false, busy: false,
+            entry: { state: "activated", status: "Tailnet only", attention: null }, authUrl: "", busAuthUrl: "", operation: "", elevationProblem: "",
+            userName: "tester", cli: "present", tailscalePath: "/x/tailscale", updateManagedBySystem: false, loginTimeoutMs: 600000, _loginElevated: false,
+            status: { version: "1.104.4" }, warnings: [], exitNodes: { own: [], countries: [], current: null, suggested: null, count: 0 },
+            accounts: [{ id: "a1", nickname: crafted, tailnet: "example.org", account: crafted, selected: true },
+                       { id: "b2", nickname: "", tailnet: crafted, account: "u@example.com", selected: false }],
+            accountsOutdated: false, loginInterrupted: { id: "a1", title: crafted },
+            currentAccount: { loginName: crafted, tailnet: crafted },
+            device: { hostName: crafted, customHostname: "x", dnsName: crafted, ipv4: "100.64.0.1", ipv6: "", online: true, relay: crafted, keyExpiry: 0,
+                      key: { state: "soon", days: 3, text: crafted } },
+            diagnostics: { running: false, ranAt: 1, clientVersion: crafted, netcheck: [{ label: "Nearest relay", value: crafted }],
+                           dns: [{ label: "Search domains", value: crafted }], errors: [crafted], nearest: null },
+            health: [{ title: crafted, text: crafted, severity: "" }], diagnosticsReport: "", updateNotice: "",
+            devices: [Object.assign({}, device, { id: "n1" })], pings: { n1: { running: false, ok: false, text: crafted } },
+            watch: () => {}, unwatch: () => {}
+        };
+        const page = _page.createObject(null, { context: { provider: { client: pageClient } }, _diagnosticsOpen: true });
+        const pageTexts = checkPlain(page, "page");
+        assert(pageTexts.length >= 12, "page: the crafted names in every new section (" + pageTexts.length + " texts)");
+        page.destroy();
     }
 }
