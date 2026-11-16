@@ -222,6 +222,14 @@ other small helpers.
   planned again from prefs and the config read under the change lock (another account since the
   click: "Changed meanwhile"). Shown when unmet, with the admin console: connected, MagicDNS, HTTPS
   certificates, the `funnel` attribute and a port its `funnel-ports` capability lists, shields up off.
+  Funnel is per port, not per entry (AllowFunnel is keyed by host:port): turning it on publishes
+  every share on that port, so "Funnel on" asks first and names the others ("Public, with 2
+  more?"), and adding a share to a public port says "Share publicly". A port holding anything the
+  module would not send itself — a file or folder, a unix socket, a redirect, a remote proxy,
+  forwarded app capabilities, a share under an old device name — is never made public here
+  ("Change this one in a terminal"), also not through pkexec; remove and Funnel off still work.
+  Funnel off needs HTTPS serving (else only Remove). Stop all says when it also stops files,
+  terminal shares or services.
 - **Certificates** (collapsed): for this computer's MagicDNS name (status's CertDomains, never
   typed), the operator only, as you: `tailscale cert --cert-file=… --key-file=… <name>` into
   `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/tailscale/certs` (700, not a link; key 600, certificate
@@ -234,7 +242,10 @@ other small helpers.
 - **Exit node by network** (in Exit node): mark networks (the shell's saved Wi-Fi and Ethernet
   networks, module API 1.3) with no exit node, automatic (`auto:any`) or one of this tailnet's exit
   nodes. When the marked networks that are up change, the module sets or clears the exit node once;
-  a choice made by hand afterwards stays until the networks change. Two marked networks up that
+  a choice made by hand afterwards stays until the networks change. While Tailscale is not running
+  (off, or still starting at boot or resume) or its devices are not known yet, it waits and applies
+  the choice once Tailscale is up — it never turns Tailscale on. A short drop to no marked network
+  (under 30 s, a Wi-Fi reconnect) does not count as a change. Two marked networks up that
   disagree: nothing. Only for the operator (an automatic change never asks for a password); not the
   operator: "Needs the operator". Offering an exit node blocks using one, as in step 3.
 - **Another VPN** up beside the exit node: one line (both want all traffic; Tailscale's wins). The

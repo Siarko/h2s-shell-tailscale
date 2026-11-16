@@ -58,7 +58,7 @@ Singleton {
 
     // The entry's attention while locked out (a lasting state the user must act on), else null
     function attention(lock) {
-        return lock?.lockedOut === true ? { kind: "locked-out", reason: "Locked out by tailnet lock: a trusted device must sign this one", action: "Open admin console" } : null;
+        return lock?.lockedOut === true ? { kind: "locked-out", reason: "Locked out by tailnet lock", action: "Open admin console" } : null;
     }
 
     // One line for the page

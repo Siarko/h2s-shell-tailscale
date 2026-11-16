@@ -469,7 +469,7 @@ ColumnLayout {
     // Step 5: another VPN up beside the exit node (both want all traffic; Tailscale's wins)
     Hint {
         visible: root._running && root.view?.exitNode !== null && (Api.vpnsUp ?? []).some(vpn => vpn.provider !== (root.module?.moduleId ?? "tailscale"))
-        text: "Another VPN is on too. The exit node takes all traffic."
+        text: "Another VPN is also on"
     }
     NetworkExitTable {
         Layout.fillWidth: true

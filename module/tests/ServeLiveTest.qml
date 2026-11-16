@@ -231,7 +231,35 @@ TestCase {
             assertEqual(operator.pkexecLines.length, 0, "never through pkexec");
         });
 
-        then(operator, "next", () => true, () => plainScenario());
+        then(operator, "next", () => true, () => pathPortScenario());
+    }
+
+    function pathPortScenario() {
+        const serveScenario = "printf 'serve\\n' > \"$1/state/scenario\"";
+        const proxyOnly = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"}}}}}";
+        const withPath = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"},\"/files\":{\"Path\":\"/srv/share\"}}}}}";
+        // ---- Funnel is per port: `/` is ours, then a path handler appears on 443 behind the
+        // module's back → "Funnel on" for `/` is refused by the planning on the fresh config,
+        // before anything runs — never retried through pkexec (root would publish /files) ----
+        const pathPort = scenario("path-port", { setup: [serveScenario, "printf '%s\\n' '" + proxyOnly + "' > \"$1/state/serve.json\""] });
+        then(pathPort, "status read", () => busReady(pathPort) && pathPort.client.serve.ready.canFunnel, () => assert(pathPort.client.serve.read(), "the config is read"));
+        then(pathPort, "config read", () => pathPort.client.serve.config !== null && !pathPort.client.serve.reading, () => {
+            assertEqual(pathPort.client.serve.entries.length, 1, "only `/` shared");
+        });
+        thenShell(pathPort, "a path handler added on 443", "printf '%s\\n' '" + withPath + "' > \"$1/state/serve.json\" && echo done", "_seeded", () => {
+            assert(pathPort.client.serve.setFunnel(pathPort.client.serve.entries[0].key, true), "Funnel on, planned on the config read before");
+        });
+        then(pathPort, "refused on the fresh config", () => !pathPort.client.busy && pathPort.client.serve.message !== "", () => {
+            assertEqual(pathPort.client.serve.message, "Change this one in a terminal", "the fresh config holds a path on the port: refused");
+            assertEqual(pathPort.client.serve.entries.length, 2, "… the path now listed");
+            assert(!pathPort.client.serve.setFunnel(pathPort.client.serve.entries.find(entry => entry.mount === "/").key, true), "asked again: refused at once");
+        });
+        logs(pathPort, "nothing ran", () => {
+            assertEqual(count(pathPort.logLines, /^funnel /), 0, "no `funnel` run");
+            assertEqual(pathPort.pkexecLines.length, 0, "nothing through pkexec");
+        });
+
+        then(pathPort, "next", () => true, () => plainScenario());
     }
 
     function plainScenario() {

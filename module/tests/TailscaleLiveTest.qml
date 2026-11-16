@@ -15,12 +15,20 @@ TestCase {
     id: suite
     suiteName: "tailscale: the live side against the stand-ins"
     asynchronous: true
-    // Many scenarios side by side: more than the runner's 20 s default. Set only where the shell
-    // knows the property (TestCase.timeLimitMs), so the suite still compiles on an older one
+    // Many scenarios: more than the runner's 20 s default — the runner's cap. Set only where the
+    // shell knows the property (TestCase.timeLimitMs), so the suite still compiles on an older one
     Component.onCompleted: {
         if ("timeLimitMs" in suite)
-            suite["timeLimitMs"] = 45000;
+            suite["timeLimitMs"] = 60000;
     }
+    // How many scenarios run at once. All of them at once (about fifty clients, each with its
+    // stream, reads and stand-ins) starved the event loop: a scenario's set-up alone took up to
+    // 7 s of a step's budget, and steps timed out in about one run of three. The other live
+    // suites run beside this one.
+    property int maxConcurrent: 16
+    // How long a step waits for its condition (wall clock): a bound for a failure, not a delay —
+    // a step goes on as soon as its condition holds
+    property int stepTimeoutMs: 15000
 
     function _path(url) {
         return String(url).replace(/^file:\/\//, "").replace(/\/+$/, "");
@@ -47,7 +55,7 @@ TestCase {
     function scenario(name, options) {
         const dir = base + "/" + name;
         const s = { name: name, dir: dir, log: dir + "/log", pkexecLog: dir + "/pkexec.log", client: null, failures: [],
-                    steps: [], waited: 0, started: false, logText: "", pkexecText: "", logsRead: false, options: options ?? {} };
+                    steps: [], waitedUntil: 0, started: false, logText: "", pkexecText: "", logsRead: false, options: options ?? {} };
         s.env = Object.assign({
             TS_FAKE_STATE_DIR: dir + "/state", TS_FAKE_LOG: s.log, TS_FAKE_PKEXEC_LOG: s.pkexecLog, TS_FAKE_LOGIN_DELAY: "1",
             TS_FAKE_USER: "tester", TS_FAKE_FIXTURES: fixtures, TS_FAKE_BUS_END: "hold", TS_FAKE_BUS_HOLD: "25",
@@ -148,29 +156,54 @@ TestCase {
         });
     }
 
+    // A step that runs `script` (as thenShell) again and again (300 ms apart) until its first
+    // line is `wanted` — waiting on a condition outside the client (a process gone, the
+    // stand-in's state) — then action(the last line)
+    function thenShellUntil(s, description, script, key, wanted, action) {
+        const run = () => {
+            s[key + "Running"] = true;
+            s[key + "At"] = Date.now();
+            _shell.run(["sh", "-c", script, "sh", s.dir], result => {
+                s[key] = (result.lines[0] ?? "").trim();
+                s[key + "Running"] = false;
+            });
+        };
+        then(s, description, () => {
+            if (s[key] === wanted)
+                return true;
+            if (!s[key + "Running"] && Date.now() - s[key + "At"] >= 300)
+                run();
+            return false;
+        }, () => action(s[key]), () => {
+            s[key] = undefined;
+            run();
+        });
+    }
+
     property Timer _clock: Timer {
         interval: 40
         repeat: true
         onTriggered: {
-            for (const s of suite._scenarios) {
+            // Only the first maxConcurrent scenarios run; the rest wait their turn (a scenario
+            // starts nothing before its first step)
+            for (const s of suite._scenarios.slice(0, suite.maxConcurrent)) {
                 const step = s.steps[0];
                 if (!step)
                     continue;
                 if (!s.started) {
                     s.started = true;
-                    s.waited = 0;
+                    s.waitedUntil = Date.now() + suite.stepTimeoutMs;
                     try {
                         step.start?.();
                     } catch (error) {
                         suite.fail(s.name + ": threw starting \"" + step.description + "\": " + error);
                     }
                 }
-                s.waited += interval;
                 let ready = false;
                 try {
                     ready = step.condition();
                 } catch (error) {}
-                if (!ready && s.waited < 9000)
+                if (!ready && Date.now() < s.waitedUntil)
                     continue;
                 s.steps.shift();
                 s.started = false;
@@ -505,17 +538,17 @@ TestCase {
             assertEqual(_entry(slowUp).state, "", "… off");
             assertEqual(slowUp.failures.length, 0, "… no failure");
         });
-        // Room for the ended processes to go, on a loaded machine (the module suites run side by side)
-        waitMs(slowUp, 1500);
+        // The ended processes go (waited for: on a loaded machine that takes a moment); a step's
+        // time without that is the failure
+        thenShellUntil(slowUp, "the pending `up` ended",
+            // One grep over every environ (a grep per process overran the step's time on a busy machine)
+            "for f in $(grep -lzx \"TS_FAKE_STATE_DIR=$1/state\" /proc/[0-9]*/environ 2> /dev/null); do p=${f%/environ}; tr '\\0' ' ' < \"$p/cmdline\" 2> /dev/null | grep -qE 'tailscale up|sleep 30' && echo \"$p\"; done | wc -l",
+            "upLeft", "0", left => assertEqual(left, "0", "the plain `up` process (and its wait) ended, not left behind"));
         thenLogs(slowUp, "after the pending connect", () => {
             assertEqual(count(slowUp.logLines, /^up$/), 1, "bare `up` once");
             assertEqual(count(slowUp.logLines, /^down$/), 1, "… then `down` (the daemon would keep trying)");
             assertEqual(count(slowUp.logLines, /^xdg-open https:\/\/login\.tailscale\.com\/a\/REDACTED$/), 1, "… the URL opened once (the user's connect)");
         });
-        thenShell(slowUp, "the pending `up` ended",
-            // One grep over every environ (a grep per process overran the step's time on a busy machine)
-            "for f in $(grep -lzx \"TS_FAKE_STATE_DIR=$1/state\" /proc/[0-9]*/environ 2> /dev/null); do p=${f%/environ}; tr '\\0' ' ' < \"$p/cmdline\" 2> /dev/null | grep -qE 'tailscale up|sleep 30' && echo \"$p\"; done | wc -l",
-            "upLeft", left => assertEqual(left, "0", "the plain `up` process (and its wait) ended, not left behind"));
 
         // ---- A2: `up` past its time limit; a URL from the bus while it waits ----
         const upTimeout = scenario("up-timeout", { state: "stopped", timeLimits: { up: 2 }, env: { TS_FAKE_OPERATOR: "1", TS_FAKE_UP_DELAY: "30" } });
@@ -584,17 +617,15 @@ TestCase {
             off.readsAtOff = off.client.reads;
             off.startsAtOff = off.client.streamStarts;
         });
-        waitMs(off, 1500);
-        then(off, "processes listed", () => off.listed === true, () => {
-            assertEqual(off.processes, 0, "off: no process of its own left (the stream ended)");
+        // Its processes go (waited for), then a while with nothing new
+        thenShellUntil(off, "processes gone",
+            "grep -lzx \"TS_FAKE_STATE_DIR=$1/state\" /proc/[0-9]*/environ 2> /dev/null | grep -vx \"/proc/$$/environ\" | wc -l",
+            "processes", "0", left => assertEqual(left, "0", "off: no process of its own left (the stream ended)"));
+        waitMs(off, 1000);
+        then(off, "nothing since", () => true, () => {
             assertEqual(off.client.reads, off.readsAtOff, "off: no read since");
             assertEqual(off.client.streamStarts, off.startsAtOff, "off: no stream started since");
             assert(!off.client.connect("user") && off.client.operation === "", "off: an action does nothing");
-        }, () => {
-            _shell.run(["sh", "-c", "grep -lzx \"TS_FAKE_STATE_DIR=$1\" /proc/[0-9]*/environ 2> /dev/null | grep -vx \"/proc/$$/environ\" | wc -l", "sh", off.dir + "/state"], result => {
-                off.processes = Number(result.lines[0] ?? -1);
-                off.listed = true;
-            });
         });
 
         // ---- accounts: read (denied → pkexec), switch, add, remove; the page follows ----
@@ -671,7 +702,10 @@ TestCase {
         then(interrupted, "read", () => interrupted.client.status !== null, () => interrupted.client.readAccounts());
         then(interrupted, "listed", () => interrupted.client.accounts !== null && !interrupted.client.busy, () => interrupted.client.addAccount());
         then(interrupted, "the URL", () => interrupted.client.authUrl !== "", () => interrupted.client.cancelLogin());
-        then(interrupted, "cancelled: logged out, on an empty profile", () => !interrupted.client.busy && interrupted.client.view.phase === "logged-out", () => {
+        // The way back comes with the first read after the cancel (the state decides, not what was
+        // seen): "logged-out" may show a moment before it
+        then(interrupted, "cancelled: logged out, on an empty profile, the next read done", () => !interrupted.client.busy && interrupted.client.view.phase === "logged-out"
+                && interrupted.client.loginInterrupted !== null, () => {
             same(interrupted.client.loginInterrupted, { id: "a1b2", title: "example-tailnet.ts.net" }, "the way back offered: the account before");
             assertEqual(interrupted.failures.length, 0, "cancelling is not a failure");
             assert(interrupted.client.switchAccount("a1b2"), "Back to it: starts");
@@ -761,9 +795,8 @@ TestCase {
         const early = scenario("login-cancelled-early", { state: "running", env: { TS_FAKE_OPERATOR: "1", TS_FAKE_LOGIN_URL_DELAY: "8" } });
         then(early, "read", () => early.client.status !== null, () => early.client.readAccounts());
         then(early, "listed", () => early.client.accounts !== null && !early.client.busy, () => early.client.addAccount());
-        // Time for the stand-in login to reach the empty profile, even on a loaded machine (its URL
-        // comes only after 8 s)
-        waitMs(early, 2000);
+        // The stand-in login has moved to the empty profile (its URL comes only after 8 s)
+        thenShellUntil(early, "the login moved to the empty profile", "cat \"$1/state/scenario\"", "moved", "login-pending", () => {});
         then(early, "still no URL", () => early.client.authUrl === "", () => early.client.cancelLogin());
         then(early, "the next read: no login → Switch back", () => early.client.loginInterrupted !== null, () => {
             same(early.client.loginInterrupted, { id: "a1b2", title: "example-tailnet.ts.net" }, "offered without a URL ever seen: the state decided");

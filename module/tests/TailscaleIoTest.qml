@@ -185,15 +185,8 @@ TestCase {
                 ["fileGet", { directory: "/home/u/Downloads" }, ["tailscale", "file", "get", "--conflict=rename", "/home/u/Downloads"]],
                 ["serveStatus", {}, ["tailscale", "serve", "status", "--json"]],
                 ["serveReset", {}, ["tailscale", "serve", "reset"]],
-                ["serveAdd", { protocol: "https", port: 443, target: 3000 }, ["tailscale", "serve", "--bg", "--https=443", "3000"]],
-                ["serveAdd", { protocol: "http", port: 80, target: "http://localhost:8080/app" }, ["tailscale", "serve", "--bg", "--http=80", "http://localhost:8080/app"]],
-                ["serveRemove", { protocol: "https", port: 443 }, ["tailscale", "serve", "--bg", "--https=443", "off"]],
                 ["funnelStatus", {}, ["tailscale", "funnel", "status", "--json"]],
                 ["funnelReset", {}, ["tailscale", "funnel", "reset"]],
-                ["funnelAdd", { protocol: "https", port: 8443, target: "3000" }, ["tailscale", "funnel", "--bg", "--https=8443", "3000"]],
-                ["funnelRemove", { protocol: "https", port: 8443 }, ["tailscale", "funnel", "--bg", "--https=8443", "off"]],
-                ["cert", { domain: "self.example-tailnet.ts.net", certFile: "/home/u/c.crt", keyFile: "/home/u/c.key" },
-                 ["tailscale", "cert", "--cert-file=/home/u/c.crt", "--key-file=/home/u/c.key", "self.example-tailnet.ts.net"]],
                 ["lockStatus", {}, ["tailscale", "lock", "status"]],
                 ["status", {}, ["tailscale", "status", "--json"]],
                 ["prefs", {}, ["tailscale", "debug", "prefs"]],
@@ -238,8 +231,10 @@ TestCase {
             assert(reads.every(name => !rules.commandFor(name, { target: "laptop" }).privileged), "command: reading commands need no privilege");
             const switchList = rules.commandFor("switchList", {});
             assert(!switchList.changes && switchList.privileged, "command: switch --list reads but is denied to non-operators");
-            assert(rules.commandFor("fileGet", { directory: "/tmp/in" }).writesAsRoot && rules.commandFor("cert", { domain: "a.b", certFile: "/a", keyFile: "/b" }).writesAsRoot,
-                   "command: file get and cert would write as root through pkexec");
+            assert(rules.commandFor("fileGet", { directory: "/tmp/in" }).writesAsRoot, "command: file get would write as root through pkexec");
+            // The old serve/funnel and cert builders are gone: ServeRules and CertRules build those
+            assert(["serveAdd", "funnelAdd", "serveRemove", "funnelRemove", "cert"].every(name => !rules.commandFor(name, { protocol: "https", port: 443, target: 3000 }).ok),
+                   "command: no legacy serve or cert builder");
             assert(rules.commandFor("login", {}).longRunning, "command: login waits for the browser");
 
             // Refusals: never a half-checked argv
@@ -256,10 +251,6 @@ TestCase {
                 ["fileCp", { files: ["/a/../etc/shadow"], target: "laptop" }], ["fileCp", { files: [], target: "laptop" }],
                 ["fileCp", { files: ["/a"], target: "fd7a::1" }], ["fileCp", { files: ["/a"], target: "-x" }], ["fileCp", { files: "/a", target: "laptop" }],
                 ["fileGet", { directory: "Downloads" }], ["fileGet", { directory: "/tmp", conflict: "explode" }],
-                ["serveAdd", { protocol: "https", port: 443, target: "http://example.com" }], ["serveAdd", { protocol: "https", port: 0, target: 3000 }],
-                ["serveAdd", { protocol: "gopher", port: 70, target: 3000 }], ["serveAdd", { protocol: "https", port: 443, target: "3000; rm" }],
-                ["funnelAdd", { protocol: "https", port: 8080, target: 3000 }], ["funnelAdd", { protocol: "http", port: 80, target: 3000 }],
-                ["cert", { domain: "100.64.0.1", certFile: "/a", keyFile: "/b" }], ["cert", { domain: "a.b", certFile: "a", keyFile: "/b" }],
                 ["switchAccount", { id: "a b" }], ["switchAccount", { id: "" }], ["removeAccount", { id: "--all" }],
                 ["nonsense", {}], ["__proto__", {}], ["constructor", {}], [null, null], [undefined, "x"]
             ];

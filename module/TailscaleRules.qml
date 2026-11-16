@@ -290,12 +290,12 @@ Singleton {
     // magicDnsSuffix, magicDnsEnabled } | null, magicDnsSuffix, peers [node], users
     // { id: { loginName, displayName } }, clientVersion { runningLatest, latestVersion,
     // notify, notifyText } | null, exitNodeStatus { id, online, addresses } | null, tun,
-    // version, peersCut }. ok false (and everything empty) when it is not a JSON object.
+    // version, peersCut, peersRead }. ok false (and everything empty) when it is not a JSON object.
     function parseStatus(input) {
         const result = {
             ok: false, error: "", backendState: "", haveNodeKey: false, authUrl: "", addresses: [], self: null,
             health: [], tailnet: null, magicDnsSuffix: "", peers: [], users: _dict(), clientVersion: null,
-            exitNodeStatus: null, tun: true, version: "", peersCut: false, certDomains: []
+            exitNodeStatus: null, tun: true, version: "", peersCut: false, peersRead: false, certDomains: []
         };
         const parsed = _parseJson(input);
         if (!_isObject(parsed.value)) {
@@ -326,6 +326,9 @@ Singleton {
                 result.magicDnsSuffix = result.tailnet.magicDnsSuffix;
         }
         const peerMap = _get(raw, "Peer");
+        // A peer list arrived (a map, even an empty one): before the first network map the daemon
+        // has none (null), and "no exit node" then means "not known yet" (NetworkExitRules)
+        result.peersRead = _isObject(peerMap) || Array.isArray(peerMap);
         const peerEntries = Array.isArray(peerMap) ? peerMap.map((value, index) => [String(index), value])
             : _keys(peerMap).map(key => [key, _get(peerMap, key)]);
         for (const pair of peerEntries) {
@@ -2152,8 +2155,8 @@ Singleton {
         "exitNodeAuto", "allowLan", "acceptRoutes", "acceptDns", "shieldsUp", "hostname", "advertiseExitNode",
         "advertiseRoutes", "ssh", "webClient", "updateCheck", "autoUpdate", "snat", "statefulFiltering", "connector", "posture",
         "relayServerPort", "operator", "switchAccount", "switchList", "removeAccount", "nickname", "derpMap",
-        "ping", "netcheck", "fileCp", "fileGet", "fileTargets", "serveStatus", "serveReset", "serveAdd", "serveRemove",
-        "funnelStatus", "funnelReset", "funnelAdd", "funnelRemove", "cert", "lockStatus", "status", "prefs",
+        "ping", "netcheck", "fileCp", "fileGet", "fileTargets", "serveStatus", "serveReset",
+        "funnelStatus", "funnelReset", "lockStatus", "status", "prefs",
         "exitNodeSuggest", "exitNodeList", "dnsStatus", "version", "watch", "startService"]
 
     // THE command builder: commandFor(name, args) → { ok, error, name, argv, changes,
@@ -2163,7 +2166,7 @@ Singleton {
     // it needs root or the operator (try it plainly; on errorKind "denied" retry through
     // pkexec — only for a user's click). `description`: for the polkit prompt's log and the
     // failure notification ("<description> failed"). `writesAsRoot`: through pkexec it would
-    // leave files owned by root (file get, cert): offer "become operator" instead.
+    // leave files owned by root (file get): offer "become operator" instead.
     // Never `tailscale up` with a flag: every setting goes through `tailscale set`.
     function commandFor(name, args) {
         const options = _isObject(args) ? args : {};
@@ -2334,21 +2337,6 @@ Singleton {
             return _command(name, ["tailscale", "serve", "reset"], true, true, "Stopping everything this computer serves");
         case "funnelReset":
             return _command(name, ["tailscale", "funnel", "reset"], true, true, "Stopping everything this computer publishes");
-        case "serveAdd":
-        case "funnelAdd":
-        case "serveRemove":
-        case "funnelRemove":
-            return _serveCommand(name, options);
-        case "cert": {
-            const domain = value("domain");
-            const certFile = value("certFile");
-            const keyFile = value("keyFile");
-            if (!validTarget(domain) || _parseIpv4(domain) !== null || _parseIpv6(domain) !== null)
-                return _refused(name, "not this computer's DNS name");
-            if (!_validPath(certFile) || !_validPath(keyFile))
-                return _refused(name, "the certificate and key files must be absolute paths");
-            return _command(name, ["tailscale", "cert", "--cert-file=" + certFile, "--key-file=" + keyFile, domain.replace(/\.$/, "")], true, true, "Getting a certificate for " + domain, { writesAsRoot: true });
-        }
         case "lockStatus":
             return _command(name, ["tailscale", "lock", "status"], false, false, "Reading tailnet lock's state");
         case "status":
@@ -2377,39 +2365,6 @@ Singleton {
         default:
             return _refused(String(name).slice(0, 40), "no such command");
         }
-    }
-
-    // serve / funnel, add and remove. The CLI (tailscale 1.104.4 `serve --help`): `serve
-    // --bg --https=<port> <target>` adds in the background; the same with "off" in place of
-    // the target removes (from the source and Tailscale's docs; NOT verified on this
-    // machine). args { protocol: "https" | "http" | "tcp" (funnel: https or tcp), port,
-    // target (add: a local port, or http(s)://localhost|127.0.0.1[:port][/path]) }.
-    function _serveCommand(name, options) {
-        const funnel = name.startsWith("funnel");
-        const adding = name.endsWith("Add");
-        const protocol = _get(options, "protocol") ?? "https";
-        const port = _get(options, "port");
-        const protocols = funnel ? ["https", "tcp"] : ["https", "http", "tcp"];
-        if (!protocols.includes(protocol))
-            return _refused(name, "protocol must be " + protocols.join(" or "));
-        if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)
-            return _refused(name, "port must be 1–65535");
-        if (funnel && protocol === "https" && ![443, 8443, 10000].includes(port))
-            return _refused(name, "funnel serves HTTPS only on 443, 8443 or 10000");
-        const program = funnel ? "funnel" : "serve";
-        let target = "off";
-        if (adding) {
-            const raw = _get(options, "target");
-            const local = typeof raw === "number" ? String(raw) : (typeof raw === "string" ? raw : "");
-            const isPort = /^\d{1,5}$/.test(local) && Number(local) >= 1 && Number(local) <= 65535;
-            const isUrl = /^(https?|https\+insecure|tcp):\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d{1,5})?(\/[A-Za-z0-9._~\/-]*)?$/.test(local);
-            if (!isPort && !isUrl)
-                return _refused(name, "the target must be a local port or a localhost URL");
-            target = local;
-        }
-        const what = (funnel ? "Publishing on the internet " : "Serving on the tailnet ") + protocol + " port " + port;
-        return _command(name, ["tailscale", program, "--bg", "--" + protocol + "=" + port, target], true, true,
-            adding ? what : "Stopping " + what.charAt(0).toLowerCase() + what.slice(1));
     }
 
     // The pkexec form of a command: privileged(argv, tailscalePath, { timeout, seconds,

@@ -3,7 +3,7 @@
 ## 0.6.0 — unreleased (delivery steps 5 and 6: serve and Funnel, certificates, tailnet lock, an exit node per network; a bar widget and popup)
 
 Needs the shell's module API 1.3 (`Api.networks`, `Api.vpnsUp`: the saved networks and the VPNs up, new
-for the exit node per network; `module.presetValue` / `setPresetValue` for the bar widget's settings). The new live suite asks for 60 s (its three scenarios run one after another).
+for the exit node per network; `module.presetValue` / `setPresetValue` for the bar widget's settings). The new live suite asks for 60 s (its four scenarios run one after another), the exit node per network suite 30 s.
 
 - Serve (a collapsed section): what this computer shares, read with `serve status --json` (any user
   may) when the section is open on screen and after each change — each entry with where it listens,
@@ -24,6 +24,22 @@ for the exit node per network; `module.presetValue` / `setPresetValue` for the b
   change, the exit node is set or cleared once (a choice made by hand afterwards stays). Only for
   the operator (an automatic change never prompts). A line when another VPN is up beside the exit
   node.
+- Funnel is per port: "Funnel on" asks first and names the other shares that go public with it;
+  adding to a public port reads "Share publicly". A port holding a file or folder, a unix socket
+  or anything else the module would not send itself is never made public, also not through
+  pkexec ("Change this one in a terminal"). Funnel off needs HTTPS serving. Shares under an old
+  device name are left to a terminal. A failed read of the config plans nothing. Stop all says
+  when files, terminal shares or services stop too.
+- Exit node by network waits for Tailscale (off, starting, devices not known yet) and applies the
+  choice once it is up; a short drop to no marked network (under 30 s) does not re-apply it.
+- Tailnet lock status is read only while Tailscale runs (once it is up, when this device's key
+  changes, 8 s after the state settles), when the page shows it and on resume — not while
+  stopped or logged out.
+- The live suite runs 16 scenarios at a time (all fifty at once starved the event loop and timed
+  out in about one run of three), waits up to 15 s per step by the clock, asks for 60 s, and
+  waits on conditions where it slept (processes gone, the stand-in's login moved, the next read).
+- Shorter texts: "Shields up is on", "Locked out by tailnet lock", "Another VPN is also on". The
+  old serve and cert command builders are gone.
 - `errorKind`: the daemon's "must be root, or be an operator and able to run 'sudo tailscale'"
   (a serve config holding a path) counts as denied. `parseStatus` keeps `certDomains`. Time limit
   `cert` (180 s).

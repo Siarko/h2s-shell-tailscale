@@ -3,7 +3,7 @@ import Quickshell
 import qs.api
 
 // Tailnet lock's live side (delivery step 5): status only. `tailscale lock status --json` (any
-// user may) is read at start, when Tailscale's state or this computer's key changes, when the
+// user may) is read once Tailscale runs and when this computer's key changes while it runs, when the
 // page shows it, and after the computer slept — never on a clock. Nothing here changes the lock.
 QtObject {
     id: root
@@ -17,11 +17,17 @@ QtObject {
     property bool _again: false
     property int reads: 0
     readonly property var attention: LockRules.attention(lock)
-    // What triggers a read: the backend state and this computer's node key
-    readonly property string _trigger: running ? (client.status?.backendState === "Running" ? "running" : "other") + "|" + (client.status?.self?.key ?? "") : ""
+    // What triggers a read: Tailscale becoming Running, or this computer's node key changing
+    // while it runs. The status matters only while connected (the entry's attention is shown
+    // only then, TailscaleClient.entry), so nothing is read while stopped, logged out or
+    // starting; the value read last is kept for the page.
+    readonly property string _trigger: running && client.status?.backendState === "Running" ? "running|" + (client.status?.self?.key ?? "") : ""
 
-    // Read a while after the state settles: never in the burst of reads a start or a
-    // reconnect brings (lockSettleMs; the page reads at once when shown)
+    // Read once the state has settled: a connect, a reconnect or an account switch brings a
+    // burst of reads and state changes, and a debounce makes them one lock read, after the
+    // burst (lockSettleMs; the page reads at once when shown, resume reads at once). The
+    // attention it may raise is about something lasting (this device not signed), so a few
+    // seconds' delay costs nothing.
     property int lockSettleMs: 8000
     on_TriggerChanged: {
         if (_trigger !== "")

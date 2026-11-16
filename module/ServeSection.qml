@@ -22,6 +22,9 @@ ColumnLayout {
     property string _kind: "proxy"
     property int _port: 443
     property bool _funnel: false
+    // A share added now would be public: the box checked, or the port has Funnel on already
+    // (Funnel is per port) — shown on the form so it never goes public silently
+    readonly property bool _addPublic: _kind === "proxy" && ServeRules.addIsPublic(serve?.config ?? null, _port, _funnel, client?.status ?? null)
 
     visible: client !== null && client.cli === "present" && client.prefs !== null
     Layout.fillWidth: true
@@ -123,12 +126,24 @@ ColumnLayout {
                         font.bold: true
                         color: Api.theme.warning
                     }
+                    // Off: plain. Needs HTTPS serving (else the CLI's interactive enable flow):
+                    // without it only Remove is offered
                     SmallButton {
-                        visible: _entry.modelData.type === "https"
-                        label: _entry.modelData.funnel ? "Funnel off" : "Funnel on"
-                        tooltip: _entry.modelData.funnel ? "" : "Public on the internet"
-                        available: root._free && (_entry.modelData.funnel || (root.ready?.canFunnel ?? false))
-                        onClicked: root.serve.setFunnel(_entry.modelData.key, !_entry.modelData.funnel)
+                        visible: _entry.modelData.type === "https" && _entry.modelData.funnel && (root.ready?.canServeHttps ?? false)
+                        label: "Funnel off"
+                        available: root._free
+                        onClicked: root.serve.setFunnel(_entry.modelData.key, false)
+                    }
+                    // On: asks first, the shell's two-step confirm — Funnel is per port, so the
+                    // question names the other shares on the port that go public with it
+                    DeleteButton {
+                        objectName: "tailscaleServeFunnelOn"
+                        visible: _entry.modelData.type === "https" && !_entry.modelData.funnel
+                        label: "Funnel on"
+                        confirmLabel: ServeRules.funnelQuestion(root.serve?.config ?? null, _entry.modelData)
+                        cancelTip: "Cancel, keep it private"
+                        available: root._free && (root.ready?.canFunnel ?? false)
+                        onConfirmed: root.serve.setFunnel(_entry.modelData.key, true)
                     }
                     PrivilegedMark {
                         visible: root.need !== ""
@@ -204,7 +219,7 @@ ColumnLayout {
             Item { Layout.fillWidth: true }
             SmallButton {
                 objectName: "tailscaleServeAdd"
-                label: "Share"
+                label: root._addPublic ? "Share publicly" : "Share"
                 available: root._free && (root.ready?.connected ?? false) && ServeRules.localPort(_local.text) > 0
                 onClicked: root.serve.add(root._kind === "tcp"
                     ? { kind: "tcp", port: ServeRules.localPort(_listen.text), localPort: _local.text }
@@ -216,7 +231,8 @@ ColumnLayout {
             }
         }
         Hint {
-            visible: root._funnel && root._kind === "proxy"
+            objectName: "tailscaleServeAddPublic"
+            visible: root._addPublic
             text: "Public on the internet"
         }
         Text {
@@ -236,7 +252,7 @@ ColumnLayout {
             Item { Layout.fillWidth: true }
             DeleteButton {
                 label: "Stop all"
-                confirmLabel: "Stop all?"
+                confirmLabel: ServeRules.resetQuestion(root.serve?.config ?? null)
                 available: root._free
                 onConfirmed: root.serve.reset()
             }

@@ -27,6 +27,7 @@ TestCase {
         configs();
         preconditions();
         plans();
+        perPort();
         certificates();
         lock();
         networkExit();
@@ -113,12 +114,12 @@ TestCase {
         assertEqual(ServeRules.addPlan(funnel, { kind: "proxy", port: 443, localPort: 5000, path: "/new" }, serveStatus, prefs).argv[1], "funnel",
                     "adding to a port with Funnel on keeps Funnel on");
         // Remove
-        same(ServeRules.removePlan(funnel, funnel.entries[0].key).argv, ["tailscale", "serve", "--bg", "--yes", "--https=443", "--set-path=/", "off"], "remove a web entry");
+        same(ServeRules.removePlan(funnel, funnel.entries[0].key, serveStatus).argv, ["tailscale", "serve", "--bg", "--yes", "--https=443", "--set-path=/", "off"], "remove a web entry");
         const tcp = ServeRules.parseConfig(fixture("serve-tcp.json"));
-        same(ServeRules.removePlan(tcp, tcp.entries[1].key).argv, ["tailscale", "serve", "--bg", "--yes", "--tls-terminated-tcp=5432", "off"], "remove a forwarder");
+        same(ServeRules.removePlan(tcp, tcp.entries[1].key, serveStatus).argv, ["tailscale", "serve", "--bg", "--yes", "--tls-terminated-tcp=5432", "off"], "remove a forwarder");
         const paths = ServeRules.parseConfig(fixture("serve-path.json"));
-        assertEqual(ServeRules.removePlan(paths, paths.entries[0].key).kind, "run", "a path entry can be removed (nothing is read)");
-        assertEqual(ServeRules.removePlan(funnel, "https:1:/").kind, "refused", "an entry that is gone");
+        assertEqual(ServeRules.removePlan(paths, paths.entries[0].key, serveStatus).kind, "run", "a path entry can be removed (nothing is read)");
+        assertEqual(ServeRules.removePlan(funnel, "https:1:/", serveStatus).kind, "refused", "an entry that is gone");
         // Funnel on / off sends the entry again
         same(ServeRules.funnelPlan(funnel, funnel.entries[0].key, false, serveStatus, prefs).argv,
              ["tailscale", "serve", "--bg", "--yes", "--https=443", "http://127.0.0.1:3000"], "Funnel off: the handler again with serve");
@@ -132,6 +133,83 @@ TestCase {
         assertEqual(ServeRules.planIntent({ action: "funnel", key: funnel.entries[0].key, on: true }, ServeRules.parseConfig("{}"), serveStatus, prefs, "", "").error,
                     "Not shared any more", "removed meanwhile: nothing sent");
         same(ServeRules.mountFor("/a/b/"), { ok: true, mount: "/a/b/", error: "" }, "a mount ending in /");
+    }
+
+    // Funnel is per host:PORT (AllowFunnel): making a port public publishes every mount on it, so
+    // a port holding anything the module would not send itself is never made public — by Funnel
+    // on or by adding a share there — and every refusal comes from the planning (which the retry
+    // through pkexec runs again on the config read then)
+    function perPort() {
+        const self = "self.example-tailnet.ts.net:443";
+        const config = (handlers, funnelOn, extraWeb) => ServeRules.parseConfig({
+            TCP: { "443": { HTTPS: true } }, Web: Object.assign({ [self]: { Handlers: handlers } }, extraWeb ?? {}),
+            AllowFunnel: funnelOn ? { [self]: true } : {}
+        });
+        const ours = { Proxy: "http://127.0.0.1:3000" };
+        const keyOf = (parsed, mount) => parsed.entries.find(entry => entry.mount === mount && entry.host === "self.example-tailnet.ts.net")?.key ?? "";
+        const funnelOn = (parsed, mount) => ServeRules.funnelPlan(parsed, keyOf(parsed, mount), true, serveStatus, prefs);
+        const addPublic = (parsed, funnel) => ServeRules.addPlan(parsed, { kind: "proxy", port: 443, localPort: 5000, path: "/new", funnel: funnel }, serveStatus, prefs);
+        const terminal = (plan, message) => same([plan.kind, plan.error], ["refused", "Change this one in a terminal"], message);
+
+        // The review's case: `/` ours, `/files` a path → Funnel on for `/` refused (root would
+        // publish /files)
+        const withPath = config({ "/": ours, "/files": { Path: "/srv/share" } });
+        terminal(funnelOn(withPath, "/"), "a path on the port: Funnel on refused");
+        terminal(addPublic(withPath, true), "a path on the port: adding with Funnel refused");
+        assertEqual(addPublic(withPath, false).kind, "run", "… adding without Funnel keeps the port private: allowed");
+        terminal(ServeRules.planIntent({ action: "funnel", key: keyOf(withPath, "/"), on: true }, withPath, serveStatus, prefs, "", ""), "… through planIntent too");
+        const withPathPublic = config({ "/": ours, "/files": { Path: "/srv/share" } }, true);
+        terminal(addPublic(withPathPublic, false), "a public port with a path: adding (public too) refused");
+        same(ServeRules.funnelPlan(withPathPublic, keyOf(withPathPublic, "/"), false, serveStatus, prefs).argv,
+             ["tailscale", "serve", "--bg", "--yes", "--https=443", "http://127.0.0.1:3000"], "… Funnel off (narrows it) allowed");
+        assertEqual(ServeRules.removePlan(withPathPublic, keyOf(withPathPublic, "/"), serveStatus).kind, "run", "… remove allowed");
+
+        terminal(funnelOn(config({ "/": ours, "/sock": { Proxy: "unix:/run/app.sock" } }), "/"), "a unix socket on the port");
+        assertEqual(config({ "/sock": { Proxy: "unix:/run/app.sock" } }).entries[0].what, "unix", "a unix socket is read as one");
+        terminal(funnelOn(config({ "/": ours, "/remote": { Proxy: "http://10.0.0.5:80" } }), "/"), "a proxy the module would not send");
+        terminal(funnelOn(config({ "/": ours, "/old": { Redirect: "https://example.com/" } }), "/"), "a redirect on the port");
+        terminal(funnelOn(config({ "/": ours, "/odd": { Future: 1 } }), "/"), "an unknown handler on the port");
+        terminal(funnelOn(config({ "/": ours, "/t": { Text: "hi", AcceptAppCaps: ["example.com/cap/x"] } }), "/"), "a text with app capabilities on the port");
+        terminal(funnelOn(config({ "/": ours, "/caps": { Proxy: "http://127.0.0.1:4000", AcceptAppCaps: ["example.com/cap/x"] } }), "/"), "a proxy with app capabilities");
+        terminal(funnelOn(config({ "/": ours, "bad": ours }), "/"), "a handler not listed (malformed mount) on the port");
+        same(config({ "/": ours, "bad": ours }).unlisted, [443], "… its port is known");
+        terminal(funnelOn(config({ "/": ours }, false, { "old.example-tailnet.ts.net:443": { Handlers: { "/x": ours } } }), "/"), "an entry under an old name on the port");
+        assertEqual(funnelOn(config({ "/": ours, "/api": { Proxy: "http://127.0.0.1:8080" }, "/hello": { Text: "hello" } }), "/").kind, "run",
+                    "only the module's own kinds on the port: Funnel on allowed");
+
+        // Text resend: never cut short, never without its app capabilities (item 6)
+        const long = config({ "/": { Text: "x".repeat(2500) } });
+        assertEqual(long.entries[0].complete, false, "a long text is kept cut, and said so");
+        terminal(funnelOn(long, "/"), "a text longer than what is kept: not sent again");
+        terminal(funnelOn(config({ "/": { Text: "hi", AcceptAppCaps: ["example.com/cap/x"] } }), "/"), "a text with app capabilities: not sent again");
+
+        // Another (old) name of this device: not changed here (item 7)
+        const old = ServeRules.parseConfig({ TCP: { "443": { HTTPS: true } }, Web: { "old.example-tailnet.ts.net:443": { Handlers: { "/": ours } } } });
+        terminal(ServeRules.funnelPlan(old, old.entries[0].key, true, serveStatus, prefs), "an old name: Funnel on refused");
+        terminal(ServeRules.removePlan(old, old.entries[0].key, serveStatus), "an old name: remove refused");
+        const both = config({ "/": ours }, false, { "old.example-tailnet.ts.net:443": { Handlers: { "/": ours } } });
+        assert(new Set(both.entries.map(entry => entry.key)).size === 2, "the same mount under two names: two keys");
+
+        // Funnel off needs HTTPS serving (item 5)
+        const funnel = ServeRules.parseConfig(fixture("serve-funnel.json"));
+        const noHttps = Object.assign({}, serveStatus, { self: Object.assign({}, serveStatus.self, { caps: [] }) });
+        same([ServeRules.funnelPlan(funnel, funnel.entries[0].key, false, noHttps, prefs).kind, ServeRules.funnelPlan(funnel, funnel.entries[0].key, false, noHttps, prefs).error],
+             ["refused", "HTTPS certificates are off for this tailnet"], "Funnel off without the https capability: refused");
+
+        // The page's questions and hint (item 2, item 8)
+        const proxy = ServeRules.parseConfig(fixture("serve-proxy.json"));
+        assertEqual(ServeRules.funnelQuestion(proxy, proxy.entries[0]), "Public, with 1 more?", "Funnel on names the other shares on the port");
+        assertEqual(ServeRules.funnelQuestion(funnel, funnel.entries[1]), "Public?", "… alone on its port");
+        same([ServeRules.addIsPublic(funnel, 443, false, serveStatus), ServeRules.addIsPublic(funnel, 8443, false, serveStatus), ServeRules.addIsPublic(funnel, 8443, true, serveStatus)],
+             [true, false, true], "adding is public on a public port, or with the box checked");
+        assertEqual(ServeRules.resetQuestion(proxy), "Stop all?", "stop all: what is listed");
+        assertEqual(ServeRules.resetQuestion(ServeRules.parseConfig(fixture("serve-path.json"))), "Stop all, files too?", "stop all: files said");
+        assertEqual(ServeRules.resetQuestion(ServeRules.parseConfig(fixture("serve-rich.json"))), "Stop all, terminal shares and services too?", "stop all: unlisted ones said");
+
+        // A failed read is not "nothing shared" (item 4)
+        same(ServeRules.planIntent({ action: "add", kind: "proxy", port: 443, localPort: 3000 }, { ok: false, error: "x", entries: [] }, serveStatus, prefs, "", "").error,
+             "What is shared could not be read", "a failed read: nothing planned");
+        assertEqual(ServeRules.planIntent({ action: "reset" }, { ok: false, error: "x", entries: [] }, serveStatus, prefs, "", "").kind, "run", "… but stop all still works");
     }
 
     function certificates() {
@@ -170,7 +248,7 @@ TestCase {
         const table = { "cafe-uuid": { choice: online.id, label: online.name }, "home-uuid": { choice: "none" }, "bad id!": { choice: "none" } };
         const networks = [{ id: "cafe-uuid", name: "Café", kind: "wifi", active: true }, { id: "home-uuid", name: "Home", kind: "ethernet", active: false }];
         same(NetworkExitRules.rows(table).map(row => row.id), ["cafe-uuid", "home-uuid"], "bad ids dropped");
-        const decide = extra => NetworkExitRules.decide(Object.assign({ table: table, networks: networks, lastKey: "", prefs: prefs, exitNodes: nodes, canChange: true, useProblem: "" }, extra));
+        const decide = extra => NetworkExitRules.decide(Object.assign({ table: table, networks: networks, lastKey: "", prefs: prefs, backendState: "Running", peersRead: true, exitNodes: nodes, canChange: true, useProblem: "" }, extra));
         same([decide({}).kind, decide({}).name, decide({}).args.node], ["run", "exitNode", online.argument], "café up: its exit node");
         assertEqual(decide({ prefs: null }).kind, "wait", "prefs not read: wait");
         assertEqual(decide({ lastKey: "cafe-uuid" }).kind, "same", "the same networks again: left alone (a manual choice stays)");
@@ -183,6 +261,13 @@ TestCase {
         same([homeUsing.kind, homeUsing.name], ["run", "exitNodeNone"], "home up with an exit node in use: cleared");
         assertEqual(decide({ networks: [], lastKey: "cafe-uuid" }).kind, "none-marked", "no marked network up");
         assertEqual(decide({ table: { "cafe-uuid": { choice: "nGONE" } } }).kind, "unavailable", "a node that is gone");
+        // Tailscale not up yet (boot, resume, off): wait, the key not taken, so it is applied later
+        same([decide({ backendState: "Stopped" }).kind, decide({ backendState: "Stopped" }).key], ["wait", ""], "Tailscale off: wait (never brought up)");
+        assertEqual(decide({ backendState: "Starting" }).kind, "wait", "Tailscale starting: wait");
+        assertEqual(decide({ backendState: undefined }).kind, "wait", "status not read: wait");
+        same([decide({ table: { "cafe-uuid": { choice: "nGONE" } }, peersRead: false }).kind, decide({ table: { "cafe-uuid": { choice: "nGONE" } }, peersRead: false }).key],
+             ["wait", ""], "no peer list yet: the node is not known to be gone — wait");
+        assertEqual(decide({ peersRead: false }).kind, "run", "a node already known: applied without waiting for more");
         assertEqual(decide({ table: { "cafe-uuid": { choice: "auto" } } }).name, "exitNodeAuto", "automatic");
         same(Object.keys(NetworkExitRules.withRow(table, "home-uuid", null)), ["cafe-uuid"], "removed");
         same(Object.keys(NetworkExitRules.withRow({}, "__proto__", "none")), [], "a prototype name is not a network");

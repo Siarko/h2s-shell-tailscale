@@ -60,15 +60,20 @@ Singleton {
             .map(network => network.id).sort().join(" ");
     }
 
-    // What to do now: decide({ table, networks, lastKey, prefs, exitNodes (TailscaleRules
-    // .exitNodes), canChange, useProblem (TailscaleRules.exitNodeUseProblem) }) → { kind, key,
-    // command name and args, text }:
-    //   "wait"            prefs not read yet: decide later (the key is not taken)
+    // What to do now: decide({ table, networks, lastKey, prefs, backendState, peersRead (status
+    // .backendState, .peersRead), exitNodes (TailscaleRules.exitNodes), canChange, useProblem
+    // (TailscaleRules.exitNodeUseProblem) }) → { kind, key, command name and args, text }:
+    //   "wait"            prefs not read yet, Tailscale not Running (off, starting: at boot or
+    //                     resume the network is often up first), or the chosen node not among
+    //                     the exit nodes while no peer list has been read: decide later (the key
+    //                     is not taken — so the choice is applied once Tailscale is up; it never
+    //                     brings Tailscale up itself)
     //   "same"            the marked networks up are the ones acted on last: nothing (a manual
     //                     choice since then is left alone)
     //   "none-marked"     no marked network is up: nothing (the key is taken)
     //   "conflict"        two marked networks up want different exit nodes: nothing
-    //   "unavailable"     the chosen node is not an exit node now (gone, offline)
+    //   "unavailable"     the chosen node is not an exit node now (gone, offline), with
+    //                     Tailscale Running and its peers read
     //   "already"         the exit node is already as wanted
     //   "needs-operator"  a change, but it needs a password: nothing (one line on the page)
     //   "refused"         this computer offers an exit node: using one is refused (text)
@@ -76,7 +81,7 @@ Singleton {
     function decide(input) {
         const result = (kind, extra) => Object.assign({ kind: kind, key: "", name: "", args: {}, text: "" }, extra ?? {});
         const prefs = input?.prefs ?? null;
-        if (prefs?.ok !== true)
+        if (prefs?.ok !== true || input?.backendState !== "Running")
             return result("wait");
         const key = activeKey(input?.table, input?.networks);
         if (key === String(input?.lastKey ?? ""))
@@ -100,6 +105,8 @@ Singleton {
             const nodes = input?.exitNodes ?? {};
             const all = (nodes.own ?? []).concat(...(nodes.countries ?? []).map(country => [].concat(...(country.cities ?? []).map(city => city.nodes ?? []))));
             const node = all.find(option => option.id === choice) ?? null;
+            if (node === null && input?.peersRead !== true)
+                return result("wait");
             if (node === null || !node.online || node.argument === "")
                 return result("unavailable", { key: key, text: "The chosen exit node is not available" });
             if (String(prefs.exitNodeId ?? "") === choice)

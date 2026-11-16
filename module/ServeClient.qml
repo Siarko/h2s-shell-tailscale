@@ -13,7 +13,9 @@ import qs.api
 // retry through pkexec (the client's `prepare`) —, because a Funnel switch sends the entry's
 // handler again and must send what is there now. A user's click may ask for a password (root
 // runs `tailscale serve …` with the module's own argv: a local port or the entry's own proxy
-// URL, never a path); nothing else does.
+// URL, never a path); nothing else does. Funnel is per host:port, so the planning (in both
+// passes) refuses to make public a port that holds anything the module would not send itself
+// (ServeRules.publicProblem): a retry as root never publishes a path handler.
 QtObject {
     id: root
 
@@ -66,8 +68,15 @@ QtObject {
             client._opProcess = client._spawn(client._timedArgv(TailscaleRules.commandFor("serveStatus", {}), _seconds()), client._watchdogMs(_seconds()), result => {
                 if (!client._alive(generation) || token !== client._opToken)
                     return;
-                    client._opProcess = null;
-                const parsed = ServeRules.parseConfig(result.ok ? result.out : "");
+                client._opProcess = null;
+                // A failed read is not an empty config: planning on "nothing shared" would miss
+                // what is on a port (Funnel is per port) — not ok, so nothing is planned on it
+                if (!result.ok) {
+                    readError = TailscaleRules.errorKind(result.code, result.err).message;
+                    done(fresh, { ok: false, error: readError, entries: [] });
+                    return;
+                }
+                const parsed = ServeRules.parseConfig(result.out);
                 if (parsed.ok)
                     config = parsed;
                 done(fresh, parsed);
