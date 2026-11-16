@@ -196,9 +196,15 @@ check "netcheck replays the real shape (a comment, then JSON)" cmp -s <("$TS" ne
 check "dns status --json replays its fixture" cmp -s <("$TS" dns status --json) "$FIXTURES/dns-status.json"
 check "debug derp-map replays its fixture" cmp -s <("$TS" debug derp-map) "$FIXTURES/derp-map.json"
 check "version --json replays its fixture" cmp -s <("$TS" version --json) "$FIXTURES/version.json"
-run "$work/out" "$work/err" "$TS" file cp /tmp/a "/tmp/with space" laptop:
-check "file cp with a target: ok" test "$status" = 0
-check "file cp: paths arrive as separate arguments" grep -qF "file cp /tmp/a /tmp/with space laptop:" "$work/log"
+printf 'a' > "$work/a"; printf 'bb' > "$work/with space"
+run "$work/out" "$work/err" "$TS" file cp -- "$work/a" "$work/with space" 100.64.0.4:
+check "file cp as a non-operator: the LocalAPI's denial" grep -q "^Access denied: file access denied$" "$work/err"
+run "$work/out" "$work/err" env TS_FAKE_OPERATOR=1 TS_FAKE_BUS_FILE="$work/bus-out" "$TS" file cp -- "$work/a" "$work/with space" 100.64.0.4:
+check "file cp as the operator: ok, both files at the stand-in daemon" test "$status" = 0 -a -f "$TS_FAKE_STATE_DIR/sent/with space"
+check "file cp: paths arrive as separate arguments (after --)" grep -qF "file cp -- $work/a $work/with space 100.64.0.4:" "$work/log"
+check "file cp: OutgoingFiles on the bus, finished and succeeded" grep -q '"PeerID":"nPEER4CNTRL","Name":"with space".*"Finished":true,"Succeeded":true' "$work/bus-out"
+run "$work/out" "$work/err" env TS_FAKE_OPERATOR=1 "$TS" file cp -- "$work" 100.64.0.4:
+check "file cp of a folder: refused as the CLI does" grep -q "^directories not supported$" "$work/err"
 run "$work/out" "$work/err" "$TS" file cp /tmp/a laptop
 check "file cp without the colon fails" test "$status" = 1
 run "$work/out" "$work/err" "$TS" file get /tmp/inbox

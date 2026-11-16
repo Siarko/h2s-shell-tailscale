@@ -1,9 +1,9 @@
 {
     "id": "tailscale",
     "name": "Tailscale",
-    "version": "0.4.0",
+    "version": "0.5.0",
     "api": "1.2",
-    "description": "Tailscale among the shell's VPNs: connect, log in and out, accounts, this device's name and key, exit nodes, the main switches, sharing this computer (exit node, routes, SSH server, web interface), the devices, diagnostics.",
+    "description": "Tailscale among the shell's VPNs: connect, log in and out, accounts, this device's name and key, exit nodes, the main switches, sharing this computer (exit node, routes, SSH server, web interface), Taildrop (send files, save received ones), the devices, diagnostics.",
     "main": "Main.qml",
     "slots": [
         { "slot": "network.vpn.row", "component": "TailscaleRow.qml" },
@@ -32,6 +32,8 @@
         "tests/TailscaleModuleTest.qml",
         "tests/TailscaleUiTest.qml",
         "tests/TailscaleAccountsTest.qml",
-        "tests/TailscaleSharingTest.qml"
+        "tests/TailscaleSharingTest.qml",
+        "tests/TaildropTest.qml",
+        "tests/TaildropLiveTest.qml"
     ]
 }

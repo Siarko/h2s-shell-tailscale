@@ -168,6 +168,10 @@ QtObject {
     // Health lines then)
     property var busHealth: null
     property string _lastTailnet: ""
+    // Taildrop (step 4): sending and receiving files, on this client's runner and operation lock
+    readonly property TaildropClient taildrop: TaildropClient {
+        client: root
+    }
 
     // Counters, for the tests and the IPC state
     property int reads: 0
@@ -208,7 +212,8 @@ QtObject {
     readonly property var _operationLabels: ({
         "exit-node": "Changing the exit node…", "setting": "Changing a setting…", "operator": "Making you the operator…",
         "start": "Starting the service…", "accounts": "Reading the accounts…", "accounts-auto": "Reading the accounts…",
-        "account": "Changing the account…", "sharing": "Changing what this computer offers…"
+        "account": "Changing the account…", "sharing": "Changing what this computer offers…",
+        "taildrop-save": "Saving received files…"
     })
 
     // THE provider entry (TailscaleRules.entry, with the attention an action found, the
@@ -219,6 +224,9 @@ QtObject {
             ? { reason: pendingAttention.reason, action: pendingAttention.action } : base.attention;
         const label = _operationLabels[operation] ?? "";
         let line = label !== "" ? label : base.status;
+        // Files waiting in Tailscale's inbox: a fact on the status line, never attention
+        if (label === "" && taildrop.statusText !== "")
+            line = (line !== "" ? line + " · " : "") + taildrop.statusText;
         if (curlMissing && operation === "" && view.phase !== "unknown")
             line = (line !== "" ? line + " · " : "") + "live updates need curl";
         return Object.assign({}, base, { attention: held, status: line.slice(0, 80), busy: operation !== "" });
@@ -616,6 +624,7 @@ QtObject {
     function _onBusMessage(object) {
         events++;
         streamUp = true;
+        taildrop._onBus(object);
         const digest = TailscaleRules.notifyDigest(object);
         if (!digest.ok)
             return;
@@ -793,6 +802,12 @@ QtObject {
             return false;
         }
         return _userChange("operator", { user: userName }, "operator");
+    }
+
+    // `tailscale set --operator=` (empty): only root may change Tailscale again. The operator
+    // may run it without a password; anyone else through pkexec
+    function giveUpOperator() {
+        return _userChange("operator", { user: "" }, "operator");
     }
 
     function startService() {
@@ -1205,9 +1220,24 @@ QtObject {
     // `onSuccess(output, command)`: called with its standard output (and the command that ran)
     // once it succeeded (plainly or through pkexec) — a read that only root or the operator may
     // do (switch --list). `prepare`: see below (a change derived from current prefs)
-    function _runChange(command, origin, operationName, onSuccess, prepare) {
+    // `onEnd({ ok, dismissed, elevated, code, message, error })`: when given, called once at the
+    // end, whatever it was — and failures are then NOT notified (the caller shows them: Taildrop's
+    // per-file results); `error` is the raw stderr
+    function _runChange(command, origin, operationName, onSuccess, prepare, onEnd) {
+        const fail = (description, message, extra) => {
+            if (onEnd)
+                onEnd(Object.assign({ ok: false, dismissed: false, elevated: false, code: -1, message: message, error: "" }, extra ?? {}));
+            else
+                failed(description, message);
+        };
+        // One change at a time: a second caller never replaces the running one (its process
+        // and its result would be lost)
+        if (busy) {
+            fail(command.description, "Another Tailscale change is running.");
+            return false;
+        }
         if (tailscalePath === "") {
-            failed(command.description, "Tailscale is not installed.");
+            fail(command.description, "Tailscale is not installed.");
             return false;
         }
         const seconds = _limit(command.timeLimit ?? "change");
@@ -1228,7 +1258,7 @@ QtObject {
             const elevated = TailscaleRules.privileged(current.argv, tailscalePath, { timeout: timeoutPath, seconds: seconds, description: current.description });
             if (!elevated.ok || elevationProblem !== "") {
                 _finish();
-                failed(current.description, elevationProblem !== "" ? elevationProblem : elevated.error);
+                fail(current.description, elevationProblem !== "" ? elevationProblem : elevated.error);
                 return;
             }
             _freeAdmin().run(elevated.argv.slice(1), elevated.prompt, answer => {
@@ -1237,17 +1267,20 @@ QtObject {
                 _finish();
                 if (answer.ok)
                     onSuccess?.((answer.lines ?? []).join("\n"), current);
-                if (answer.ok || answer.dismissed)
+                if (answer.ok || answer.dismissed) {
+                    onEnd?.({ ok: answer.ok === true, dismissed: answer.dismissed === true, elevated: true, code: answer.code ?? 0, message: "", error: "" });
                     return;
+                }
+                const extra = { elevated: true, code: answer.code ?? -1, error: answer.error ?? "" };
                 if (answer.refused)
-                    failed(current.description, TailscaleRules.pkexecOutcome(127).message);
+                    fail(current.description, TailscaleRules.pkexecOutcome(127).message, extra);
                 else if (answer.notFound === true || answer.code < 0 || /\bnot found\b|No such file/i.test(answer.error ?? ""))
                     // PrivilegedAction could not run it at all (no pkexec, a path that is gone)
-                    failed(current.description, "It could not be run as administrator: pkexec, timeout or tailscale was not found.");
+                    fail(current.description, "It could not be run as administrator: pkexec, timeout or tailscale was not found.", extra);
                 else if (answer.code === 124 || answer.code === 137)
-                    failed(current.description, TailscaleRules.timeoutMessage(current.name, seconds));
+                    fail(current.description, TailscaleRules.timeoutMessage(current.name, seconds), extra);
                 else
-                    failed(current.description, TailscaleRules.errorKind(answer.code, answer.error).message);
+                    fail(current.description, TailscaleRules.errorKind(answer.code, answer.error).message, extra);
             }, _environment());
         };
         const plain = current => {
@@ -1258,17 +1291,19 @@ QtObject {
                 if (result.ok) {
                     _finish();
                     onSuccess?.(result.out, current);
+                    onEnd?.({ ok: true, dismissed: false, elevated: false, code: 0, message: "", error: "" });
                     return;
                 }
+                const extra = { code: result.code, error: result.err ?? "" };
                 if (_timedOut(result)) {
                     _finish();
-                    failed(current.description, TailscaleRules.timeoutMessage(current.name, seconds));
+                    fail(current.description, TailscaleRules.timeoutMessage(current.name, seconds), extra);
                     return;
                 }
                 const error = TailscaleRules.errorKind(result.code, result.err);
                 if (error.kind !== "denied") {
                     _finish();
-                    failed(current.description, error.message);
+                    fail(current.description, error.message, extra);
                     return;
                 }
                 if (origin !== "user") {
@@ -1278,7 +1313,7 @@ QtObject {
                         return;
                     // Not the provider's connect/disconnect (the IPC): a failure, never a prompt
                     if (operationName !== "connect" && operationName !== "disconnect") {
-                        failed(current.description, error.message + " Asked from outside the page: no password prompt.");
+                        fail(current.description, error.message + " Asked from outside the page: no password prompt.", extra);
                         return;
                     }
                     _hold({ kind: "needs-privilege", reason: "Tailscale refused a change asked for by a network: it needs an administrator's password — or make this user Tailscale's operator",
@@ -1354,6 +1389,38 @@ QtObject {
     }
 
     // Opens a link: the seam's xdg-open when the seam is in use, else Api.openUrl
+    // A folder in the file manager (Taildrop's "Open folder"): a file: URL of a FOLDER only — the
+    // caller passes the save folder, never a received file — through the seam's xdg-open, or
+    // Api.openUrl with allowFile
+    function openFolder(url) {
+        if (typeof url !== "string" || !url.startsWith("file:///") || /[\u0000-\u001f]/.test(url))
+            return false;
+        opened++;
+        if (_tools !== "")
+            _misc.run([tool("xdg-open"), url], () => {}, _environment());
+        else
+            Api.openUrl(url, { allowFile: true });
+        return true;
+    }
+
+    // A process that is not a tailscale command (Taildrop's save script), run under the
+    // operation lock, plainly — never through pkexec: done(result) once, unless abandoned
+    function _runLocked(operationName, argv, limitMs, done) {
+        if (!running || busy)
+            return false;
+        const generation = _generation;
+        const token = ++_opToken;
+        operation = operationName;
+        _opProcess = _spawn(argv, limitMs, result => {
+            if (!_alive(generation) || token !== _opToken)
+                return;
+            _opProcess = null;
+            _finish();
+            done(result);
+        });
+        return true;
+    }
+
     function openUrl(url) {
         const safe = TailscaleRules.safeUrl(url);
         if (safe === "")

@@ -1,0 +1,4 @@
+Access denied: file access denied
+
+Use 'sudo tailscale file cp -- /home/user1/a.txt 100.64.0.4:'.
+To not require root, use 'sudo tailscale set --operator=$USER' once.

@@ -505,7 +505,8 @@ TestCase {
             assertEqual(_entry(slowUp).state, "", "… off");
             assertEqual(slowUp.failures.length, 0, "… no failure");
         });
-        waitMs(slowUp, 500);
+        // Room for the ended processes to go, on a loaded machine (the module suites run side by side)
+        waitMs(slowUp, 1500);
         thenLogs(slowUp, "after the pending connect", () => {
             assertEqual(count(slowUp.logLines, /^up$/), 1, "bare `up` once");
             assertEqual(count(slowUp.logLines, /^down$/), 1, "… then `down` (the daemon would keep trying)");
@@ -760,7 +761,9 @@ TestCase {
         const early = scenario("login-cancelled-early", { state: "running", env: { TS_FAKE_OPERATOR: "1", TS_FAKE_LOGIN_URL_DELAY: "8" } });
         then(early, "read", () => early.client.status !== null, () => early.client.readAccounts());
         then(early, "listed", () => early.client.accounts !== null && !early.client.busy, () => early.client.addAccount());
-        waitMs(early, 700);
+        // Time for the stand-in login to reach the empty profile, even on a loaded machine (its URL
+        // comes only after 8 s)
+        waitMs(early, 2000);
         then(early, "still no URL", () => early.client.authUrl === "", () => early.client.cancelLogin());
         then(early, "the next read: no login → Switch back", () => early.client.loginInterrupted !== null, () => {
             same(early.client.loginInterrupted, { id: "a1b2", title: "example-tailnet.ts.net" }, "offered without a URL ever seen: the state decided");

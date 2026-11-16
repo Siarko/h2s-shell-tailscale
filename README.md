@@ -3,7 +3,7 @@
 The Tailscale module for [h2s-shell](../h2s-shell), the Quickshell desktop shell: Tailscale
 listed among the shell's VPNs (connect, disconnect, log in and out, exit nodes), with a page of
 its own for the main switches, the accounts, this device, sharing this computer (exit node, routes,
-SSH server, web interface), the devices and diagnostics. The plan is the shell's
+SSH server, web interface), Taildrop (sending files, saving received ones), the devices and diagnostics. The plan is the shell's
 `docs/plans/tailscale.md`; the module system it plugs into is `docs/plans/modules.md`. It needs
 module API 1.2 (the VPN slots, the handle's `resumed()`, the pages' `shown`).
 
@@ -165,8 +165,48 @@ changing the netfilter mode (shown only: it can break the system's firewall); `-
 does not exist (the flag is `--report-posture`); `--relay-server-static-endpoints` and
 `--remote-config` (hidden) are not offered.
 
-Not yet: Taildrop, serve and funnel, a bar widget of its own (delivery steps 4–6 of the plan's
-§8).
+## What works (delivery step 4: Taildrop)
+
+Taildrop — sending and saving received files — needs your user to be Tailscale's operator.
+Nothing of it runs through pkexec. Not the operator: the section says so and offers "Let this
+user manage Tailscale without a password" (one password, once).
+
+- **Send** from the page's Taildrop section, or **Send file…** on a device row: devices that can
+  receive (status's `TaildropTarget`; offline ones shown, not offered), files from the file
+  chooser, pasted absolute paths, or dropped on the section. `tailscale file cp -- <paths…>
+  <IPv4>:` runs as you, outside the module's change lock: Disconnect and the settings stay free
+  while it runs, and Disconnect, logout or an account switch end it. Per-file progress from the
+  bus's OutgoingFiles; Cancel kills it; no progress for 2 minutes stops it; 6 hours at most. A
+  `find -P` first only gives a clear message for links, folders, unreadable or missing files.
+- **Receive**: anyone sees that files arrived (the bus's IncomingFiles and FilesWaiting): a
+  notification with the name, "Files received" on the entry's status line (a fact, never
+  attention). The operator saves them (Save, the notification's action, or automatically —
+  default off) into a folder (default `XDG_DOWNLOAD_DIR`, read from user-dirs.dirs, else
+  `~/Downloads`), fetched from the LocalAPI as you, with a conflict policy (keep both, replace,
+  leave waiting; saving automatically never replaces). Names are made safe again (no separator,
+  nothing invisible, no leading "." or "-", at most 200 bytes). Auto-save runs for an arrival
+  only; a file it left is not tried again until the next arrival or a manual Save. **Open
+  folder** opens the folder (checked to be one), never a file.
+- **The operator**: Administration says whether you are the operator of this account; become it,
+  or stop being it (`set --operator=`).
+
+**Why the operator, and no pkexec** (tailscale 1.104.4's source): the LocalAPI's `file-put` and
+`files/` need write access — root or the operator (feature/taildrop/localapi.go; ipn/ipnauth
+IsReadonlyConn). The CLI opens and writes the files itself (cli/file.go). A root `file cp` was
+built first and rejected: root opens the chosen paths long after any check, so a swapped file or
+parent link makes root read and send a file you cannot read, and no cheap check closes that race.
+A root `file get` would leave root's files in your folder.
+
+**Limits**: the sender of a received file is not known (the bus does not say); a non-operator
+sees that files wait, not how many; the target is addressed by its IPv4 address; saving needs curl.
+The file and folder dialogs are untested by click in Quickshell (a real-machine check is open);
+pasting paths and dropping files work without them.
+
+**Helper programs**: `tailscale`, `timeout`, `curl` and `pkexec` run by absolute path (the tools
+seam); `sh`, `find`, `mv`, `mktemp`, `rm`, `test`, `cat` are found through PATH, like the module's
+other small helpers.
+
+Not yet: serve and funnel, a bar widget of its own (delivery steps 5–6 of the plan's §8).
 
 ## What needs root (asked through pkexec, answered by the shell's polkit agent)
 
@@ -176,7 +216,7 @@ again as `pkexec <timeout> -k 5 <limit> <tailscale> …` — only after a click:
 LAN, routes, DNS, shields up, hostname, nickname, operator; since step 3: offering the exit node and routes,
 SSH, the web interface, app connector, NAT, stateful filtering, peer relay, posture, update checks and
 automatic updates), `switch <id>`, `switch remove
-<id>`, and the read `switch --list --json`. Never through pkexec: `status --json`,
+<id>`, and the read `switch --list --json`. Taildrop (step 4) never runs through pkexec: it is the operator's, as you. Never through pkexec: `status --json`,
 `debug prefs`, `exit-node suggest`, the bus, `netcheck`, `dns status`, `debug derp-map`,
 `version`, `ping` (any user may), the two IP-forwarding files in /proc, and `systemctl start tailscaled.service` (systemd asks
 polkit itself).
@@ -194,6 +234,7 @@ and health counts). Since step 3: `sharing` (what is offered and its approval, S
 states, never the networks), `advertiseRoute <network>`, `removeRoute <network>`, `advertiseExitNode
 <true|false>`, `setSsh <true|false>` (under the same rule as `setHostname`), `readForwarding`;
 `profiles` also says `namePending` and `nameNote`.
+Since step 4: `taildrop` (counts and states: targets, the send's per-file outcomes, waiting count, saves — no names, paths or addresses), `sendFile <device id> <absolute path>` (the operator only, as you: never a prompt), `cancelSend`, `saveReceived` (the operator only: never a prompt).
 
 
 ## Trying it in a development shell
@@ -228,6 +269,9 @@ module/                 the module itself — what gets installed
   CopyChips.qml         addresses and names to copy with a click
   SharingSection.qml    the page's Sharing (exit node, routes, forwarding, web interface, More)
   SshSection.qml        the page's SSH (the server switch, access rules)
+  TaildropRules.qml     pure: targets, paths, the bus's file fields, safe names, the save script
+  TaildropClient.qml    Taildrop's live side, on the client's runner and operation lock
+  TaildropSection.qml   the page's Taildrop (send, received files, folder, conflicts, auto-save)
   tests/                its suites (extend the shell's TestCase: `import qs.tests`)
 fixtures/               redacted real outputs and synthetic ones (see fixtures/README.md)
 tools/
@@ -236,7 +280,8 @@ tools/
                         sharing: every `set` flag with set.go's composition and refusals, approval
   stand-in/pkexec       a stand-in pkexec: ok / 126 / 127 / unkillable, logs what it was asked to run
   stand-in/timeout      runs the real coreutils timeout (so the seam names every program)
-  stand-in/curl         a stand-in for the LocalAPI event stream
+  stand-in/curl         a stand-in for the LocalAPI: the event stream (also followed as it grows),
+                        Taildrop's inbox (files/: list, fetch, delete; operator only)
   stand-in/systemctl    starts / stops the stand-in daemon (a file)
   stand-in/xdg-open     opens nothing, logs the link
   stand-in/nmcli        answers nothing (for the lock-bed test's shell)

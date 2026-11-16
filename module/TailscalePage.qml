@@ -510,6 +510,13 @@ ColumnLayout {
         need: root.need
     }
 
+    // ── Taildrop (step 4) ──
+    TaildropSection {
+        Layout.fillWidth: true
+        client: root.client
+        need: root.need
+    }
+
     // ── Devices ──
     SectionTitle {
         visible: (root.client?.devices.length ?? 0) > 0
@@ -681,7 +688,7 @@ ColumnLayout {
         visible: root.client !== null && root.client.cli === "present" && root.client.canChange
         Layout.fillWidth: true
         wrapMode: Text.WordWrap
-        text: "This user changes Tailscale without a password" + (root.prefs?.operatorUser ? " (it is Tailscale's operator)." : ".")
+        text: "This user changes Tailscale without a password" + (root.prefs?.operatorUser ? " (it is Tailscale's operator for this account)." : ".")
         font.family: Api.theme.fontFamily
         font.pixelSize: Api.theme.fontSizeBody
         color: Api.theme.textPrimary
@@ -689,7 +696,21 @@ ColumnLayout {
     Hint {
         visible: root.client !== null && root.client.cli === "present" && !root.client.canChange
         text: "Each change asks for an administrator's password; making this user the operator asks once. An operator may then, without a password, "
-            + "turn on Tailscale's SSH server, offer this computer as an exit node or its networks as routes, change its DNS, log it out or into another account."
+            + "turn on Tailscale's SSH server, offer this computer as an exit node or its networks as routes, change its DNS, log it out or into another account, "
+            + "send files and save received ones (Taildrop). It is set per account: logging in again with the same account resets it."
+    }
+    // The operator may give it up (no password: an operator may change Tailscale)
+    RowLayout {
+        visible: root.client !== null && root.client.cli === "present" && root.client.canChange && (root.prefs?.operatorUser ?? "") !== ""
+            && root.prefs.operatorUser === root.client.userName
+        spacing: 8
+        SmallButton {
+            objectName: "tailscaleGiveUpOperator"
+            label: "Stop being the operator"
+            tooltip: "Changes then ask for an administrator's password again, and received files can no longer be saved"
+            available: root._free
+            onClicked: root.client.giveUpOperator()
+        }
     }
     RowLayout {
         visible: root.client !== null && root.client.cli === "present" && !root.client.canChange

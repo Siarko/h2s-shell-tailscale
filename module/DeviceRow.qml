@@ -74,6 +74,14 @@ Rectangle {
                 font.pixelSize: Api.theme.fontSizeXSmall
                 color: root.device?.connection === "relayed" ? Api.theme.warning : Api.theme.textMuted
             }
+            // Taildrop (the operator's): this device as the target, then the section's file chooser
+            SmallButton {
+                objectName: "taildropDeviceSend"
+                visible: root.client !== null && root.device?.canReceiveFiles === true && root.client.view?.phase === "running" && root.client.taildrop.isOperator
+                label: "Send file…"
+                fontSize: Api.theme.fontSizeXSmall
+                onClicked: root.client.taildrop.chooseFor(root.device.id)
+            }
             // `tailscale ping --c=1 --timeout=3s`: how a packet gets there now (direct or relayed)
             SmallButton {
                 objectName: "tailscalePing"

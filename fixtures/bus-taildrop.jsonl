@@ -1,0 +1,8 @@
+{"Version":"1.104.4","SessionID":"0123456789abcdef","State":6,"Prefs":{"WantRunning":true}}
+{"Version":"1.104.4","IncomingFiles":[{"Name":"holiday.jpg","Started":"2026-11-16T10:00:00Z","DeclaredSize":2048,"Received":1024}]}
+{"Version":"1.104.4","IncomingFiles":[{"Name":"holiday.jpg","Started":"2026-11-16T10:00:00Z","DeclaredSize":2048,"Received":2048,"FinalPath":"/var/lib/tailscale/files/user1-example.com-uid-123/holiday.jpg","Done":true}],"FilesWaiting":{}}
+{"Version":"1.104.4","Health":{"Warnings":{}},"FilesWaiting":{}}
+{"Version":"1.104.4","OutgoingFiles":[{"ID":"a1","PeerID":"nPEER4CNTRL","Name":"notes.txt","Started":"2026-11-16T10:05:00Z","DeclaredSize":4000,"Sent":0,"Finished":false,"Succeeded":false}]}
+{"Version":"1.104.4","OutgoingFiles":[{"ID":"a0","PeerID":"nPEER4CNTRL","Name":"notes.txt","Started":"2026-11-16T09:00:00Z","DeclaredSize":4000,"Sent":4000,"Finished":true,"Succeeded":true},{"ID":"a1","PeerID":"nPEER4CNTRL","Name":"notes.txt","Started":"2026-11-16T10:05:00Z","DeclaredSize":4000,"Sent":2000,"Finished":false,"Succeeded":false},{"ID":"b1","PeerID":"nPEER9CNTRL","Name":"notes.txt","Started":"2026-11-16T10:05:01Z","DeclaredSize":10,"Sent":10,"Finished":true,"Succeeded":false}]}
+{"Version":"1.104.4","OutgoingFiles":[{"ID":"a1","PeerID":"nPEER4CNTRL","Name":"notes.txt","Started":"2026-11-16T10:05:00Z","DeclaredSize":4000,"Sent":4000,"Finished":true,"Succeeded":true}]}
+{"Version":"1.104.4","Health":{"Warnings":{}}}

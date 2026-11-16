@@ -173,13 +173,14 @@ TestCase {
                 ["advertiseRoutes", { routes: ["192.168.1.0/24", "fd00:99::/64", "192.168.1.0/24"] }, ["tailscale", "set", "--advertise-routes=192.168.1.0/24,fd00:99::/64"]],
                 ["advertiseRoutes", { routes: [] }, ["tailscale", "set", "--advertise-routes="]],
                 ["operator", { user: "alice" }, ["tailscale", "set", "--operator=alice"]],
+                ["operator", { user: "" }, ["tailscale", "set", "--operator="]],
                 ["switchAccount", { id: "c3d4" }, ["tailscale", "switch", "c3d4"]],
                 ["switchList", {}, ["tailscale", "switch", "--list", "--json"]],
                 ["removeAccount", { id: "c3d4" }, ["tailscale", "switch", "remove", "c3d4"]],
                 ["ping", { target: "laptop", count: 3 }, ["tailscale", "ping", "--c=3", "--timeout=3s", "laptop"]],
                 ["ping", { target: "100.64.0.11" }, ["tailscale", "ping", "--c=1", "--timeout=3s", "100.64.0.11"]],
                 ["netcheck", {}, ["tailscale", "netcheck", "--format=json"]],
-                ["fileCp", { files: ["/home/u/a.txt", "/home/u/with space.pdf"], target: "laptop" }, ["tailscale", "file", "cp", "/home/u/a.txt", "/home/u/with space.pdf", "laptop:"]],
+                ["fileCp", { files: ["/home/u/a.txt", "/home/u/with space.pdf"], target: "laptop" }, ["tailscale", "file", "cp", "--", "/home/u/a.txt", "/home/u/with space.pdf", "laptop:"]],
                 ["fileTargets", {}, ["tailscale", "file", "cp", "--targets"]],
                 ["fileGet", { directory: "/home/u/Downloads" }, ["tailscale", "file", "get", "--conflict=rename", "/home/u/Downloads"]],
                 ["serveStatus", {}, ["tailscale", "serve", "status", "--json"]],
@@ -243,7 +244,7 @@ TestCase {
 
             // Refusals: never a half-checked argv
             const refusals = [
-                ["operator", { user: "root; rm -rf /" }], ["operator", { user: "Alice" }], ["operator", { user: "" }], ["operator", { user: "$USER" }],
+                ["operator", { user: "root; rm -rf /" }], ["operator", { user: "Alice" }], ["operator", { user: "$USER" }],
                 ["operator", {}], ["hostname", { name: "bad_name" }], ["hostname", { name: "-x" }], ["hostname", { name: 5 }],
                 ["advertiseRoutes", { routes: ["192.168.1.5/24"] }], ["advertiseRoutes", { routes: ["0.0.0.0/0"] }], ["advertiseRoutes", { routes: ["::/0"] }],
                 ["advertiseRoutes", { routes: ["300.1.1.1/24"] }], ["advertiseRoutes", { routes: ["fd00::/129"] }], ["advertiseRoutes", { routes: "10.0.0.0/8" }],

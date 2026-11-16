@@ -1,3 +1,6 @@
+| bus-taildrop.jsonl | synthetic, fields from ipn/backend.go (PartialFile, OutgoingFile) and feature/taildrop (Done before the rename, FilesWaiting attached; the watch's first message with SessionID) | step 4: a transfer coming in, done, FilesWaiting on a later message, outgoing progress (an older finished entry of the same name, another peer's), a message without FilesWaiting |
+| files-waiting.json | synthetic, apitype.WaitingFile | GET /localapi/v0/files/ (operator only): adversarial names (".bashrc", "-rf", a U+202E name — the last refused by a real daemon) |
+| stderr-access-denied-file-cp.txt | from source (cli/cli.go's advice around the LocalAPI's 403 "file access denied") | `file cp` as a non-operator |
 # Fixtures
 
 Inputs for the suites and the stand-ins. Nothing here may identify a real tailnet: tailnet

@@ -1,0 +1,543 @@
+import QtQuick
+import Quickshell
+import qs.api
+
+// Taildrop's live side (delivery step 4): I/O only, every decision TaildropRules'. Made by
+// the live client (TailscaleClient.taildrop), on its process runner (ended with the module).
+//
+// WHO: Taildrop — sending and receiving — needs this user to be Tailscale's operator. The
+// LocalAPI's file-put and files/ need write access (root or the operator), and nothing of
+// Taildrop runs through pkexec: a root `file cp` would open paths the user chose long after
+// any check (a swapped file or parent link makes root read and send what the user cannot
+// read), and a root `file get` would leave root's files in the user's folder. Not the
+// operator: the page offers becoming it.
+//
+// SENDING — `tailscale file cp -- <paths…> <IPv4>:` as the user, OUTSIDE the client's change
+// lock (a long send must not block Disconnect or the settings): one send at a time, its own
+// process. A user-side `find -P` first, only for a clear message (links, folders, unreadable,
+// missing). Progress from the bus's OutgoingFiles. Cancel kills it (the user's own process);
+// so do Disconnect, logout, an account switch and the module going away. Limits: no progress
+// on the bus for idleLimitMs (2 minutes) → stopped as stalled; overall TailscaleRules'
+// timeLimits.send.
+//
+// RECEIVING — anyone sees that files arrived (the bus's IncomingFiles with Done, FilesWaiting):
+// a notification per arrival, the count on the page and the entry's status line. The operator
+// saves them as the user (TaildropRules.saveScript) under the client's change lock.
+// Auto-save runs only for an arrival (and once at start-up or when switched on, when files
+// wait); names it tried and left are not tried again until the next arrival or a manual Save.
+QtObject {
+    id: root
+
+    // ---- Set by the owner ----
+
+    property var client: null
+    // The default save folder ("" = H2S_TAILSCALE_DOWNLOAD_DIR when absolute — the lock bed —,
+    // else XDG_DOWNLOAD_DIR from user-dirs.dirs, else ~/Downloads)
+    property string defaultFolder: ""
+    // A send with no progress on the bus for this long is stopped (only while the bus is up)
+    property int idleLimitMs: 120000
+
+    readonly property bool running: client !== null && client.running && client.cli === "present"
+    readonly property var module: client?.module ?? null
+    readonly property var store: module?.store ?? null
+
+    // ---- Settings (the module's store) ----
+
+    property string _folderSetting: String(store?.get("taildrop.folder", "") ?? "")
+    property string _conflictSetting: String(store?.get("taildrop.conflict", "") ?? "")
+    property bool _autoSaveSetting: store?.get("taildrop.autoSave", false) === true
+    property string _resolvedDefault: ""
+    readonly property string folder: TaildropRules.folderProblem(_folderSetting) === "" ? _folderSetting
+        : (defaultFolder !== "" ? defaultFolder : _resolvedDefault)
+    readonly property bool folderIsDefault: TaildropRules.folderProblem(_folderSetting) !== ""
+    readonly property string conflict: TaildropRules.conflictPolicies.includes(_conflictSetting) ? _conflictSetting : TaildropRules.defaultConflict
+    readonly property bool autoSave: _autoSaveSetting
+    // Saving by itself never replaces a file: any device allowed to send could replace
+    // same-named files in the folder
+    readonly property string autoConflict: conflict === "overwrite" ? "rename" : conflict
+
+    function setFolder(path) {
+        const clean = TaildropRules.cleanFolder(path);
+        if (TaildropRules.folderProblem(clean) !== "")
+            return false;
+        _folderSetting = clean;
+        store?.set("taildrop.folder", clean);
+        _autoTried = [];
+        return true;
+    }
+
+    function resetFolder() {
+        _folderSetting = "";
+        store?.remove("taildrop.folder");
+        _autoTried = [];
+    }
+
+    function setConflict(policy) {
+        if (!TaildropRules.conflictPolicies.includes(policy))
+            return false;
+        _conflictSetting = policy;
+        store?.set("taildrop.conflict", policy);
+        return true;
+    }
+
+    // Only while files can be saved without a prompt (the operator)
+    function setAutoSave(on) {
+        _autoSaveSetting = on === true && canSave;
+        store?.set("taildrop.autoSave", _autoSaveSetting);
+        if (_autoSaveSetting)
+            _requestAutoSave();
+    }
+
+    // ---- Who ----
+
+    // Taildrop needs the operator (or root): the LocalAPI's write access
+    readonly property bool isOperator: client?.canChange === true
+    readonly property bool canSend: isOperator
+    readonly property bool canSave: isOperator && (client?.curlPath ?? "") !== ""
+
+    // ---- Receiving ----
+
+    property bool busWaiting: false
+    property var waiting: []
+    property bool waitingKnown: false
+    readonly property int waitingCount: waitingKnown ? waiting.length : -1
+    property var incoming: []
+    // The saves' results, newest first ([{ outcome, name, savedAs, path, kept, reason }])
+    property var saved: []
+    property string saveError: ""
+    // Arrival notifications made (for the suites: { names, actions })
+    property var notices: []
+    property var _seen: []
+    readonly property string statusText: TaildropRules.waitingText(waitingCount, busWaiting)
+
+    property bool _listing: false
+    property bool _listAgain: false
+    // Auto-save: one request pending (run when the listing is read and no change runs), the
+    // Tailscale names it tried and left, whether the start-up check was made
+    property bool _autoPending: false
+    property var _autoTried: []
+    property bool _autoStartChecked: false
+    // Counters, for the suites
+    property int autoRuns: 0
+
+    // ---- Sending ----
+
+    readonly property var targets: TaildropRules.targets(client?.devices ?? [])
+    property string targetId: ""
+    readonly property var target: targets.find(item => item.id === targetId) ?? null
+    property var chosen: []
+    property var inputProblems: []
+    // { state: "" | "checking" | "sending" | "done" | "failed" | "cancelled", targetName,
+    //   targetId, files [{ path, name, size, problem, sent, percent, outcome }], message }
+    property var send: ({ state: "", targetName: "", targetId: "", files: [], message: "", startedAt: 0 })
+    readonly property bool sending: send.state === "checking" || send.state === "sending"
+    property var _sendProcess: null
+    property int _sendToken: 0
+    property real _progressAt: 0
+    property var _outgoing: []
+    // A device row's "Send file…": the section opens its file chooser
+    signal chooseFilesRequested()
+
+    function chooseFor(deviceId) {
+        targetId = String(deviceId ?? "");
+        chooseFilesRequested();
+    }
+
+    function addPaths(input) {
+        const parsed = TaildropRules.parsePaths(input);
+        const next = chosen.slice();
+        for (const path of parsed.paths)
+            if (!next.includes(path) && next.length < TaildropRules.maxFiles)
+                next.push(path);
+        const dropped = parsed.paths.length - (next.length - chosen.length);
+        inputProblems = parsed.problems.concat(dropped > 0 ? [{ text: "", problem: "at most " + TaildropRules.maxFiles + " files" }] : []);
+        chosen = next;
+        return parsed.paths.length;
+    }
+
+    function removePath(path) {
+        chosen = chosen.filter(item => item !== path);
+    }
+
+    function clearPaths() {
+        chosen = [];
+        inputProblems = [];
+    }
+
+    function _setSend(changes) {
+        send = Object.assign({}, send, changes);
+    }
+
+    // Sends `chosen` to `targetId`, as this user (the operator); never a prompt
+    function sendFiles() {
+        if (!running || sending)
+            return false;
+        if (!canSend) {
+            _setSend({ state: "failed", message: "Needs the operator", files: [] });
+            return false;
+        }
+        const device = target;
+        if (device === null || !device.available) {
+            _setSend({ state: "failed", message: device === null ? "Choose a device" : "Device is offline", files: [] });
+            return false;
+        }
+        if (chosen.length === 0) {
+            _setSend({ state: "failed", message: "Choose files", files: [] });
+            return false;
+        }
+        const paths = chosen.slice();
+        const generation = client._generation;
+        const token = ++_sendToken;
+        _setSend({ state: "checking", targetName: device.name, targetId: device.id, message: "", startedAt: Date.now(),
+                   files: paths.map(path => ({ path: path, name: TaildropRules.displayName(TaildropRules.baseName(path)), size: 0, problem: "", sent: 0, percent: -1, outcome: "" })) });
+        // Only for a clear message (the CLI opens the files itself, as this user): bounded by
+        // the runner's watchdog
+        _sendProcess = client._spawn(TaildropRules.checkArgv(paths), 15000, result => {
+            if (!client._alive(generation) || token !== _sendToken)
+                return;
+            _sendProcess = null;
+            const checked = TaildropRules.parseCheck(result.out, paths).map(file => Object.assign(file, { sent: 0, percent: -1, outcome: file.ok ? "" : "refused" }));
+            const good = checked.filter(file => file.ok);
+            if (good.length === 0) {
+                _setSend({ state: "failed", files: checked, message: "Nothing to send" });
+                return;
+            }
+            const command = TailscaleRules.commandFor("fileCp", TaildropRules.sendCommandArgs(good.map(file => file.path), device));
+            if (!command.ok || client.tailscalePath === "") {
+                _setSend({ state: "failed", files: checked, message: "Not sent" });
+                return;
+            }
+            _setSend({ state: "sending", files: checked, startedAt: Date.now() });
+            _progressAt = Date.now();
+            _applyProgress();
+            const seconds = client._limit("send");
+            _sendProcess = client._spawn(client._timedArgv(command, seconds), client._watchdogMs(seconds), sendResult => {
+                if (!client._alive(generation) || token !== _sendToken)
+                    return;
+                _sendProcess = null;
+                _sendEnded(sendResult, seconds);
+            });
+            _idleCheck.start();
+        });
+        return true;
+    }
+
+    function _applyProgress() {
+        if (send.state !== "sending" && send.state !== "done" && send.state !== "failed")
+            return;
+        const names = send.files.filter(file => file.ok).map(file => TaildropRules.baseName(file.path));
+        const progress = TaildropRules.sendProgress(_outgoing, send.targetId, names, send.startedAt);
+        let changed = false;
+        const files = send.files.map(file => {
+            const entry = progress[TaildropRules.baseName(file.path)];
+            if (!file.ok || !entry)
+                return file;
+            const size = entry.size > 0 ? entry.size : file.size;
+            const next = Object.assign({}, file, { sent: entry.sent, percent: TaildropRules.percent(entry.finished && entry.succeeded ? size : entry.sent, size),
+                outcome: entry.finished ? (entry.succeeded ? "sent" : "failed") : (file.outcome === "" || file.outcome === "sending" ? "sending" : file.outcome) });
+            changed = changed || JSON.stringify(next) !== JSON.stringify(file);
+            return next;
+        });
+        if (changed) {
+            if (send.state === "sending")
+                _progressAt = Date.now();
+            _setSend({ files: files });
+        }
+    }
+
+    function _sendEnded(result, seconds) {
+        _idleCheck.stop();
+        if (send.state !== "sending")
+            return;
+        _applyProgress();
+        if (result.ok) {
+            _setSend({ state: "done", message: "",
+                       files: send.files.map(file => file.ok ? Object.assign({}, file, { outcome: "sent", percent: 100, sent: file.size }) : file) });
+            chosen = chosen.filter(path => !send.files.some(file => file.ok && file.path === path));
+            return;
+        }
+        const timedOut = result.timedOut === true || result.code === 124 || result.code === 137;
+        const error = timedOut ? { message: "Took too long, stopped" } : TaildropRules.sendError(result.code, result.err);
+        _setSend({ state: "failed", message: error.message, files: _unsent() });
+    }
+
+    function _unsent() {
+        return send.files.map(file => file.ok && file.outcome !== "sent" ? Object.assign({}, file, { outcome: file.outcome === "failed" ? "failed" : "not sent" }) : file);
+    }
+
+    // Kills the send (this user's own process) → true when one was running
+    function _stopSend(state, message) {
+        if (!sending)
+            return false;
+        _sendToken++;
+        _idleCheck.stop();
+        if (_sendProcess !== null)
+            _sendProcess.abandon();
+        _sendProcess = null;
+        _setSend({ state: state, message: message, files: _unsent() });
+        return true;
+    }
+
+    function cancelSend() {
+        return _stopSend("cancelled", "Cancelled");
+    }
+
+    function dismissSend() {
+        if (!sending)
+            _setSend({ state: "", files: [], message: "" });
+    }
+
+    // No progress on the bus for idleLimitMs: stalled (only judged while the bus is up — without
+    // it there is no progress to see, and the overall limit applies)
+    property Timer _idleCheck: Timer {
+        interval: Math.max(200, Math.min(5000, Math.floor(root.idleLimitMs / 4)))
+        repeat: true
+        onTriggered: {
+            if (!root.sending) {
+                stop();
+                return;
+            }
+            if (root.client.streamUp && Date.now() - root._progressAt > root.idleLimitMs)
+                root._stopSend("failed", "Stalled, stopped");
+        }
+    }
+
+    // Disconnecting, logging out or switching accounts ends a send
+    property Connections _operations: Connections {
+        target: root.client
+        function onOperationChanged() {
+            if (["disconnect", "logout", "account", "login", "addAccount"].includes(root.client.operation))
+                root._stopSend("cancelled", "Stopped: disconnected");
+        }
+    }
+
+    // ---- The bus ----
+
+    function _onBus(object) {
+        const files = TaildropRules.notifyFiles(object);
+        const wasWaiting = busWaiting;
+        if (files.waiting === true)
+            busWaiting = true;
+        else if (!files.initial)
+            busWaiting = false;
+        if (files.outgoing !== null) {
+            _outgoing = files.outgoing;
+            _applyProgress();
+        }
+        let arrivedAny = false;
+        if (files.incoming !== null) {
+            incoming = files.incoming.filter(item => !item.done).map(item => ({ name: TaildropRules.displayName(item.name), size: item.size, received: item.received }));
+            const found = TaildropRules.arrivals(_seen, files.incoming);
+            _seen = found.seen;
+            if (found.arrived.length > 0) {
+                arrivedAny = true;
+                _arrived(found.arrived.map(item => item.name));
+            }
+        }
+        if (arrivedAny || busWaiting !== wasWaiting)
+            refreshWaiting();
+    }
+
+    // A notification per arrival batch (the body escaped: the shell reads it as markup)
+    function _arrived(names) {
+        const actions = canSave && !autoSave ? [{ id: "save", label: "Save", onTriggered: () => root.save("user") }] : [];
+        notices = notices.concat([{ names: names, actions: actions.map(action => action.id) }]).slice(-20);
+        const escape = text => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        module?.notify(names.length === 1 ? "File received" : names.length + " files received", {
+            body: names.map(escape).join("\n"),
+            actions: actions
+        });
+        // A new arrival: everything may be tried again
+        _autoTried = [];
+        if (autoSave && canSave)
+            _requestAutoSave();
+    }
+
+    // ---- The waiting list (operator only: GET files/, which lists and changes nothing) ----
+
+    function refreshWaiting() {
+        if (!running || !canSave) {
+            waitingKnown = false;
+            waiting = [];
+            return;
+        }
+        if (_listing) {
+            _listAgain = true;
+            return;
+        }
+        _listing = true;
+        const generation = client._generation;
+        const seconds = client._limit("read");
+        const timed = TailscaleRules.timed(TaildropRules.listArgv(client.curlPath, client.socketPath), client.timeoutPath, seconds);
+        client._spawn(timed.argv, client._watchdogMs(seconds), result => {
+            _listing = false;
+            if (!client._alive(generation))
+                return;
+            const parsed = result.ok ? TaildropRules.parseWaiting(result.out) : { ok: false, files: [] };
+            waitingKnown = parsed.ok;
+            waiting = parsed.files;
+            if (_listAgain) {
+                _listAgain = false;
+                refreshWaiting();
+                return;
+            }
+            // Once at start-up: files that waited before
+            if (parsed.ok && !_autoStartChecked) {
+                _autoStartChecked = true;
+                if (autoSave && parsed.files.length > 0)
+                    _autoPending = true;
+            }
+            // Consumes a pending request (made by an arrival); never makes one
+            _runPendingAutoSave();
+        });
+    }
+
+    // A request is run on a fresh listing (the arrival's file may not be in the last one)
+    function _requestAutoSave() {
+        _autoPending = true;
+        refreshWaiting();
+    }
+
+    // Runs the pending auto-save when nothing else runs; else it waits for the change to end
+    function _runPendingAutoSave() {
+        if (!_autoPending || !autoSave || !canSave || !waitingKnown || _listing || client.busy)
+            return;
+        _autoPending = false;
+        const files = waiting.filter(file => !_autoTried.includes(file.name));
+        if (files.length > 0)
+            _save(files, autoConflict, true);
+    }
+
+    property Connections _busy: Connections {
+        target: root.client
+        function onBusyChanged() {
+            if (!root.client.busy)
+                root._runPendingAutoSave();
+        }
+    }
+
+    // Saves every waiting file into `folder` (the operator, as the user, no prompt)
+    function save(origin) {
+        saveError = "";
+        if (!running)
+            return false;
+        if (!canSave) {
+            saveError = isOperator ? "Needs curl" : "Needs the operator";
+            return false;
+        }
+        if (client.busy) {
+            saveError = "Another Tailscale change is running.";
+            return false;
+        }
+        if (!waitingKnown || waiting.length === 0) {
+            saveError = waitingKnown ? "Nothing waiting" : "Not read yet";
+            refreshWaiting();
+            return false;
+        }
+        // A manual Save: everything may be tried again
+        _autoTried = [];
+        return _save(waiting, conflict, false);
+    }
+
+    function _save(files, policy, automatic) {
+        const seconds = client._limit("save");
+        const prepared = TaildropRules.saveArgv({ curl: client.curlPath, socket: client.socketPath, timeout: client.timeoutPath, seconds: seconds,
+            policy: policy, folder: folder, files: files });
+        if (!prepared.ok) {
+            saveError = prepared.error;
+            if (automatic)
+                _autoTried = _autoTried.concat(files.map(file => file.name));
+            return false;
+        }
+        const target = folder;
+        const sentAs = {};
+        for (const file of files)
+            sentAs[file.saveAs] = file;
+        if (automatic)
+            autoRuns++;
+        const limitMs = (files.length * 2 + 1) * (seconds + 10) * 1000;
+        const started = client._runLocked("taildrop-save", prepared.argv, limitMs, result => {
+            const parsed = TaildropRules.parseSave(result.out, target);
+            const left = [];
+            for (const item of parsed.results) {
+                const file = Object.prototype.hasOwnProperty.call(sentAs, item.rawName) ? sentAs[item.rawName] : null;
+                if (file !== null) {
+                    item.name = file.shown;
+                    if (item.outcome !== "saved")
+                        left.push(file.name);
+                }
+            }
+            saveError = parsed.error !== "" ? parsed.error : (!result.ok && parsed.results.length === 0 ? "Saving failed" : "");
+            // A folder error leaves every file: one message, no retry until something changes
+            if (automatic)
+                _autoTried = _autoTried.concat(parsed.error !== "" ? files.map(file => file.name) : left);
+            _addSaved(parsed.results);
+            refreshWaiting();
+        });
+        if (!started) {
+            saveError = "Another Tailscale change is running.";
+            if (automatic)
+                _autoPending = true;
+        }
+        return started;
+    }
+
+    // Newest first; a file left again replaces its older line (no repeated "left waiting")
+    function _addSaved(results) {
+        const keyOf = item => item.outcome + "\n" + item.name;
+        const fresh = results.filter(item => item.outcome !== "saved").map(keyOf);
+        saved = results.concat(saved.filter(item => item.outcome === "saved" || !fresh.includes(keyOf(item)))).slice(0, 20);
+    }
+
+    // The folder in the file manager — checked to be a directory first (as this user)
+    function openFolder() {
+        const url = TaildropRules.folderUrl(folder);
+        if (url === "" || !running)
+            return false;
+        const path = folder;
+        client._spawn(["test", "-d", path], 5000, result => {
+            if (result.ok && path === folder)
+                client.openFolder(url);
+            else if (!result.ok)
+                saveError = "Folder not found";
+        });
+        return true;
+    }
+
+    // ---- Start and stop ----
+
+    onRunningChanged: {
+        if (running) {
+            _resolveDefaultFolder();
+            refreshWaiting();
+        } else {
+            _listing = false;
+            _listAgain = false;
+            _autoPending = false;
+            _autoStartChecked = false;
+            _stopSend("cancelled", "Stopped");
+        }
+    }
+    onCanSaveChanged: refreshWaiting()
+    Component.onDestruction: _stopSend("cancelled", "Stopped")
+
+    function _resolveDefaultFolder() {
+        if (defaultFolder !== "")
+            return;
+        const home = String(Quickshell.env("HOME") ?? "");
+        const seam = String(Quickshell.env("H2S_TAILSCALE_DOWNLOAD_DIR") ?? "");
+        if (seam.startsWith("/")) {
+            _resolvedDefault = TaildropRules.cleanFolder(seam);
+            return;
+        }
+        _resolvedDefault = TaildropRules.downloadFolder("", home);
+        const config = String(Quickshell.env("XDG_CONFIG_HOME") ?? "");
+        const file = (config.startsWith("/") ? config : home + "/.config") + "/user-dirs.dirs";
+        const generation = client._generation;
+        // Read, never sourced or run
+        client._spawn(["cat", "--", file], 5000, result => {
+            if (client._alive(generation) && result.ok)
+                _resolvedDefault = TaildropRules.downloadFolder(result.out, home);
+        });
+    }
+}

@@ -17,8 +17,13 @@
 # (shown as set, "the tailnet shows it after connecting"), a route and the exit node offered through
 # pkexec (waiting for approval, the route kept beside the exit node, approved by the stand-in's
 # admin), the forwarding warning from the bed's fake /proc (H2S_TAILSCALE_FORWARDING_DIR), SSH on,
-# screenshots of This device, Sharing and SSH; and the lock still locks and
-# unlocks with the module loaded.
+# screenshots of This device, Sharing and SSH; step 4: as a user who is not the operator a send
+# refused (nothing run) and an arrival noticed ("Files received" on the entry, no inbox access),
+# then as the operator a file sent to peer4 as the user (never pkexec) and two waiting files saved
+# into the bed's download folder (H2S_TAILSCALE_DOWNLOAD_DIR) — ".bashrc" as
+# "bashrc", owned by the user, nothing left over, never as root —, screenshots of each; an
+# arrival while locked (noticed, not saved, nothing of the module on the lock screen); and the lock
+# still locks and unlocks with the module loaded.
 
 module_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P) || abort "no module repository"
 [ -f "$module_repo/module/module.json" ] || abort "no module at $module_repo/module"
@@ -43,7 +48,7 @@ for program in tailscale timeout curl pkexec systemctl xdg-open nmcli; do
 printf '%s\n' "\$0" >> "$tools/calls"
 export TS_FAKE_STATE_DIR="$tools/state" TS_FAKE_LOG="$tools/log" TS_FAKE_PKEXEC_LOG="$tools/pkexec.log" \\
     TS_FAKE_LOGIN_DELAY=1 TS_FAKE_FIXTURES="$tools/fixtures" TS_FAKE_BUS_FILE="$tools/bus.jsonl" \\
-    TS_FAKE_BUS_END=hold TS_FAKE_BUS_HOLD=240 TS_FAKE_USER=tester
+    TS_FAKE_BUS_END=hold TS_FAKE_BUS_HOLD=240 TS_FAKE_BUS_FOLLOW=1 TS_FAKE_USER=tester
 exec "$standins/$program" "\$@"
 WRAPPER
     chmod +x "$tools/$program"
@@ -54,6 +59,9 @@ mkdir -p "$tools/forwarding"
 echo 0 > "$tools/forwarding/ipv4"
 echo 1 > "$tools/forwarding/ipv6"
 export H2S_TAILSCALE_FORWARDING_DIR=$tools/forwarding
+# Taildrop's default save folder (the download-folder seam): a folder of the bed's
+mkdir -p "$WORK/downloads"
+export H2S_TAILSCALE_DOWNLOAD_DIR=$WORK/downloads
 
 stack_start --modules "$module_repo/module" --shell-path "$tools" \
     --settings '{"bar.left": [{"type": "network", "preset": ""}, {"type": "clock", "preset": ""}]}'
@@ -311,6 +319,64 @@ screenshot settings-tailscale-sharing
 show_item tailscaleSshServer
 screenshot settings-tailscale-ssh
 check "… the page built without an error or a warning" test "$(module_errors)" = "[]"
+
+# ---- Step 4: Taildrop ----
+ts_drop_field() { shell_ipc tailscale taildrop 2> /dev/null | python3 -I -c 'import json,sys; v=json.load(sys.stdin).get(sys.argv[1]); print(",".join(map(str,v)) if isinstance(v,list) else (str(v).lower() if isinstance(v,bool) else v))' "$1" 2> /dev/null; }
+drop_is() { [ "$(ts_drop_field "$1")" = "$2" ]; }
+arrive() { # arrive <name> <content>: a file in the stand-in's inbox, announced on the bus as the daemon does
+    mkdir -p "$tools/state/inbox"
+    printf '%s' "$2" > "$tools/state/inbox/$1"
+    printf '{"IncomingFiles":[{"Name":"%s","Started":"%s","DeclaredSize":%s,"Received":%s,"Done":true}],"FilesWaiting":{}}\n' \
+        "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${#2}" "${#2}" >> "$tools/bus.jsonl"
+}
+drop_has_targets() { [ "$(ts_drop_field available)" -ge 1 ] 2> /dev/null; }
+check_within 10 "Taildrop: the devices that can receive listed (peer4 online)" drop_has_targets
+printf 'hello from the bed\n' > "$WORK/send-me.txt"
+shell_ipc tailscale sendFile nPEER4CNTRL "$WORK/send-me.txt" > /dev/null
+check_within 5 "not the operator: the send is refused" drop_is sendState failed
+check "… nothing run, nothing through pkexec" test "$(grep -c '^file cp' "$tools/log")|$(grep -c 'file' "$tools/pkexec.log")" = "0|0"
+show_item taildropNeedsOperator
+screenshot settings-tailscale-taildrop-not-operator
+
+# A file arrives for a user who is not the operator: told, nothing offered that needs root
+arrive "holiday.jpg" "jpeg data"
+check_within 10 "an arrival: noticed (a notification)" drop_is notices 1
+check "… files waiting (the bus's FilesWaiting), the count unknown (files/ needs write access)" test "$(ts_drop_field busWaiting)|$(ts_drop_field waitingCount)" = "true|-1"
+entry_says_received() { shell_ipc tailscale state | grep -q '"status":"Tailnet only[^"]*Files received'; }
+check_within 5 "… the entry's status line says so" entry_says_received
+check "… no attention" test "$(ts_field attention)" = ""
+check "… no inbox access tried" test "$(grep -c 'localapi/v0/files/' "$tools/log")" = 0
+show_item taildropWaiting
+screenshot settings-tailscale-taildrop-waiting
+
+# This user becomes the operator (as `set --operator=<user>` would leave it: the prefs name the
+# user, and the stand-ins grant the operator's access) — then saving needs no password
+user_name=$(id -un)
+printf 'OperatorUser=%s\n' "$user_name" >> "$tools/state/prefs"
+sed -i "s/TS_FAKE_USER=tester/TS_FAKE_USER=$user_name/" "$tools/tailscale" "$tools/curl"
+arrive ".bashrc" "echo pwned"
+check_within 10 "the operator: both waiting files listed" drop_is waitingCount 2
+# Sending as the operator: as the user, never through pkexec, holding no change lock
+shell_ipc tailscale sendFile nPEER4CNTRL "$WORK/send-me.txt" > /dev/null
+check_within 15 "send a file to peer4: sent" drop_is sendState done
+check "… the file's outcome: sent" drop_is sendOutcomes sent
+check "… \`file cp -- <path> 100.64.0.4:\` as the user" grep -qxF "file cp -- $WORK/send-me.txt 100.64.0.4:" "$tools/log"
+check "… never through pkexec" test "$(grep -c 'file' "$tools/pkexec.log")" = 0
+check "… the stand-in daemon got the very file" test "$(cat "$WORK/send-me.txt")" = "$(cat "$tools/state/sent/send-me.txt" 2> /dev/null)"
+show_item taildropSendState
+screenshot settings-tailscale-taildrop-sent
+check "… saving offered" drop_is canSave true
+shell_ipc tailscale saveReceived > /dev/null
+check_within 10 "save: both saved" drop_is saved "saved,saved"
+check "… into the bed's download folder, the hidden name made visible" test -f "$WORK/downloads/holiday.jpg" -a -f "$WORK/downloads/bashrc" -a ! -e "$WORK/downloads/.bashrc"
+check "… owned by this user" test "$(stat -c %u "$WORK/downloads/holiday.jpg")|$(stat -c %u "$WORK/downloads/bashrc")" = "$(id -u)|$(id -u)"
+check "… the contents as sent" test "$(cat "$WORK/downloads/holiday.jpg")" = "jpeg data"
+check "… nothing else in the folder (no staging left)" test "$(ls -A "$WORK/downloads" | wc -l)" = 2
+check_within 5 "… Tailscale's inbox emptied" drop_is waitingCount 0
+check "… never through pkexec, never \`file get\`" test "$(grep -c 'file.get\|localapi' "$tools/pkexec.log")|$(grep -c '^file get' "$tools/log")" = "0|0"
+show_item taildropSaved
+screenshot settings-tailscale-taildrop-saved
+check "… the page built without an error or a warning" test "$(module_errors)" = "[]"
 shell_ipc settings close > /dev/null
 
 check "the stand-ins were called (their log)" test "$(grep -c . "$tools/log")" -gt 3
@@ -325,6 +391,13 @@ check "… and as many tailscale calls through the seam as its log has lines (no
 lock_by_ipc
 check_within 5 "lock by IPC locks the compositor" compositor_locked
 check_within 5 "the compositor confirmed it" state_is secure true
+# A file arriving while locked: the module adds nothing to the lock screen (no slot there); its
+# notification is the shell's, shown as the lock screen's privacy setting allows; nothing saved
+arrive "while-locked.txt" "x"
+check_within 10 "an arrival while locked: noticed (the shell's notification)" drop_is notices 3
+sleep 1
+screenshot locked-after-arrival
+check "… not saved by itself (auto-save is off)" test ! -e "$WORK/downloads/while-locked.txt"
 wake_prompt || fail "the prompt did not wake"
 check_within 5 "the methods are known" state_is armed true
 type_text "$LOCKTEST_PASSWORD"

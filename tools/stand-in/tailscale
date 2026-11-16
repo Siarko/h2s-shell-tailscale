@@ -42,6 +42,12 @@
 #   TS_FAKE_SSH_CAP      0: the tailnet does not allow Tailscale SSH (`set --ssh` refused as the
 #                        daemon does); also a file "no-ssh-cap" in the state dir
 #   TS_FAKE_AUTO_UPDATE  ok: `set --auto-update` allowed (default: refused, as on NixOS)
+#   TS_FAKE_SEND_DELAY   seconds between a `file cp` file's bus updates (0 none: started, then finished)
+#   TS_FAKE_SEND_FAIL    1: the first file fails halfway (Finished, not Succeeded; exit 1)
+#   TS_FAKE_SEND_REFUSE  a reason: `file cp` is refused with "cannot send files: <reason>"
+#   Taildrop: `file cp -- <files…> <100.64.0.N>:` checks the files, needs write access (root or
+#   the operator), appends OutgoingFiles lines to TS_FAKE_BUS_FILE and copies each file into
+#   the state dir's sent/; the inbox (receiving) is the stand-in curl's files/
 #   SSH_CLIENT           from a 100.x address: `set --ssh=<change>` asks for the lose-ssh risk
 #                        and, with no terminal, aborts (as the real CLI)
 #
@@ -701,13 +707,65 @@ case $command in
         case ${1:-} in
             cp)
                 shift
-                [ "${1:-}" = --targets ] && { printf '100.64.0.11\tlaptop\n100.64.0.12\tphone\n'; exit 0; }
+                [ "${1:-}" = --targets ] && { printf '100.64.0.4\tpeer4\n100.64.0.2\tpeer2\toffline; last seen 5m ago\n'; exit 0; }
+                [ "${1:-}" = -- ] && shift
                 last=""
                 for argument in "$@"; do last=$argument; done
                 case $last in
                     *:) [ $# -ge 2 ] || { echo "usage: tailscale file cp <files...> <target>:" >&2; exit 2; } ;;
                     *) echo "final argument to 'tailscale file cp' must end in colon" >&2; exit 1 ;;
-                esac ;;
+                esac
+                target=${last%:}
+                # As cli/file.go: the target by its Tailscale address; the fixtures' peers are
+                # 100.64.0.N with the stable id nPEER<N>CNTRL; TS_FAKE_SEND_REFUSE: one the
+                # daemon will not send to (its TaildropTarget reason)
+                case $target in
+                    100.64.0.[0-9] | 100.64.0.[0-9][0-9]) peer=nPEER${target#100.64.0.}CNTRL ;;
+                    *) echo "can't send to $target: unknown target; not in your Tailnet" >&2; exit 1 ;;
+                esac
+                [ -n "${TS_FAKE_SEND_REFUSE:-}" ] && { echo "can't send to $target: cannot send files: $TS_FAKE_SEND_REFUSE" >&2; exit 1; }
+                is_running || { echo "can't send to $target: cannot send files: local Tailscale is not connected to the tailnet" >&2; exit 1; }
+                count=$#
+                index=0
+                for file in "$@"; do
+                    index=$((index + 1))
+                    [ $index -lt $count ] || break
+                    [ -e "$file" ] || { echo "open $file: no such file or directory" >&2; exit 1; }
+                    [ -d "$file" ] && { echo "directories not supported" >&2; exit 1; }
+                    [ -r "$file" ] || { echo "open $file: permission denied" >&2; exit 1; }
+                done
+                # The LocalAPI's file-put needs write access (root or the operator)
+                need_write "file access denied" file cp "$@"
+                # Each file: progress on the bus (OutgoingFiles, as feature/taildrop/localapi.go
+                # sends it: started, ~1 s updates, finished), a copy in the state dir's sent/
+                mkdir -p "$STATE_DIR/sent"
+                index=0
+                for file in "$@"; do
+                    index=$((index + 1))
+                    [ $index -lt $count ] || break
+                    name=${file##*/}
+                    size=$(wc -c < "$file" | tr -d ' ')
+                    started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                    id=f$index$$
+                    outgoing() { # sent finished succeeded
+                        [ -n "${TS_FAKE_BUS_FILE:-}" ] || return 0
+                        printf '{"OutgoingFiles":[{"ID":"%s","PeerID":"%s","Name":"%s","Started":"%s","DeclaredSize":%s,"Sent":%s,"Finished":%s,"Succeeded":%s}]}\n' \
+                            "$id" "$peer" "$(json_string "$name")" "$started" "$size" "$1" "$2" "$3" >> "$TS_FAKE_BUS_FILE"
+                    }
+                    outgoing 0 false false
+                    if [ "${TS_FAKE_SEND_DELAY:-0}" != 0 ]; then
+                        pause "$TS_FAKE_SEND_DELAY"
+                        outgoing $((size / 2)) false false
+                        pause "$TS_FAKE_SEND_DELAY"
+                    fi
+                    if [ "${TS_FAKE_SEND_FAIL:-}" = 1 ]; then
+                        outgoing $((size / 2)) true false
+                        echo "500 Internal Server Error: stand-in: the peer went away" >&2
+                        exit 1
+                    fi
+                    cp -- "$file" "$STATE_DIR/sent/$name"
+                    outgoing "$size" true true
+                done ;;
             get)
                 need_write "file access denied" file "$@" ;;
             *) echo "usage: tailscale file <cp|get> ..." >&2; exit 2 ;;

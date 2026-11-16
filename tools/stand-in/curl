@@ -1,7 +1,7 @@
 #!/bin/sh
-# h2s-stand-in: a stand-in `curl` for the module's end-to-end tests of the LocalAPI event stream
-# (GET /localapi/v0/watch-ipn-bus over tailscaled's unix socket). It connects to nothing:
-# it prints scripted bus lines.
+# h2s-stand-in: a stand-in `curl` for the module's end-to-end tests of the LocalAPI over
+# tailscaled's unix socket: the event stream (GET /localapi/v0/watch-ipn-bus) and Taildrop's
+# inbox (GET/DELETE /localapi/v0/files/…). It connects to nothing.
 #
 #   TS_FAKE_FIXTURES   the fixtures directory (default ../../fixtures from this script)
 #   TS_FAKE_BUS_FILE   the lines to print (default $TS_FAKE_FIXTURES/bus-lines.jsonl)
@@ -9,22 +9,35 @@
 #   TS_FAKE_BUS_END    eof (default: exit 0 after the last line) | die (exit 56, as a
 #                      daemon restarting cuts the stream) | hold (wait TS_FAKE_BUS_HOLD
 #                      seconds, default 30, then exit 0)
+#   TS_FAKE_BUS_FOLLOW 1: print the file, then every line appended to it (as the stand-in
+#                      tailscale's `file cp` and a test's "a file arrives" do), until
+#                      TS_FAKE_BUS_HOLD seconds have passed
 #   TS_FAKE_DAEMON     down: exit 7, as curl does when the socket is not there; so does a
 #                      file "daemon-down" in TS_FAKE_STATE_DIR (default as the stand-in
 #                      tailscale's: ${XDG_RUNTIME_DIR:-/tmp}/ts-fake-$(id -u))
 #   TS_FAKE_LOG        a file each call's arguments are appended to
 #
-# Without --unix-socket, or for any URL but the bus, it fails as curl would (exit 7 / 22).
+# Taildrop's inbox is the state dir's "inbox" directory (a file per received file). As the
+# daemon (feature/taildrop/localapi.go serveFiles), files/ needs write access: root
+# (TS_FAKE_ROOT=1), TS_FAKE_OPERATOR=1, or the prefs' OperatorUser = TS_FAKE_USER — else 403,
+# which curl --fail reports as exit 22. GET files/ lists [{"Name","Size"}]; GET files/<name>
+# hands the file over (-o <path> or stdout); -X DELETE files/<name> removes it.
+#
+# Without --unix-socket, or for any other URL, it fails as curl would (exit 7 / 22).
 here=$(cd "$(dirname "$0")" && pwd)
 F=${TS_FAKE_FIXTURES:-$here/../../fixtures}
 [ -n "${TS_FAKE_LOG:-}" ] && printf 'curl %s\n' "$*" >> "$TS_FAKE_LOG"
 socket=""
 url=""
+method=GET
+output=""
 while [ $# -gt 0 ]; do
     case $1 in
         --unix-socket) socket=${2:-}; shift ;;
         --unix-socket=*) socket=${1#--unix-socket=} ;;
-        -H | --header | -m | --max-time | -X | --request | -o | --output) shift ;;
+        -X | --request) method=${2:-GET}; shift ;;
+        -o | --output) output=${2:-}; shift ;;
+        -H | --header | -m | --max-time) shift ;;
         -*) ;;
         *) url=$1 ;;
     esac
@@ -35,15 +48,53 @@ if [ "${TS_FAKE_DAEMON:-}" = down ] || [ -f "$state_dir/daemon-down" ] || [ -z "
     echo "curl: (7) Failed to connect to local-tailscaled.sock port 80 after 0 ms: Couldn't connect to server" >&2
     exit 7
 fi
+http_error() { echo "curl: (22) The requested URL returned error: $1" >&2; exit 22; }
 case $url in
     */localapi/v0/watch-ipn-bus*) ;;
-    *) echo "curl: (22) The requested URL returned error: 404" >&2; exit 22 ;;
+    */localapi/v0/files/*)
+        operator=""
+        [ -f "$state_dir/prefs" ] && operator=$(sed -n 's/^OperatorUser=//p' "$state_dir/prefs" | tail -n 1)
+        if [ "${TS_FAKE_ROOT:-0}" != 1 ] && [ "${TS_FAKE_OPERATOR:-0}" != 1 ] && { [ -z "$operator" ] || [ "$operator" != "${TS_FAKE_USER:-${USER:-}}" ]; }; then
+            http_error 403
+        fi
+        inbox=$state_dir/inbox
+        mkdir -p "$inbox"
+        escaped=${url#*/localapi/v0/files/}
+        if [ -z "$escaped" ]; then
+            [ "$method" = GET ] || http_error 400
+            printf '['
+            first=1
+            for file in "$inbox"/* "$inbox"/.[!.]* "$inbox"/..?*; do
+                [ -f "$file" ] || continue
+                name=${file##*/}
+                [ $first = 1 ] || printf ','
+                first=0
+                printf '{"Name":"%s","Size":%s}' "$(printf '%s' "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')" "$(wc -c < "$file" | tr -d ' ')"
+            done
+            printf ']\n'
+            exit 0
+        fi
+        # %XX → the byte (encodeURIComponent's escapes)
+        name=$(printf '%b' "$(printf '%s' "$escaped" | sed 's/%/\\x/g')")
+        case $name in */* | "" | . | ..) http_error 400 ;; esac
+        [ -f "$inbox/$name" ] || http_error 500
+        if [ "$method" = DELETE ]; then
+            rm -f -- "$inbox/$name"
+            exit 0
+        fi
+        if [ -n "$output" ]; then cat -- "$inbox/$name" > "$output"; else cat -- "$inbox/$name"; fi
+        exit 0 ;;
+    *) http_error 404 ;;
 esac
+bus=${TS_FAKE_BUS_FILE:-$F/bus-lines.jsonl}
+if [ "${TS_FAKE_BUS_FOLLOW:-0}" = 1 ]; then
+    exec timeout "${TS_FAKE_BUS_HOLD:-30}" tail -n +1 -f -- "$bus"
+fi
 delay=${TS_FAKE_BUS_DELAY:-0}
 while IFS= read -r line; do
     printf '%s\n' "$line"
     [ "$delay" != 0 ] && sleep "$delay"
-done < "${TS_FAKE_BUS_FILE:-$F/bus-lines.jsonl}"
+done < "$bus"
 case ${TS_FAKE_BUS_END:-eof} in
     die) echo "curl: (56) Recv failure: Connection reset by peer" >&2; exit 56 ;;
     hold) exec sleep "${TS_FAKE_BUS_HOLD:-30}" ;;

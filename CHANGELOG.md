@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.0 — unreleased (delivery step 4: Taildrop)
+
+Needs the shell's module API 1.2 (no core change: the dialogs are QtQuick.Dialogs, notifications
+with an action are `module.notify`, "Open folder" is `Api.openUrl(file:…, { allowFile: true })`).
+The new live suite asks for 30 s.
+
+- Taildrop needs this user to be Tailscale's operator and never runs through pkexec (a root send
+  was rejected in review: root would open the chosen paths long after any check). Not the
+  operator: one line and "Let this user manage Tailscale without a password".
+- Send from the page's Taildrop section and "Send file…" on device rows: devices Tailscale says can
+  receive, files from the chooser, pasted paths or a drop. `tailscale file cp -- <paths…> <IPv4>:`
+  as the user, outside the change lock (the entry is not busy); Disconnect, logout and account
+  switches end it; Cancel kills it; stopped after 2 minutes without progress on the bus, 6 hours
+  at most. Per-file progress and results.
+- Received files: a notification per arrival with the name ("Save" for the operator), "Files
+  received" on the entry's status line. The operator saves into a folder (default
+  XDG_DOWNLOAD_DIR, else ~/Downloads) with a conflict policy; names made safe; placed by rename in
+  a folder of the user's own that is not a link; "Open folder". Auto-save (off by default) runs per
+  arrival, never replaces, does not retry a file it left until the next arrival or a manual Save.
+- Administration: operator of this account or not; "Stop being the operator" (`set --operator=`).
+- One change at a time: `_runChange` refuses a second change while one runs ("Another Tailscale
+  change is running.") instead of replacing it.
+- `commandFor("fileCp")` puts `--` before the paths; `commandFor("operator", { user: "" })` gives
+  the operator up; time limits `send` (6 h) and `save` (600 s per request).
+- IPC: `taildrop`, `sendFile <device id> <path>`, `cancelSend`, `saveReceived`.
+- Stand-ins: `file cp` (checks, the 403, bus progress, TS_FAKE_SEND_DELAY / _FAIL / _REFUSE, a copy
+  in sent/), curl's Taildrop inbox (files/: list, fetch, delete; 403 unless the operator),
+  TS_FAKE_BUS_FOLLOW.
+
 ## 0.4.0 — unreleased (delivery step 3)
 
 Needs the shell's module API 1.2 (unchanged). The live suite asks for 45 s (`timeLimitMs`, set only

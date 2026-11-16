@@ -179,6 +179,42 @@ QtObject {
             main.client.readForwarding();
         }
 
+        // Step 4, Taildrop — its state without names, paths or addresses: { targets (devices that
+        // can receive), available (online ones), targetSet, chosen (paths chosen), sendState,
+        // sendOutcomes [per file], waitingCount (-1 unknown: not the operator),
+        // busWaiting, incoming, saved [outcomes], saveError, operator, canSave, folderSet,
+        // conflict, autoSave, notices (arrival notifications made) }
+        function taildrop(): string {
+            const drop = main.client.taildrop;
+            return JSON.stringify({
+                targets: drop.targets.length, available: drop.targets.filter(item => item.available).length, targetSet: drop.target !== null,
+                chosen: drop.chosen.length, sendState: drop.send.state, sendOutcomes: drop.send.files.map(file => file.outcome),
+                waitingCount: drop.waitingCount, busWaiting: drop.busWaiting,
+                incoming: drop.incoming.length, saved: drop.saved.map(item => item.outcome), saveError: drop.saveError !== "",
+                operator: drop.isOperator, canSave: drop.canSave, folderSet: drop.folder !== "", conflict: drop.conflict,
+                autoSave: drop.autoSave, notices: drop.notices.length
+            });
+        }
+
+        // Sends one file (an absolute path) to a device by its stable id — the operator only, as
+        // this user: never a password prompt
+        function sendFile(deviceId: string, path: string): void {
+            const drop = main.client.taildrop;
+            drop.targetId = deviceId;
+            drop.clearPaths();
+            if (drop.addPaths(path) > 0)
+                drop.sendFiles();
+        }
+
+        function cancelSend(): void {
+            main.client.taildrop.cancelSend();
+        }
+
+        // Saves the waiting files — only ever without a prompt (the operator, as this user)
+        function saveReceived(): void {
+            main.client.taildrop.save("ipc");
+        }
+
         // Diagnostics need no privileges; their state without addresses or names
         function runDiagnostics(): void {
             main.client.runDiagnostics();

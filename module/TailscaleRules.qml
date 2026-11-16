@@ -113,8 +113,11 @@ Singleton {
     //   login     the time a person gets to finish the login in the browser
     //   diagnose  netcheck: it probes every relay region (a few seconds when healthy)
     //   ping      one `ping --timeout=3s`, with room for the CLI to start and ask
+    //   send      `file cp`, as the user: 6 hours — about 10 GB at 0.5 MB/s over a relay. A stalled
+    //             send is stopped long before by TaildropClient (no bus progress for 2 minutes)
+    //   save      each LocalAPI request of the save script (one received file each)
     //   killAfter timeout(1)'s -k: KILL this long after TERM, for a program that ignores TERM
-    readonly property var timeLimits: ({ read: 15, change: 60, up: 60, login: 600, diagnose: 30, ping: 10, killAfter: 5 })
+    readonly property var timeLimits: ({ read: 15, change: 60, up: 60, login: 600, diagnose: 30, ping: 10, send: 21600, save: 600, killAfter: 5 })
     // An account (profile) id from `switch --list`: never starting with "-", which the CLI
     // would read as a flag
     readonly property var accountIdPattern: /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
@@ -2261,6 +2264,9 @@ Singleton {
         }
         case "operator": {
             const user = value("user");
+            // "" gives the operator up: only root may change Tailscale again
+            if (user === "")
+                return set("--operator=", "Ending this user's right to change Tailscale without a password");
             if (!validUserName(user))
                 return _refused(name, "not a valid user name");
             return set("--operator=" + user, "Letting " + user + " change Tailscale without a password");
@@ -2299,7 +2305,10 @@ Singleton {
                 return _refused(name, "files must be absolute paths");
             if (!validTarget(target) || target.includes(":"))
                 return _refused(name, "not a device's name or IPv4 address");
-            return _command(name, ["tailscale", "file", "cp"].concat(files, [target + ":"]), false, true, "Sending " + files.length + " file(s) to " + target, { longRunning: true });
+            // "--" before the paths (absolute anyway); no address in the description: it reaches
+            // notifications. Its limit: timeLimits.send. Run as the user only (TaildropClient)
+            return _command(name, ["tailscale", "file", "cp", "--"].concat(files, [target + ":"]), false, true,
+                files.length === 1 ? "Sending a file with Taildrop" : "Sending " + files.length + " files with Taildrop", { longRunning: true, timeLimit: "send" });
         }
         case "fileTargets":
             return _command(name, ["tailscale", "file", "cp", "--targets"], false, false, "Listing devices that can receive files");
