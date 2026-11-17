@@ -473,11 +473,15 @@ check "key expired: prefs of a logged-in machine (an expiry is not a logout)" gr
 TS_FAKE_LOGIN_DELAY=5 "$TS" logout > /dev/null 2>&1; TS_FAKE_OPERATOR=1 "$TS" logout > /dev/null 2>&1
 TS_FAKE_OPERATOR=1 TS_FAKE_LOGIN_DELAY=5 "$TS" login > /dev/null 2>&1 &
 login_pid=$!
-sleep 0.3
+# Its own sleep (by this run's state directory, not any `sleep 5` on the machine): there, then gone
+start=$SECONDS
+until [ -n "$(own_processes "sleep 5")" ] || [ $((SECONDS - start)) -ge 10 ]; do sleep 0.05; done
+check "a login waits in a sleep of its own" test -n "$(own_processes "sleep 5")"
 kill -TERM "$login_pid"
 wait "$login_pid" 2> /dev/null
-sleep 0.2
-check "a login ended while it waits takes its sleep with it" test -z "$(pgrep -fx "sleep 5" 2> /dev/null)"
+start=$SECONDS
+until [ -z "$(own_processes "sleep 5")" ] || [ $((SECONDS - start)) -ge 3 ]; do sleep 0.05; done
+check "a login ended while it waits takes its sleep with it" test -z "$(own_processes "sleep 5")"
 
 echo "=== stand-in timeout, unkillable pkexec, slow up, hung status ==="
 fresh
