@@ -24,6 +24,12 @@ import qs.api
 //   - A slow poll (pollMs, 60 s) re-reads AT ALL TIMES — with the bus's current mask a peer
 //     going offline may send no message (to be confirmed on the real machine) — and looks
 //     for the CLI again while it is missing or not trusted.
+//   - LOOKING AGAIN (TailscaleRules.recheckPlan): Tailscale may be installed, started or
+//     fixed while the shell runs. While the CLI is missing or not trusted, or the service is
+//     not running, the client looks again on a backoff (recheckMinMs doubling up to pollMs,
+//     restarted whenever one of the module's views comes on screen: wake()), and at once when
+//     the user asks (recheck(): "Check again"). Found: the reads, the stream and every
+//     sub-client start as at the start — no restart of the shell.
 //   - Resume from sleep: the module handle's resumed() (API 1.2) re-reads and restarts the
 //     stream.
 //   - Byte counters (devices' traffic) are in `status --json`: re-read every watchPollMs only
@@ -57,6 +63,11 @@ import qs.api
 // process ends by itself). Origin "network" never prompts and never opens a browser: it sets
 // `attention` instead. pkexec 126 (dismissed) shows nothing; 127 is `failed` with the
 // contract's sentence; any other failure is `failed(what, reason)` with the rules' sentence.
+// A failed connect, disconnect, login or start the user asked for also stays on the entry
+// (`notice`, TailscaleRules.failureNotice: the reason and the action that helps) until the
+// user acts again or the phase changes — the notification alone may never show (no
+// notification daemon, no notify-send). A click on Connect while the state is unknown reads
+// first and then tries once more, or says that Tailscale does not answer.
 // A pending connect (a bare `up` waits for Running) shows a login URL from its output or the
 // bus at once, and Disconnect ends it (stops waiting, ends the plain process, runs `down`).
 // `tailscale login` runs as a process of its own (its URL is read while it waits); cancelled
@@ -88,6 +99,12 @@ QtObject {
     property int streamBackoffMaxMs: 30000
     property int readRetryMinMs: 2000
     property int readRetryMaxMs: 60000
+    // The first wait before looking again while Tailscale is missing or stopped (doubling up
+    // to pollMs)
+    property int recheckMinMs: 5000
+    // How long after the user's Start a service that is gone again counts as failing to start
+    property int startWatchMs: 30000
+    property real _startedAt: 0
     // Overrides of TailscaleRules.timeLimits (seconds), for the suites
     property var timeLimits: ({})
     // Where IP forwarding is read (the forwarding seam): a directory holding `ipv4` and `ipv6`
@@ -162,6 +179,10 @@ QtObject {
     // A lasting condition found by an action (origin "network" needing the user, a denied
     // change): attention until the user acts or the phase changes
     property var pendingAttention: null
+    // A failed click of the user's, shown as the entry's attention (TailscaleRules
+    // .failureNotice: { kind "failed", reason, action, under }), or null
+    property var notice: null
+    property string _noticePhase: ""
     // The last error the daemon sent on the bus (shown as a warning)
     property string busError: ""
     // The health warnings the bus sent last (titles and texts; null: none sent yet — status's
@@ -229,7 +250,9 @@ QtObject {
         // Locked out by tailnet lock (step 5): lasting, the user must act (admin console)
         // — only while connected: attention on an entry that is down would replace its Connect
         const locked = base.attention === null && pendingAttention === null && view.phase === "running" ? tailnetLock.attention : null;
-        const held = locked !== null ? { reason: locked.reason, action: locked.action }
+        // A failed click first: it covers the attention under it and carries its action
+        const held = notice !== null && operation === "" ? { reason: notice.reason, action: notice.action }
+            : locked !== null ? { reason: locked.reason, action: locked.action }
             : pendingAttention !== null && base.attention === null
             ? { reason: pendingAttention.reason, action: pendingAttention.action } : base.attention;
         const label = _operationLabels[operation] ?? "";
@@ -244,6 +267,8 @@ QtObject {
     // The view with that attention, for the plans
     readonly property var _planView: pendingAttention !== null && view.attention === null
         ? Object.assign({}, view, { attention: pendingAttention }) : view
+    // … and with a failed click's notice over it, for attend (the notice's action)
+    readonly property var _attendView: notice !== null ? Object.assign({}, _planView, { attention: notice }) : _planView
 
     readonly property var devices: status ? TailscaleRules.peers(status, now, {}) : []
     readonly property var exitNodes: TailscaleRules.exitNodes(status, prefs, suggestedId !== "" ? suggestedId : suggestedName)
@@ -284,6 +309,8 @@ QtObject {
                 toolsMode = "path";
             }
         }
+        // A look of an earlier start is no longer waited for (its answer is dropped)
+        _probing = false;
         _resolveTools();
         _readIdentity();
         _readLan();
@@ -300,6 +327,12 @@ QtObject {
         _readRetry.stop();
         _streamRestart.stop();
         _loginTimer.stop();
+        _recheckTimer.stop();
+        _recheckAttempts = 0;
+        _probing = false;
+        _startedAt = 0;
+        _readIntent = "";
+        notice = null;
         if (_stream.running)
             _stream.running = false;
         _opToken++;
@@ -327,6 +360,10 @@ QtObject {
     // tailscale, timeout, pkexec and curl by absolute path (the seam's, or PATH's — then
     // judged: TailscaleRules.toolsProbe), and the LocalAPI socket that exists
     function _resolveTools() {
+        // One look at a time (a view and the timer may ask together)
+        if (_probing)
+            return;
+        _probing = true;
         const generation = _generation;
         const judge = toolsMode === "path" || checkTrust;
         const probe = [
@@ -345,6 +382,7 @@ QtObject {
         _misc.run(["sh", "-c", probe, "sh", _tools, judge ? "1" : "0"].concat(TailscaleRules.localApiSockets), result => {
             if (!_alive(generation))
                 return;
+            _probing = false;
             const found = TailscaleRules.toolsProbe(result.lines.join("\n"), judge);
             const tools = found.tools;
             curlPath = tools.curl.path;
@@ -356,6 +394,8 @@ QtObject {
                 pkexecPath = "";
                 untrustedReason = tools[untrusted[0]].reason;
                 cli = "untrusted";
+                _readIntent = "";
+                _followRecheck();
                 return;
             }
             untrustedReason = "";
@@ -366,12 +406,16 @@ QtObject {
             if (tools.tailscale.path === "") {
                 tailscalePath = "";
                 cli = "missing";
+                _readIntent = "";
+                _followRecheck();
                 return;
             }
             tailscalePath = tools.tailscale.path;
             cli = "present";
+            _streamFailures = 0;
             _scheduleRead(true);
             _startStream();
+            _followRecheck();
         });
     }
 
@@ -470,11 +514,76 @@ QtObject {
     }
 
     function refresh() {
-        if ((cli === "missing" || cli === "untrusted") && running)
+        if (cli !== "present" && running)
             _resolveTools();
         else
             _scheduleRead(true);
     }
+
+    // ---- Looking again (TailscaleRules.recheckPlan) ----
+
+    // Something is missing that may turn up by itself (installed, started): the page offers
+    // "Check again"
+    readonly property bool canLookAgain: running && TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase }, false) !== "none"
+    property bool _probing: false
+    property real _wokenAt: 0
+    property int _recheckAttempts: 0
+
+    // The user's "Check again": looks at once, whatever the state → true when it looked
+    function recheck() {
+        if (!running)
+            return false;
+        notice = null;
+        pendingAttention = null;
+        _recheckAttempts = 0;
+        return _recheck(true);
+    }
+
+    // One of the module's views came on screen (the page, the popup, the network popup's
+    // row, the card): looks again only while something is missing, at most every 2 s, and
+    // starts the backoff over (the user may be installing or starting it now)
+    function wake() {
+        if (!running)
+            return false;
+        const moment = Date.now();
+        if (moment - _wokenAt < 2000)
+            return false;
+        _wokenAt = moment;
+        _recheckAttempts = 0;
+        const looked = _recheck(false);
+        _followRecheck();
+        return looked;
+    }
+
+    function _recheck(asked) {
+        const plan = TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase }, asked);
+        if (plan === "probe") {
+            _resolveTools();
+            return true;
+        }
+        if (plan === "read") {
+            _streamFailures = 0;
+            if (!_stream.running) {
+                _streamRestart.stop();
+                _startStream();
+            }
+            _scheduleRead(true);
+            return true;
+        }
+        return false;
+    }
+
+    // The backoff runs while something is missing, and stops once nothing is
+    function _followRecheck() {
+        if (!running || TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase }, false) === "none") {
+            _recheckTimer.stop();
+            _recheckAttempts = 0;
+            return;
+        }
+        _recheckTimer.interval = TailscaleRules.recheckDelayMs(_recheckAttempts, recheckMinMs, pollMs);
+        _recheckTimer.restart();
+    }
+    onDaemonChanged: _followRecheck()
 
     function _read() {
         if (!running || cli !== "present")
@@ -509,6 +618,8 @@ QtObject {
                 _reading = false;
                 _readFailures = 0;
                 stale = false;
+                _settleNotice();
+                _afterRead();
                 if (_readAgain) {
                     _readAgain = false;
                     _scheduleRead();
@@ -527,6 +638,11 @@ QtObject {
         _readAgain = false;
         stale = true;
         readTimeouts++;
+        // A click waiting for this read: said, not done blind
+        if (_readIntent !== "") {
+            _readIntent = "";
+            _noteFailure(TailscaleRules.timeoutMessage("status", _limit("read")));
+        }
         _readRetry.interval = Math.min(readRetryMaxMs, readRetryMinMs * Math.pow(2, Math.min(_readFailures, 10)));
         _readFailures++;
         _readRetry.restart();
@@ -547,6 +663,12 @@ QtObject {
             if (error.kind === "not-running") {
                 daemon = "not-running";
                 status = null;
+                // Gone again soon after the user's Start: it fails at start (no network device
+                // after a kernel update without a reboot, a bad state file) — said on the entry
+                if (_startedAt > 0 && Date.now() - _startedAt < startWatchMs) {
+                    _startedAt = 0;
+                    _noteFailure("Tailscale's service stopped right after it started.");
+                }
             } else if (error.kind === "denied") {
                 readDenied = true;
             } else {
@@ -682,7 +804,57 @@ QtObject {
     onViewChanged: {
         if (pendingAttention !== null && view.phase !== _pendingPhase)
             pendingAttention = null;
-        // Connected again after the interrupted login (not the state read before it ended)
+        // Not while settling: the read right after a failure shows where it left Tailscale
+        if (notice !== null && !_noticeSettling && view.phase !== _noticePhase)
+            notice = null;
+    }
+
+    // The first read after a failure: up after all — the notice goes; else its phase is the
+    // one the failure left, and a change from there ends the notice
+    property bool _noticeSettling: false
+    function _settleNotice() {
+        if (notice === null || !_noticeSettling)
+            return;
+        _noticeSettling = false;
+        if (view.phase === "running")
+            notice = null;
+        else
+            _noticePhase = view.phase;
+    }
+
+    // A failed click of the user's: kept on the entry (`notice`) with the action that helps
+    function _noteFailure(reason) {
+        if (!running)
+            return;
+        _noticePhase = view.phase;
+        _noticeSettling = true;
+        notice = TailscaleRules.failureNotice(_planView, TailscaleRules.withoutAddresses(reason),
+            { error: TailscaleRules.withoutAddresses(busError), health: (Array.isArray(busHealth) ? busHealth : (status?.health ?? [])).map(item => typeof item === "string" ? TailscaleRules.withoutAddresses(item)
+                : Object.assign({}, item, { title: TailscaleRules.withoutAddresses(item?.title), text: TailscaleRules.withoutAddresses(item?.text) })) });
+    }
+
+    // A click while the state was unknown: what it asked for ("connect" | "disconnect"), done
+    // once the read answers (_afterRead)
+    property string _readIntent: ""
+
+    function _afterRead() {
+        if (_readIntent === "")
+            return;
+        const intent = _readIntent;
+        _readIntent = "";
+        Qt.callLater(() => {
+            if (!running || busy)
+                return;
+            const plan = intent === "disconnect"
+                ? TailscaleRules.planDisconnect(_planView, canChange, "user", {})
+                : TailscaleRules.planConnect(_planView, canChange, "user");
+            // Still unknown after a read that answered: said, never a blind `up`
+            if (plan.kind === "read") {
+                _noteFailure("Tailscale's state could not be read.");
+                return;
+            }
+            _execute(plan, "user", intent);
+        });
     }
 
     function _hold(attention) {
@@ -713,23 +885,32 @@ QtObject {
 
     function attend() {
         // Locked out by tailnet lock: the admin console, where a trusted device signs this one
-        if (view.attention === null && pendingAttention === null && view.phase === "running" && tailnetLock.attention !== null) {
+        if (notice === null && view.attention === null && pendingAttention === null && view.phase === "running" && tailnetLock.attention !== null) {
             const url = TailscaleRules.adminMachineUrl(status, prefs);
             return openUrl(url !== "" ? url : TailscaleRules.adminMachinesUrl);
         }
-        const kind = _planView.attention?.kind ?? "";
+        const shown = _attendView.attention;
+        // A failed click's notice acts as the attention under it, or as the click again
+        const kind = shown?.kind === "failed" ? (shown.under?.kind ?? "") : (shown?.kind ?? "");
         const operationName = kind === "service-not-running" ? "start" : kind === "exit-node-offline" ? "exit-node"
-            : (kind === "login" || kind === "key-expired") ? "login" : (view.phase === "running" ? "disconnect" : "connect");
-        return _execute(TailscaleRules.planAttend(_planView, canChange, "user"), "user", operationName);
+            : (kind === "login" || kind === "key-expired") ? "login" : (view.phase === "running" || view.phase === "starting" ? "disconnect" : "connect");
+        return _execute(TailscaleRules.planAttend(_attendView, canChange, "user"), "user", operationName);
     }
 
-    // `plan`: TailscaleRules' → true when something was started
+    // `plan`: TailscaleRules' → true when something was started (or looked at again)
     function _execute(plan, origin, operationName) {
         if (!running)
             return false;
-        if (origin === "user")
+        if (origin === "user") {
             pendingAttention = null;
+            notice = null;
+        }
+        if (plan.kind === "recheck")
+            return recheck();
         if (plan.kind === "read") {
+            // The user's click is not dropped: done once the state is known
+            if (origin === "user" && (operationName === "connect" || operationName === "disconnect"))
+                _readIntent = operationName;
             _scheduleRead(true);
             return false;
         }
@@ -1244,6 +1425,9 @@ QtObject {
                 onEnd(Object.assign({ ok: false, dismissed: false, elevated: false, code: -1, message: message, error: "" }, extra ?? {}));
             else
                 failed(description, message);
+            // The user's connect or disconnect: also on the entry, where the click was
+            if (origin === "user" && (operationName === "connect" || operationName === "disconnect"))
+                _noteFailure(message);
         };
         // One change at a time: a second caller never replaces the running one (its process
         // and its result would be lost)
@@ -1390,11 +1574,14 @@ QtObject {
             operation = "";
             _changeSerial++;
             if (!result.ok) {
-                failed(command.description, _timedOut(result) ? TailscaleRules.timeoutMessage("startService", seconds)
-                    : ((result.err.split("\n")[0] ?? "").trim() || ("systemctl exited with status " + result.code + ".")));
+                const reason = _timedOut(result) ? TailscaleRules.timeoutMessage("startService", seconds)
+                    : ((result.err.split("\n")[0] ?? "").trim() || ("systemctl exited with status " + result.code + "."));
+                failed(command.description, reason);
+                _noteFailure(reason);
                 return;
             }
             daemon = "unknown";
+            _startedAt = Date.now();
             _streamFailures = 0;
             _streamRestart.stop();
             _scheduleRead(true);
@@ -1593,7 +1780,7 @@ QtObject {
         if (_timedOut(result)) {
             _loginGaveUp();
             _loginDone();
-            failed(description, TailscaleRules.timeoutMessage(_loginCommand, _loginSeconds));
+            _loginFailed(description, TailscaleRules.timeoutMessage(_loginCommand, _loginSeconds));
             return;
         }
         if (!_loginElevated) {
@@ -1604,7 +1791,7 @@ QtObject {
                 if (!elevated.ok || elevationProblem !== "") {
                     _loginGaveUp();
                     _loginDone();
-                    failed(description, elevationProblem !== "" ? elevationProblem : elevated.error);
+                    _loginFailed(description, elevationProblem !== "" ? elevationProblem : elevated.error);
                     return;
                 }
                 // pkexec <timeout> -k 5 <seconds> <tailscale> login: ends by itself
@@ -1616,7 +1803,7 @@ QtObject {
             }
             _loginGaveUp();
             _loginDone();
-            failed(description, error.message);
+            _loginFailed(description, error.message);
             return;
         }
         const outcome = TailscaleRules.pkexecOutcome(code);
@@ -1626,7 +1813,14 @@ QtObject {
         _loginDone();
         if (outcome.outcome === "dismissed")
             return;
-        failed(description, outcome.outcome === "no-agent" ? outcome.message : TailscaleRules.errorKind(code, _loginText).message);
+        _loginFailed(description, outcome.outcome === "no-agent" || outcome.outcome === "not-started" ? outcome.message : TailscaleRules.errorKind(code, _loginText).message);
+    }
+
+    // A login that failed: notified; one to connect (not another account) also on the entry
+    function _loginFailed(description, reason) {
+        failed(description, reason);
+        if (_loginCommand === "login")
+            _noteFailure(reason);
     }
 
     function _loginDone() {
@@ -1806,16 +2000,31 @@ QtObject {
                 return;
             root._loginGaveUp();
             root._abandonOperation();
-            root.failed(TailscaleRules.commandFor(root._loginCommand, {}).description, TailscaleRules.timeoutMessage(root._loginCommand, root.loginTimeoutMs / 1000));
+            root._loginFailed(TailscaleRules.commandFor(root._loginCommand, {}).description, TailscaleRules.timeoutMessage(root._loginCommand, root.loginTimeoutMs / 1000));
         }
     }
 
     // The slow poll, at all times (and the CLI looked for again while missing or not trusted)
+    // — but not twice: while the backoff below runs, it looks
     property Timer _poll: Timer {
         interval: root.pollMs
         repeat: true
         running: root.running
-        onTriggered: root.refresh()
+        onTriggered: {
+            if (!root._recheckTimer.running)
+                root.refresh();
+        }
+    }
+
+    // Looking again while Tailscale is missing, not trusted or stopped (_followRecheck sets
+    // the interval: the backoff)
+    property Timer _recheckTimer: Timer {
+        repeat: false
+        onTriggered: {
+            root._recheckAttempts++;
+            root._recheck(false);
+            root._followRecheck();
+        }
     }
 
     // The traffic while the devices page is shown

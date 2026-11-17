@@ -33,6 +33,14 @@ ColumnLayout {
     spacing: 4
     visible: client !== null
 
+    // Opened: Tailscale may have been installed or started since the last look
+    onClientChanged: _wake()
+    Component.onCompleted: _wake()
+    function _wake() {
+        if (typeof client?.wake === "function")
+            client.wake();
+    }
+
     DetailRow {
         label: "Tailnet"
         value: TailscaleRules.tailnetName(root.status, { lastTailnet: root.client?.lastTailnet ?? "" })

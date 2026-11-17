@@ -527,16 +527,17 @@ Singleton {
             view.summary = view.status;
             return view;
         };
+        // Both may change without the shell knowing (installed, replaced): the action looks again
         if (_get(facts, "cli") === "missing") {
             view.phase = "missing";
-            view.attention = _attention("not-installed", "Tailscale is not installed on this computer", "");
+            view.attention = _attention("not-installed", "Tailscale is not installed on this computer", "Check again");
             view.status = "Not installed";
             return finish();
         }
         if (_get(facts, "cli") === "untrusted") {
             view.phase = "untrusted";
             view.attention = _attention("untrusted", _string(_get(facts, "untrustedReason"), 300)
-                || "The tailscale program found is not trusted (this user could change it): nothing is run", "");
+                || "The tailscale program found is not trusted (this user could change it): nothing is run", "Check again");
             view.status = "Not trusted";
             return finish();
         }
@@ -571,8 +572,13 @@ Singleton {
         const self = _isObject(status.self) && typeof status.self.keyExpiry === "number" ? status.self : null;
         const keyExpired = self !== null && (self.expired || (self.keyExpiry > 0 && now > 0 && self.keyExpiry <= now)) && !loggedOut;
         const loggingIn = operation === "login" || operation === "connect";
+        const wantRunning = _get(prefs, "wantRunning") === true;
+        // A daemon with no node key that is not trying to run (a fresh install often stays in
+        // NoState until someone logs in) needs a login like NeedsLogin — Connect there must log
+        // in, not wait for a start that never comes
+        const freshNoState = backend === "NoState" && !status.haveNodeKey && (!wantRunning || loggingIn);
 
-        if (backend === "NeedsLogin" || (loggedOut && (backend === "Stopped" || backend === "NoState"))) {
+        if (backend === "NeedsLogin" || freshNoState || (loggedOut && (backend === "Stopped" || backend === "NoState"))) {
             view.phase = keyExpired ? "key-expired" : (loggedOut || !status.haveNodeKey ? "logged-out" : "needs-login");
             if (loggingIn) {
                 // A login in progress is transient: the browser is (or will be) open
@@ -597,13 +603,15 @@ Singleton {
             view.phase = "stopped";
             view.state = operation === "connect" ? "activating" : "";
             view.status = operation === "connect" ? "Connecting…" : "Off";
+        } else if (backend === "NoState" && !wantRunning && !loggingIn) {
+            // Logged in but idle (WantRunning off): off, as Stopped — Connect runs `up`
+            view.phase = "stopped";
+            view.status = "Off";
         } else if (backend === "Starting" || backend === "NoState") {
             view.phase = "starting";
             const stopping = operation === "disconnect" || operation === "logout";
-            // NoState with WantRunning off is a daemon that is idle, not one starting
-            const wanted = backend === "Starting" || _get(prefs, "wantRunning") === true || loggingIn;
-            view.state = stopping ? "deactivating" : (wanted ? "activating" : "");
-            view.status = stopping ? "Disconnecting…" : (wanted ? "Starting…" : "Off");
+            view.state = stopping ? "deactivating" : "activating";
+            view.status = stopping ? "Disconnecting…" : "Starting…";
         } else if (backend === "Running") {
             view.phase = "running";
             const stopping = operation === "disconnect" || operation === "logout";
@@ -746,6 +754,9 @@ Singleton {
     //        "open-url"    open `url` in the browser (origin "user" only)
     //        "read"        the state is not known (not read yet, or the last read timed
     //                      out): re-read, and do nothing until it is — never a blind `up`
+    //        "recheck"     look for the programs (or the service) again: Tailscale was not
+    //                      found or not trusted, and may have been installed or fixed since
+    //                      (origin "user" only)
     //        "nothing"     already there, or nothing can be done (`attention` says why, if
     //                      anything should)
 
@@ -778,6 +789,8 @@ Singleton {
         if (phase === "stopped")
             return _privilegedRun("connect", changeAllowed, origin, {},
                 _attention("needs-privilege", "Connecting Tailscale with this network needs an administrator's password, or this user as its operator", "Connect"));
+        if ((phase === "missing" || phase === "untrusted") && origin !== "network")
+            return _plan("recheck");
         // missing, not running, denied, other user, needs approval: the attention says it
         return origin === "network" && view?.attention ? _plan("needs-user", { attention: view.attention }) : _plan("nothing", { attention: view?.attention ?? null });
     }
@@ -809,7 +822,78 @@ Singleton {
         if (kind === "needs-privilege")
             return view.phase === "running" || view.phase === "starting"
                 ? planDisconnect(view, changeAllowed, origin) : planConnect(view, changeAllowed, origin);
+        if (kind === "not-installed" || kind === "untrusted")
+            return _plan("recheck");
+        // A failure shown on the entry (failureNotice): its action is the one under it, or
+        // the click that failed, again
+        if (kind === "failed") {
+            const under = _isObject(view.attention.under) ? view.attention.under : null;
+            const beneath = Object.assign({}, view, { attention: under });
+            if (under !== null)
+                return planAttend(beneath, changeAllowed, origin);
+            return view.phase === "running" || view.phase === "starting"
+                ? planDisconnect(beneath, changeAllowed, origin) : planConnect(beneath, changeAllowed, origin);
+        }
         return _plan("nothing");
+    }
+
+    // What a failed click leaves on the entry until the user acts again or the phase changes:
+    // the entry's attention { kind "failed", reason (the failure, one sentence), action, under }.
+    // The action is that of the attention it covers (`under`: Log in, Start…), else the click
+    // again: Disconnect while up, Connect otherwise. `view` stateOf's (its attention the one
+    // covered), `reason` the failure's sentence. `daemonSays` (optional): what the daemon itself
+    // reported meanwhile — the bus's ErrMessage, then its health warnings (healthList's
+    // { title, text }) — used when the failure has no words of its own (a time limit, a bare
+    // exit status): a daemon that cannot make its network device (a kernel updated without a
+    // reboot) lets `up` wait or fail while only its health says why.
+    function failureNotice(view, reason, daemonSays) {
+        const under = _isObject(view?.attention) && view.attention.kind !== "failed" ? view.attention
+            : (_isObject(view?.attention?.under) ? view.attention.under : null);
+        const phase = _string(view?.phase, 32);
+        const action = _string(under?.action, 40) || (phase === "running" || phase === "starting" ? "Disconnect" : "Connect");
+        const oneLine = value => _string(value, 600).split("\n").map(line => line.trim()).filter(line => line !== "").join(" ");
+        let text = oneLine(reason);
+        const generic = text === "" || /did not (connect|answer) within|exited with status|^Tailscale did not answer in time/.test(text);
+        if (generic) {
+            const error = oneLine(_get(daemonSays, "error"));
+            // Those that cut the connection first, then the serious ones; an update notice last
+            const rank = item => !_isObject(item) ? 2 : item.impactsConnectivity === true ? 0 : item.severity === "high" ? 1 : item.severity === "low" ? 3 : 2;
+            const health = (Array.isArray(_get(daemonSays, "health")) ? _get(daemonSays, "health").slice(0, 64) : [])
+                .map((item, index) => ({ item: item, index: index })).sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index)
+                .map(entry => oneLine(_isObject(entry.item) ? (entry.item.text || entry.item.title) : entry.item)).find(line => line !== "") ?? "";
+            const own = error !== "" ? "Tailscale said: " + error : health;
+            if (own !== "")
+                text = own;
+        }
+        return { kind: "failed", reason: _clip(text, 200) || "It did not work.", action: action, under: under };
+    }
+
+    // ---- Looking again: Tailscale installed, started or fixed while the shell runs ----
+
+    // facts { cli ("unknown" | "present" | "missing" | "untrusted"), daemon, phase }, `asked`
+    // true for the user's own "Check again" (else a view coming on screen, the timer) →
+    //   "probe"  look for the programs again (not found, not trusted, or not looked for yet)
+    //   "read"   read the state again and restart the event stream (the service was not
+    //            running, the state is unknown; or asked while all is well)
+    //   "none"   nothing is missing: the stream and the slow poll keep it current
+    function recheckPlan(facts, asked) {
+        const cli = _string(_get(facts, "cli"), 16);
+        if (cli !== "present")
+            return "probe";
+        const daemon = _string(_get(facts, "daemon"), 16);
+        const phase = _string(_get(facts, "phase"), 32);
+        if (daemon === "not-running" || phase === "not-running" || phase === "denied" || asked === true)
+            return "read";
+        return "none";
+    }
+
+    // The wait before the next look while something is missing: `minMs` doubling with each
+    // look (`attempt`, from 0), at most `maxMs` (the slow poll)
+    function recheckDelayMs(attempt, minMs, maxMs) {
+        const low = Math.max(100, _number(minMs, 5000));
+        const high = Math.max(low, _number(maxMs, 60000));
+        const step = Math.min(20, Math.max(0, Math.trunc(_number(attempt, 0))));
+        return Math.min(high, low * Math.pow(2, step));
     }
 
     // ---- Devices ----
@@ -1990,6 +2074,9 @@ Singleton {
             return { outcome: "dismissed", failure: false, message: "Not done: the password was not given." };
         if (exitCode === 127)
             return { outcome: "no-agent", failure: true, message: "No authentication agent answered." };
+        // No exit status at all: pkexec itself could not be started (gone since the probe)
+        if (typeof exitCode === "number" && exitCode < 0)
+            return { outcome: "not-started", failure: true, message: "pkexec could not be started." };
         return { outcome: "failed", failure: true, message: "" };
     }
 

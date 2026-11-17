@@ -349,7 +349,8 @@ TestCase {
             assertEqual(rules.planConnect(view("starting", "running"), false, "user").kind, "nothing", "plan: connect while starting: nothing");
             plan = rules.planConnect(view(null, null, { daemon: "not-running" }), true, "network");
             assert(plan.kind === "needs-user" && plan.attention?.kind === "service-not-running", "plan: daemon down, for a network: needs the user");
-            assertEqual(rules.planConnect(view(null, null, { cli: "missing" }), true, "user").kind, "nothing", "plan: not installed: nothing to run");
+            assertEqual(rules.planConnect(view(null, null, { cli: "missing" }), true, "user").kind, "recheck", "plan: not installed, Connect by the user: look again (installed since?), nothing run");
+            assertEqual(rules.planConnect(view(null, null, { cli: "missing" }), true, "network").kind, "needs-user", "plan: not installed, for a network: the attention, no looking");
             assertEqual(rules.planConnect(view("needs-machine-auth", "running"), true, "user").kind, "nothing", "plan: waiting for approval: connect does nothing");
             // The state unknown (not read yet, or the last read timed out): read first, never a blind `up`
             for (const unknown of [view(null, null), view("running", "running", { stale: true })]) {
@@ -365,9 +366,9 @@ TestCase {
             assertEqual(view(null, null, { stale: true, operation: "connect" }).status, "Connecting…", "state: stale but connecting: \"Connecting…\"");
             const untrusted = view(null, null, { cli: "untrusted", untrustedReason: "The tailscale found on PATH is not trusted" });
             assert(untrusted.phase === "untrusted" && untrusted.status === "Not trusted" && untrusted.attention?.kind === "untrusted"
-                   && untrusted.attention.reason === "The tailscale found on PATH is not trusted" && untrusted.attention.action === "",
-                   "state: an untrusted program: \"Not trusted\", attention with the reason, no action");
-            assertEqual(rules.planConnect(untrusted, true, "user").kind, "nothing", "plan: untrusted: nothing runs");
+                   && untrusted.attention.reason === "The tailscale found on PATH is not trusted" && untrusted.attention.action === "Check again",
+                   "state: an untrusted program: \"Not trusted\", attention with the reason, \"Check again\"");
+            assertEqual(rules.planConnect(untrusted, true, "user").kind, "recheck", "plan: untrusted: nothing runs, the programs are looked at again");
 
             const running = view("running", "running");
             plan = rules.planDisconnect(running, false, "user");
@@ -397,7 +398,7 @@ TestCase {
             assertEqual(rules.planAttend(loggedOut, true, "network").kind, "needs-user", "plan: attend is never unattended");
             const needsPrivilege = Object.assign({}, stopped, { attention: { kind: "needs-privilege", reason: "x", action: "Connect" } });
             assert(rules.planAttend(needsPrivilege, false, "user").command?.argv.join(" ") === "tailscale up", "plan: attend a needed password: connect now, by the user");
-            assertEqual(rules.planAttend(view(null, null, { cli: "missing" }), true, "user").kind, "nothing", "plan: not installed: nothing");
+            assertEqual(rules.planAttend(view(null, null, { cli: "missing" }), true, "user").kind, "recheck", "plan: not installed: \"Check again\" looks again");
             // As VpnManager reads request.origin: anything but "network" is the user
             for (const origin of [undefined, null, "", "User", 5]) {
                 assert(rules.planConnect(stopped, false, origin).privileged, "plan: origin " + JSON.stringify(origin) + " is the user's (may prompt)");
@@ -418,6 +419,117 @@ TestCase {
                 const plans = [rules.planConnect(hostile, true, "user"), rules.planDisconnect(hostile, true, "network"), rules.planAttend(hostile, true, "user")];
                 assert(plans.every(item => typeof item.kind === "string"), "plan: hostile view " + JSON.stringify(hostile) + " gives a plan");
             }
+        }
+
+        // --- a fresh install: NoState / NeedsLogin with no profile; Connect always leads somewhere ---
+        {
+            const state = (statusObject, prefsObject, extra) => rules.stateOf(rules.parseStatus(statusObject), prefsObject === null ? null : rules.parsePrefs(prefsObject),
+                                                                               Object.assign({ now: now }, extra ?? {}));
+            // A daemon fresh from the package: no node key, not trying to run
+            const fresh = state({ BackendState: "NoState", HaveNodeKey: false }, { WantRunning: false, LoggedOut: false });
+            assert(fresh.phase === "logged-out" && fresh.attention?.kind === "login" && fresh.attention.action === "Log in" && fresh.state === "",
+                   "fresh NoState, no node key: logged out, \"Log in\" — not an idle \"Off\" whose Connect does nothing: " + JSON.stringify([fresh.phase, fresh.attention]));
+            assertEqual(state({ BackendState: "NoState", HaveNodeKey: false }, null).phase, "logged-out", "fresh NoState, prefs not read yet: logged out too");
+            let plan = rules.planConnect(fresh, false, "user");
+            assert(plan.kind === "run" && plan.privileged && plan.command.argv.join(" ") === "tailscale login", "fresh NoState: Connect (user, not operator) logs in through pkexec");
+            assertEqual(rules.planConnect(fresh, false, "network").kind, "needs-user", "fresh NoState: for a network, needs the user (no browser)");
+            const freshLogin = state({ BackendState: "NoState", HaveNodeKey: false }, { WantRunning: false }, { operation: "login" });
+            assert(freshLogin.state === "activating" && freshLogin.status === "Logging in…" && freshLogin.attention === null, "fresh NoState while logging in: activating, \"Logging in…\"");
+            const waiting = state({ BackendState: "NoState", HaveNodeKey: false }, { WantRunning: true });
+            assertEqual(waiting.phase + "|" + waiting.state, "starting|activating", "NoState, no key but wanted (an `up` waiting for the control server): starting");
+            // Logged in, idle
+            const idle = state({ BackendState: "NoState", HaveNodeKey: true }, { WantRunning: false });
+            assert(idle.phase === "stopped" && idle.status === "Off" && idle.state === "" && idle.attention === null, "NoState with a key, not wanted: off, as Stopped");
+            plan = rules.planConnect(idle, false, "user");
+            assert(plan.kind === "run" && plan.privileged && plan.command.argv.join(" ") === "tailscale up", "idle NoState: Connect runs `up` (pkexec when not the operator), never nothing");
+            const idleConnecting = state({ BackendState: "NoState", HaveNodeKey: true }, { WantRunning: false }, { operation: "connect" });
+            assertEqual(idleConnecting.state + "|" + idleConnecting.status, "activating|Starting…", "idle NoState, connecting: activating");
+            assertEqual(state({ BackendState: "NoState", HaveNodeKey: true }, { WantRunning: true }).phase, "starting", "NoState with a key, wanted: starting");
+            // NeedsLogin on a fresh install: LoggedOut false, no node key, WantRunning false
+            const needsLogin = state({ BackendState: "NeedsLogin", HaveNodeKey: false, AuthURL: "" }, { WantRunning: false, LoggedOut: false });
+            assert(needsLogin.phase === "logged-out" && needsLogin.attention?.action === "Log in", "fresh NeedsLogin: logged out, \"Log in\"");
+            assertEqual(rules.planAttend(needsLogin, false, "user").command?.argv.join(" "), "tailscale login", "fresh NeedsLogin: its action logs in");
+            // Every phase a click can meet: Connect by the user never ends in a plain "nothing"
+            // unless the entry already says why (attention) or it is already up
+            const phases = [fresh, idle, needsLogin, waiting,
+                            rules.stateOf(null, null, { now: now }), rules.stateOf(null, null, { now: now, cli: "missing" }),
+                            rules.stateOf(null, null, { now: now, cli: "untrusted" }), rules.stateOf(null, null, { now: now, daemon: "not-running" }),
+                            rules.stateOf(null, null, { now: now, readDenied: true }), rules.stateOf(null, null, { now: now, stale: true })];
+            for (const each of phases) {
+                for (const allowed of [true, false]) {
+                    const result = rules.planConnect(each, allowed, "user");
+                    const silent = result.kind === "nothing" && each.attention === null && !["running", "starting"].includes(each.phase);
+                    assert(!silent, "connect (user) in phase " + each.phase + ": not a silent nothing (" + result.kind + ")");
+                }
+            }
+        }
+
+        // --- a failed click stays on the entry: failureNotice, and attend on it ---
+        {
+            const view = (statusName, prefsName, extra) => rules.stateOf(statusName ? status(statusName) : null, prefsName ? prefs(prefsName) : null,
+                                                                          Object.assign({ now: now }, extra ?? {}));
+            const stopped = view("stopped", "stopped");
+            const overStopped = rules.failureNotice(stopped, "No authentication agent answered.");
+            same([overStopped.kind, overStopped.reason, overStopped.action, overStopped.under], ["failed", "No authentication agent answered.", "Connect", null],
+                 "notice over an off entry: the reason, \"Connect\" again");
+            let plan = rules.planAttend(Object.assign({}, stopped, { attention: overStopped }), false, "user");
+            assert(plan.kind === "run" && plan.privileged && plan.command.argv.join(" ") === "tailscale up", "attend that notice: connect again (pkexec)");
+            const loggedOut = view("needs-login", "logged-out");
+            const overLogin = rules.failureNotice(loggedOut, "Tailscale refused: only an administrator or its operator may change it.");
+            assert(overLogin.action === "Log in" && overLogin.under?.kind === "login", "notice over \"Log in\": keeps that action, and what it covers");
+            assertEqual(rules.planAttend(Object.assign({}, loggedOut, { attention: overLogin }), false, "user").command?.argv.join(" "), "tailscale login",
+                        "attend that notice: the login again");
+            const down = view(null, null, { daemon: "not-running" });
+            const overStart = rules.failureNotice(down, "Failed to start tailscaled.service: Access denied");
+            assertEqual(overStart.action, "Start", "notice over \"Start\": \"Start\"");
+            same(rules.planAttend(Object.assign({}, down, { attention: overStart }), false, "user").command?.argv, ["systemctl", "start", "tailscaled.service"],
+                 "attend that notice: start the service again");
+            assertEqual(rules.failureNotice(view("running", "running"), "x").action, "Disconnect", "notice while up: \"Disconnect\"");
+            const again = rules.failureNotice(Object.assign({}, loggedOut, { attention: overLogin }), "second");
+            assert(again.under?.kind === "login" && again.action === "Log in", "a notice over a notice keeps what is under it");
+            const long = rules.failureNotice(stopped, "first line\n\n  second line " + "x".repeat(400));
+            assert(long.reason.startsWith("first line second line") && long.reason.length <= 200, "notice: one line, at most 200 characters");
+            assertEqual(rules.failureNotice(stopped, "").reason, "It did not work.", "notice: never empty");
+            // A failure with no words of its own: the daemon's (a kernel updated without a reboot
+            // leaves it without its network device: `up` waits, only health says why)
+            const health = [{ code: "update-available", severity: "low", text: "An update is available.", impactsConnectivity: false },
+                            { code: "network-device", severity: "high", text: "Tailscale could not create its network device.", impactsConnectivity: true }];
+            assertEqual(rules.failureNotice(stopped, rules.timeoutMessage("connect", 60), { error: "", health: health }).reason,
+                        "Tailscale could not create its network device.", "notice: a time limit with health: the warning that cuts the connection");
+            assertEqual(rules.failureNotice(stopped, "Tailscale exited with status 1.", { error: "", health: ["router: setting up rules failed"] }).reason,
+                        "router: setting up rules failed", "notice: a bare exit status: status's health line");
+            assertEqual(rules.failureNotice(stopped, rules.timeoutMessage("connect", 60), { error: "tun device not available", health: health }).reason,
+                        "Tailscale said: tun device not available", "notice: the daemon's own error first");
+            assertEqual(rules.failureNotice(stopped, "failed to set up the network device: no such device", { error: "x", health: health }).reason,
+                        "failed to set up the network device: no such device", "notice: the CLI's own line is kept");
+            assert(/did not connect within/.test(rules.failureNotice(stopped, rules.timeoutMessage("connect", 60), { error: "", health: [] }).reason),
+                   "notice: nothing from the daemon: the time limit said");
+            assertEqual(typeof rules.failureNotice(stopped, "", { health: [null, 5, { text: 7 }] }).reason, "string", "notice: hostile health");
+            assertEqual(rules.planAttend(Object.assign({}, stopped, { attention: overStopped }), false, "network").kind, "needs-user", "attend from a network: never a prompt");
+            for (const hostile of [null, undefined, "x", { attention: { kind: "failed", under: 5 } }])
+                assertEqual(typeof rules.failureNotice(hostile, "r").action, "string", "notice: hostile view " + JSON.stringify(hostile) + " still gives one");
+            assertEqual(typeof rules.planAttend({ phase: "stopped", attention: { kind: "failed", under: "x" } }, true, "user").kind, "string", "attend: a hostile notice gives a plan");
+        }
+
+        // --- looking again: recheckPlan, recheckDelayMs ---
+        {
+            assertEqual(rules.recheckPlan({ cli: "missing" }, false), "probe", "recheck: not installed: look for the programs");
+            assertEqual(rules.recheckPlan({ cli: "untrusted" }, false), "probe", "recheck: not trusted: look again");
+            assertEqual(rules.recheckPlan({ cli: "unknown" }, false), "probe", "recheck: never looked (or the look got lost): look");
+            assertEqual(rules.recheckPlan({ cli: "present", daemon: "not-running", phase: "not-running" }, false), "read", "recheck: the service not running: read (and the stream)");
+            assertEqual(rules.recheckPlan({ cli: "present", daemon: "running", phase: "denied" }, false), "read", "recheck: not readable: read");
+            assertEqual(rules.recheckPlan({ cli: "present", daemon: "running", phase: "running" }, false), "none", "recheck: all there: nothing (the stream and the poll)");
+            assertEqual(rules.recheckPlan({ cli: "present", daemon: "running", phase: "running" }, true), "read", "recheck: asked while all is there: read");
+            assertEqual(rules.recheckPlan(null, false), "probe", "recheck: hostile facts: look");
+            same([0, 1, 2, 3, 4, 10, 1000].map(attempt => rules.recheckDelayMs(attempt, 5000, 60000)), [5000, 10000, 20000, 40000, 60000, 60000, 60000],
+                 "recheck: 5 s doubling to the slow poll's minute");
+            assertEqual(rules.recheckDelayMs(0, 5000, 2000), 5000, "recheck: never below its first wait");
+            assert([[undefined, undefined, undefined], ["x", null, -5], [-3, 0, 0]].every(args => {
+                const ms = rules.recheckDelayMs(args[0], args[1], args[2]);
+                return typeof ms === "number" && ms >= 100 && isFinite(ms);
+            }), "recheck: hostile arguments give a sane wait");
+            assertEqual(rules.pkexecOutcome(-2).outcome, "not-started", "pkexec: no exit status at all: it could not be started");
+            assertEqual(rules.pkexecOutcome(-2).message, "pkexec could not be started.", "… said so");
         }
     }
 }

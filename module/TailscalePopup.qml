@@ -44,7 +44,12 @@ Item {
 
     // Repeaters built after the panel itself (a second line of defence: "The Repeater crash")
     property bool _ready: false
-    Component.onCompleted: Qt.callLater(() => root._ready = true)
+    Component.onCompleted: {
+        Qt.callLater(() => root._ready = true);
+        // Opened: Tailscale may have been installed or started since the last look
+        if (typeof client?.wake === "function")
+            client.wake();
+    }
 
     component SectionLabel: Text {
         textFormat: Text.PlainText

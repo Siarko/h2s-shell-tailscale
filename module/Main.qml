@@ -85,8 +85,16 @@ QtObject {
             if (exitNode && exitNode.name !== "")
                 status = status.split(exitNode.name).join("<exit node>");
             return JSON.stringify({
-                phase: client.view.phase, state: client.entry.state, attention: client.view.attention?.kind ?? (client.pendingAttention?.kind ?? ""),
+                phase: client.view.phase, state: client.entry.state,
+                attention: client.notice?.kind ?? client.view.attention?.kind ?? (client.pendingAttention?.kind ?? ""),
                 attentionAction: client.entry.attention?.action ?? "", status: status, busy: client.busy, operation: client.operation,
+                // What a failed click left on the entry (no addresses: TailscaleRules.failureNotice's
+                // input is cleaned of them), the daemon's own words for its state, and which
+                // programs were found — enough to tell why a click did nothing
+                notice: client.notice?.reason ?? "", backendState: client.status?.backendState ?? "",
+                haveNodeKey: client.status?.haveNodeKey ?? false, wantRunning: client.prefs?.wantRunning ?? false,
+                loggedOut: client.prefs?.loggedOut ?? false,
+                tools: { tailscale: client.tailscalePath, timeout: client.timeoutPath, pkexec: client.pkexecPath, curl: client.curlPath },
                 exitNode: exitNode !== null, exitNodeOnline: exitNode?.online ?? false, cli: client.cli, daemon: client.daemon,
                 streamUp: client.streamUp, canChange: client.canChange, ready: client.ready, toolsMode: client.toolsMode,
                 stale: client.stale, curlMissing: client.curlMissing, elevation: client.elevationProblem === "",
@@ -109,6 +117,11 @@ QtObject {
 
         function refresh(): void {
             main.client.refresh();
+        }
+
+        // As the page's "Check again": looks for Tailscale (or its service) again at once
+        function recheck(): void {
+            main.client.recheck();
         }
 
         // The accounts as read (ids only, no names or addresses): { read, ids, selected,

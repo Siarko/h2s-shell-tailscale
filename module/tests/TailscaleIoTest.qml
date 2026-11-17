@@ -341,6 +341,27 @@ TestCase {
             same(rules.toolsProbe(groupWritable, true).untrusted, ["timeout"], "trust: a group-writable directory is refused");
             same(rules.toolsProbe(probe(["tool\ttailscale\t/usr/bin/tailscale"]), true).untrusted, ["tailscale"], "trust: not checkable (no stat): refused");
             same(rules.toolsProbe(writable, false).untrusted, [], "trust: the seam's programs are not judged");
+            // Arch and other distributions without Nix: root's files in /usr/bin (merged /usr:
+            // /bin a link to usr/bin — stat -L reads the directory it leads to), a set-uid
+            // pkexec (4755), a tailscale in /usr/local/bin
+            const arch = probe([
+                "tool\ttailscale\t/usr/bin/tailscale", "real\ttailscale\t/usr/bin/tailscale",
+                "stat\ttailscale\t0\t755\t/usr/bin", "stat\ttailscale\t0\t755\t/usr/bin/tailscale", "stat\ttailscale\t0\t755\t/usr/bin",
+                "tool\ttimeout\t/bin/timeout", "real\ttimeout\t/usr/bin/timeout",
+                "stat\ttimeout\t0\t755\t/bin", "stat\ttimeout\t0\t755\t/usr/bin/timeout", "stat\ttimeout\t0\t755\t/usr/bin",
+                "tool\tpkexec\t/usr/bin/pkexec", "real\tpkexec\t/usr/bin/pkexec",
+                "stat\tpkexec\t0\t755\t/usr/bin", "stat\tpkexec\t0\t4755\t/usr/bin/pkexec", "stat\tpkexec\t0\t755\t/usr/bin",
+                "tool\tcurl\t/usr/bin/curl", "socket\t/var/run/tailscale/tailscaled.sock"]);
+            const archFound = rules.toolsProbe(arch, true);
+            same(archFound.untrusted, [], "trust: Arch's /usr/bin programs (pkexec set-uid, timeout through the /bin link) are trusted");
+            same([archFound.tools.tailscale.path, archFound.tools.timeout.path, archFound.tools.pkexec.path], ["/usr/bin/tailscale", "/bin/timeout", "/usr/bin/pkexec"],
+                 "trust: … by the paths found");
+            const local = probe(["tool\ttailscale\t/usr/local/bin/tailscale", "real\ttailscale\t/usr/local/bin/tailscale",
+                "stat\ttailscale\t0\t755\t/usr/local/bin", "stat\ttailscale\t0\t755\t/usr/local/bin/tailscale", "stat\ttailscale\t0\t755\t/usr/local/bin"]);
+            same(rules.toolsProbe(local, true).untrusted, [], "trust: root's /usr/local/bin is trusted");
+            const linked = probe(["tool\ttailscale\t/usr/local/bin/tailscale", "real\ttailscale\t/opt/tailscale/tailscale",
+                "stat\ttailscale\t0\t755\t/usr/local/bin", "stat\ttailscale\t0\t755\t/opt/tailscale/tailscale", "stat\ttailscale\t1000\t755\t/opt/tailscale"]);
+            same(rules.toolsProbe(linked, true).untrusted, ["tailscale"], "trust: a root link to a program in a directory this user owns is refused");
             assertEqual(rules.toolsProbe(probe(["tool\ttailscale\t"]), true).tools.tailscale.path, "", "probe: not found");
             assertEqual(rules.toolsProbe(probe(["socket\t/tmp/evil.sock"]), true).socket, "", "probe: only the known socket paths");
             for (const hostile of [null, undefined, 5, "tool\t__proto__\t/x", "stat\ttailscale\t0"])

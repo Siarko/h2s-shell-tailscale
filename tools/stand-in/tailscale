@@ -11,7 +11,9 @@
 #                        running | stopped | starting | needs-login | needs-machine-auth |
 #                        exit-node | exit-node-offline | key-expiring | key-expired |
 #                        health-warnings | update-available | rich | sharing | serve |
-#                        not-running ("serve": status-serve.json, HTTPS + Funnel enabled)
+#                        not-running ("serve": status-serve.json, HTTPS + Funnel enabled) |
+#                        fresh | fresh-needs-login (a daemon fresh from the package: no
+#                        profile, no node key, WantRunning off; NoState or NeedsLogin)
 #   TS_FAKE_DAEMON       "down": the daemon is not running (every daemon command fails);
 #                        so is it while the state dir holds a file "daemon-down" (the stand-in
 #                        systemctl removes it on `start tailscaled.service`)
@@ -250,6 +252,7 @@ prefs_base() {
     case $scenario in
         stopped) echo "$F/prefs-stopped.json" ;;
         needs-login | login-pending) echo "$F/prefs-logged-out.json" ;;
+        fresh | fresh-needs-login) echo "$F/prefs-fresh.json" ;;
         # An expired key is not a logout: the prefs stay those of a logged-in machine
         key-expired) echo "$F/prefs-running.json" ;;
         exit-node | exit-node-offline) echo "$F/prefs-exit-node.json" ;;
@@ -379,7 +382,7 @@ default_prefs() {
 login_flow() {
     profiles_init
     case $scenario in
-        needs-login | login-pending | key-expired) ;;
+        needs-login | login-pending | key-expired | fresh | fresh-needs-login) ;;
         *)
             # Logged in: `login` first moves to a new, empty profile (cli/login.go:
             # SwitchToEmptyProfile) — before any URL: the connection drops at once. The one
@@ -1495,7 +1498,7 @@ case $command in
             exit 1
         fi
         case $scenario in
-            needs-login | login-pending | key-expired) login_flow ;;
+            needs-login | login-pending | key-expired | fresh | fresh-needs-login) login_flow ;;
             needs-machine-auth)
                 printf '\nTo approve your machine, visit (as admin):\n\n\thttps://login.tailscale.com/admin/machines\n\n' >&2
                 sleep "${TS_FAKE_LOGIN_DELAY:-2}" ;;
@@ -1535,7 +1538,7 @@ case $command in
         need_daemon
         need_write "prefs write access denied" down "$@"
         case $scenario in
-            stopped | starting | needs-login | login-pending | key-expired | needs-machine-auth) ;;
+            stopped | starting | needs-login | login-pending | key-expired | needs-machine-auth | fresh | fresh-needs-login) ;;
             *) printf '%s\n' "$scenario" > "$STATE_DIR/resume" ;;
         esac
         set_pref WantRunning false

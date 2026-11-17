@@ -50,7 +50,8 @@ TestCase {
     // ---- The scenario machinery ----
 
     // A scenario: its own directory, stand-in state and client. options: { state (the stand-in
-    // scenario), daemonDown, env {}, toolsDir, fixedNow, loginTimeoutMs, emptyTools, without
+    // scenario), daemonDown, env {}, toolsDir, fixedNow, loginTimeoutMs, emptyTools, lateTools (a
+    // tools directory that starts empty: installTools fills it), recheckMinMs, without
     // (a copy of the stand-ins without this one), timeLimits, checkTrust }
     function scenario(name, options) {
         const dir = base + "/" + name;
@@ -67,7 +68,7 @@ TestCase {
         // Set up, then the client
         then(s, "set up", () => true, () => {});
         s.steps[0].start = () => {
-            const lines = ["mkdir -p \"$1/state\" \"$1/empty-tools\"", ": > \"$1/log\"", ": > \"$1/pkexec.log\""];
+            const lines = ["mkdir -p \"$1/state\" \"$1/empty-tools\" \"$1/late-tools\"", ": > \"$1/log\"", ": > \"$1/pkexec.log\""];
             if (s.options.state)
                 lines.push("printf '%s\\n' \"$2\" > \"$1/state/scenario\"");
             if (s.options.daemonDown)
@@ -84,11 +85,11 @@ TestCase {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
                 s.client = _clientComponent.createObject(suite, {
-                    toolsDir: s.options.emptyTools ? dir + "/empty-tools" : (s.options.without ? dir + "/tools" : standIns),
+                    toolsDir: s.options.emptyTools ? dir + "/empty-tools" : s.options.lateTools ? dir + "/late-tools" : (s.options.without ? dir + "/tools" : standIns),
                     environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: s.options.pollMs ?? 2000,
                     loginTimeoutMs: s.options.loginTimeoutMs ?? 60000, fixedNow: s.options.fixedNow ?? 0,
                     timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, checkTrust: s.options.checkTrust === true,
-                    forwardingDir: dir + "/forwarding"
+                    forwardingDir: dir + "/forwarding", recheckMinMs: s.options.recheckMinMs ?? 5000
                 });
                 s.client.failed.connect((what, reason) => s.failures.push({ what: what, reason: reason }));
                 s.client.running = true;
@@ -426,7 +427,8 @@ TestCase {
             assertEqual(_entry(missing).attention?.reason, "Tailscale is not installed on this computer", "CLI missing: the entry says \"not installed\"");
             assertEqual(_entry(missing).status, "Not installed", "… its status");
             assert(missing.client.ready, "… ready (there is nothing to read)");
-            assert(!missing.client.connect("user"), "… connect does nothing");
+            assertEqual(_entry(missing).attention?.action, "Check again", "… its action looks again");
+            assert(missing.client.connect("user"), "… Connect looks for it again (installed since?), nothing else");
         });
         thenLogs(missing, "nothing ran", () => assertEqual(missing.logLines.length, 0, "CLI missing: nothing run"));
 
@@ -450,7 +452,15 @@ TestCase {
             assertEqual(noAgent.failures[0].reason, "No authentication agent answered.", "no agent: failed with the contract's sentence");
             assertEqual(noAgent.failures[0].what, "Connecting Tailscale", "… what: the command table's description");
             assertEqual(_entry(noAgent).state, "", "… the state back to off");
+            // The notification may never show (no notify-send): the entry keeps it
+            assertEqual(_entry(noAgent).attention?.reason, "No authentication agent answered.", "… and the entry says it, where the click was");
+            assertEqual(_entry(noAgent).attention?.action, "Connect", "… with Connect again as its action");
+            assert(noAgent.client.attend(), "… which tries again");
         });
+        then(noAgent, "tried again", () => noAgent.failures.length > 1 && !noAgent.client.busy, () => {
+            assertEqual(_entry(noAgent).attention?.reason, "No authentication agent answered.", "the second failure said again");
+        });
+        thenLogs(noAgent, "both tries asked pkexec", () => assertEqual(count(noAgent.pkexecLines, elevatedLine(60, "up")), 2, "pkexec asked for `up` twice"));
         const elevated = scenario("pkexec-ok", { state: "running" });
         then(elevated, "read", () => elevated.client.prefs !== null, () => {
             assert(elevated.client.prefs.acceptRoutes, "routes accepted before");
@@ -565,6 +575,30 @@ TestCase {
             assertEqual(upTimeout.client.authUrl, "", "… the URL cleared");
         });
 
+        // ---- `up` that waits in vain while the daemon's health says why (it cannot make its
+        // network device: a kernel updated without a reboot): the entry shows the daemon's words ----
+        const deviceGone = scenario("up-timeout-health", { state: "stopped", timeLimits: { up: 6 }, env: { TS_FAKE_OPERATOR: "1", TS_FAKE_UP_DELAY: "30" } });
+        then(deviceGone, "read", () => deviceGone.client.status !== null, () => assert(deviceGone.client.connect("user"), "connect starts"));
+        then(deviceGone, "the daemon trying", () => deviceGone.client.view.phase === "starting", () => {
+            deviceGone.client._onBusMessage({ Health: { Warnings: {
+                "update-available": { Severity: "low", Title: "Update available", Text: "An update is available.", ImpactsConnectivity: false },
+                "network-device": { Severity: "high", Title: "No network device", Text: "Tailscale could not create its network device.", ImpactsConnectivity: true }
+            } } });
+        }, () => deviceGone.client._scheduleRead(true));
+        then(deviceGone, "the connect given up", () => deviceGone.failures.length > 0 && !deviceGone.client.busy, () => {
+            assertEqual(_entry(deviceGone).attention?.reason, "Tailscale could not create its network device.",
+                        "the entry: the daemon's own health message (the one that cuts the connection), not only \"did not connect\"");
+            assertEqual(_entry(deviceGone).attention?.action, "Disconnect", "… Disconnect, which stops it trying");
+        });
+
+        // ---- the service started, and gone again at once: said, not back to "Start" in silence ----
+        const crashes = scenario("start-then-gone", { state: "running", daemonDown: true, env: { TS_FAKE_DAEMON: "down" } });
+        then(crashes, "read", () => crashes.client.daemon === "not-running", () => assert(crashes.client.attend(), "Start"));
+        then(crashes, "gone again", () => crashes.client.notice !== null && !crashes.client.busy, () => {
+            assertEqual(_entry(crashes).attention?.reason, "Tailscale's service stopped right after it started.", "said on the entry");
+            assertEqual(_entry(crashes).attention?.action, "Start", "… \"Start\" again");
+        });
+
         // ---- A2: a `status --json` that hangs: stale, retried, back ----
         const hung = scenario("status-hung", { state: "running", timeLimits: { read: 1 } });
         then(hung, "read", () => _entry(hung).state === "activated" && !hung.client._reading, () => {}, null);
@@ -575,6 +609,10 @@ TestCase {
             assertEqual(_entry(hung).name, "Tailscale", "… still listed");
             assert(!hung.client._reading, "… the read no longer blocks the next ones");
             assert(!hung.client.connect("user"), "… connect does nothing blind (the state is re-read first)");
+        });
+        then(hung, "the click answered", () => hung.client.notice !== null, () => {
+            assertEqual(_entry(hung).attention?.reason, "Tailscale did not answer within 1 s.", "the click while unknown: its read did not answer, said on the entry");
+            assertEqual(_entry(hung).attention?.action, "Connect", "… Connect again as its action");
         });
         thenLogs(hung, "nothing run blind", () => assertEqual(changesIn(hung).length, 0, "no `up` while the state is unknown"));
         thenShell(hung, "the daemon answers again", "rm -f \"$1/state/status-hang\"; echo ok", "hangCleared", () => {});
@@ -601,7 +639,8 @@ TestCase {
             assertEqual(untrusted.client.cli, "untrusted", "the stand-ins (owned by this user, not in the Nix store) are not trusted");
             assertEqual(_entry(untrusted).status, "Not trusted", "the entry: \"Not trusted\"");
             assert(/not trusted/.test(_entry(untrusted).attention?.reason ?? ""), "… with the reason: " + _entry(untrusted).attention?.reason);
-            assert(!untrusted.client.connect("user"), "… connect does nothing");
+            assertEqual(_entry(untrusted).attention?.action, "Check again", "… its action looks again");
+            assert(untrusted.client.connect("user"), "… Connect only looks at the programs again: nothing runs");
             assert(untrusted.client.ready, "… ready (nothing to read)");
         });
         waitMs(untrusted, 300);
@@ -609,6 +648,115 @@ TestCase {
             assertEqual(untrusted.logLines.length, 0, "not trusted: nothing run at all");
             assertEqual(untrusted.pkexecLines.length, 0, "… nothing through pkexec");
         });
+
+        // ---- Tailscale installed while the shell runs: found without a restart ----
+        // The stand-ins copied into the (empty) tools directory after the start, as a package
+        // installed meanwhile; the slow poll and the backoff kept out of the way (an hour), so
+        // only what is under test can find it
+        const install = s => thenShell(s, "Tailscale installed meanwhile", "cp '" + standIns + "'/* \"$1/late-tools/\" && echo ok", "installed",
+                                       done => assertEqual(done, "ok", s.name + ": the stand-ins installed"));
+        // A view coming on screen (wake)
+        const appears = scenario("cli-appears-wake", { state: "running", lateTools: true, pollMs: 3600000, recheckMinMs: 3600000 });
+        then(appears, "not installed", () => appears.client.cli === "missing", () => {
+            assert(appears.client.canLookAgain, "not installed: the page offers to look again");
+            assert(appears.client._recheckTimer.running, "… and the backoff waits to look again");
+        });
+        install(appears);
+        then(appears, "a view shown", () => true, () => assert(appears.client.wake(), "wake: looks, since something is missing"));
+        then(appears, "found, read, streaming", () => appears.client.cli === "present" && _entry(appears).state === "activated" && appears.client.streamUp, () => {
+            assertEqual(_entry(appears).attention, null, "found: no attention left");
+            assert(!appears.client.canLookAgain && !appears.client._recheckTimer.running, "… nothing more to look for: the backoff stopped");
+            assert(appears.client.devices.length > 0, "… the devices read");
+            assert(!appears.client.wake(), "… a view shown now looks for nothing");
+        });
+        // The row's or the page's "Check again", on a daemon fresh from the package — then Connect
+        // logs in (not the operator: through pkexec), the URL surfaces and opens once
+        const checkAgain = scenario("cli-appears-check-again", { state: "fresh", lateTools: true, pollMs: 3600000, recheckMinMs: 3600000 });
+        then(checkAgain, "not installed", () => checkAgain.client.cli === "missing", () => {});
+        install(checkAgain);
+        then(checkAgain, "Check again", () => true, () => {
+            assertEqual(_entry(checkAgain).attention?.action, "Check again", "the entry's action: Check again");
+            assert(checkAgain.client.attend(), "attend (the row's button): looks again");
+        });
+        then(checkAgain, "found: a fresh daemon", () => checkAgain.client.status !== null, () => {
+            assertEqual(checkAgain.client.view.phase, "logged-out", "fresh NoState: logged out");
+            assertEqual(_entry(checkAgain).attention?.action, "Log in", "… \"Log in\"");
+            assert(checkAgain.client.connect("user"), "Connect (user): the login starts");
+            assertEqual(checkAgain.client.operation, "login", "… busy logging in");
+        });
+        then(checkAgain, "the login URL surfaced", () => checkAgain.client.authUrl !== "", () => {});
+        then(checkAgain, "connected", () => _entry(checkAgain).state === "activated" && !checkAgain.client.busy, () => {});
+        thenLogs(checkAgain, "after the login", () => {
+            assertEqual(count(checkAgain.logLines, /^login$/), 2, "bare `login`, denied, then as root");
+            assertEqual(count(checkAgain.pkexecLines, /^pkexec\t\S+\/late-tools\/timeout\t-k\t5\t60\t\S+\/late-tools\/tailscale\tlogin$/), 1, "… through pkexec, the newly found programs by absolute path");
+            assertEqual(count(checkAgain.logLines, /^xdg-open https:\/\/login\.tailscale\.com\/a\/REDACTED$/), 1, "the login page opened once");
+        });
+        // Nothing asked: the backoff finds it
+        const backoff = scenario("cli-appears-backoff", { state: "running", lateTools: true, pollMs: 3600000, recheckMinMs: 300 });
+        then(backoff, "not installed", () => backoff.client.cli === "missing", () => {});
+        install(backoff);
+        then(backoff, "found by the backoff", () => backoff.client.cli === "present" && _entry(backoff).state === "activated", () => {
+            assert(!backoff.client._recheckTimer.running, "found: the backoff stopped");
+        });
+
+        // ---- a fresh install: every Connect leads to the login, a prompt or a message ----
+        // NeedsLogin with no profile, not the operator: the attention's "Log in", no agent
+        // answering: said on the entry, with "Log in" again
+        const freshNoAgent = scenario("fresh-needs-login-no-agent", { state: "fresh-needs-login", env: { TS_FAKE_PKEXEC: "no-agent" } });
+        then(freshNoAgent, "read", () => freshNoAgent.client.status !== null, () => {
+            assertEqual(freshNoAgent.client.view.phase, "logged-out", "fresh NeedsLogin: logged out");
+            assertEqual(_entry(freshNoAgent).attention?.action, "Log in", "… \"Log in\" in place of Connect");
+            assert(freshNoAgent.client.connect("user"), "Connect (user): the login starts");
+        });
+        then(freshNoAgent, "failed", () => freshNoAgent.failures.length > 0 && !freshNoAgent.client.busy, () => {
+            assertEqual(_entry(freshNoAgent).attention?.reason, "No authentication agent answered.", "no agent: said on the entry");
+            assertEqual(_entry(freshNoAgent).attention?.action, "Log in", "… \"Log in\" again as its action");
+            assertEqual(_entry(freshNoAgent).state, "", "… off");
+        });
+        // The prompt dismissed: the prompt was the answer; the entry back to "Log in", no failure
+        const freshDismissed = scenario("fresh-dismissed", { state: "fresh", env: { TS_FAKE_PKEXEC: "dismiss" } });
+        then(freshDismissed, "read", () => freshDismissed.client.status !== null, () => assert(freshDismissed.client.connect("user"), "Connect: the login starts"));
+        then(freshDismissed, "answered", () => !freshDismissed.client.busy, () => {});
+        waitMs(freshDismissed, 300);
+        thenLogs(freshDismissed, "dismissed", () => {
+            assertEqual(freshDismissed.failures.length, 0, "dismissed: no failure");
+            assertEqual(freshDismissed.client.notice, null, "… no notice");
+            assertEqual(_entry(freshDismissed).attention?.action, "Log in", "… \"Log in\" as before");
+            assertEqual(count(freshDismissed.pkexecLines, elevatedLine(60, "login")), 1, "… pkexec was asked");
+        });
+        // Not the operator, no timeout(1): nothing may run as root — said on the entry
+        const noTimeout = scenario("connect-without-timeout", { state: "stopped", without: "timeout" });
+        then(noTimeout, "read", () => noTimeout.client.status !== null, () => assert(noTimeout.client.connect("user"), "Connect: the plain `up` runs"));
+        then(noTimeout, "refused", () => noTimeout.client.notice !== null && !noTimeout.client.busy, () => {
+            assert(/timeout was not found/.test(_entry(noTimeout).attention?.reason ?? ""), "no timeout: why, on the entry: " + _entry(noTimeout).attention?.reason);
+            assertEqual(_entry(noTimeout).attention?.action, "Connect", "… Connect again");
+        });
+        thenLogs(noTimeout, "nothing as root", () => assertEqual(noTimeout.pkexecLines.length, 0, "no timeout: nothing through pkexec"));
+        // The service cannot be started (systemd refuses): said on the entry, "Start" again
+        const startFails = scenario("start-refused", { state: "running", daemonDown: true, env: { TS_FAKE_SYSTEMCTL: "fail" } });
+        then(startFails, "read", () => startFails.client.daemon === "not-running", () => {
+            assert(startFails.client.canLookAgain, "service not running: the page offers to look again too");
+            assert(startFails.client.attend(), "Start");
+        });
+        then(startFails, "refused", () => startFails.client.notice !== null && !startFails.client.busy, () => {
+            assertEqual(_entry(startFails).attention?.reason, "Failed to start tailscaled.service: Access denied", "systemd's words on the entry");
+            assertEqual(_entry(startFails).attention?.action, "Start", "… \"Start\" again");
+        });
+        // Started outside the shell: "Check again" reads at once
+        thenShell(startFails, "started elsewhere", "rm -f \"$1/state/daemon-down\" && echo ok", "startedElsewhere", () => {
+            assert(startFails.client.recheck(), "Check again: reads now");
+            assertEqual(startFails.client.notice, null, "… the old failure cleared");
+        });
+        then(startFails, "running", () => startFails.client.daemon === "running" && _entry(startFails).state === "activated", () => {});
+        // A click before the first read: done once the state is known, not dropped
+        const beforeRead = scenario("connect-before-read", { state: "stopped" });
+        then(beforeRead, "clicked at once", () => beforeRead.client !== null, () => {
+            beforeRead.firstAnswer = beforeRead.client.connect("user");
+            if (!beforeRead.firstAnswer)
+                assertEqual(beforeRead.client._readIntent, "connect", "unknown yet: the click kept for after the read");
+        });
+        then(beforeRead, "connected", () => _entry(beforeRead).state === "activated" && !beforeRead.client.busy, () => {});
+        thenLogs(beforeRead, "one connect", () => assertEqual(count(beforeRead.pkexecLines, elevatedLine(60, "up")), 1, "the click ran `up` once (through pkexec)"));
 
         // ---- switched off: the stream process gone, nothing acts ----
         const off = scenario("off", { state: "running" });
