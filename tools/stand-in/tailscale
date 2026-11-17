@@ -69,7 +69,8 @@
 # on with ShieldsUp is refused. `serve`/`funnel` without --bg (foreground), with --service, --tun,
 # --accept-app-caps, --proxy-protocol or a unix: target are refused: exit 2 "not replayed".
 # State dir file "serve-next.json": moved over serve.json when the next `funnel` run as root
-# starts (a change by another client while the password dialog was open).
+# starts (a change by another client while the password dialog was open); "serve-fail-after-write":
+# that run then fails after it wrote the config (removed by it).
 # State dir files read by `status --json` (and so by serve, funnel and cert):
 #   caps          extra capability names, one per line, added to Self's CapMap (as `"<name>":
 #                 null`): "https" (HTTPS certs: serve over HTTPS), "funnel", and
@@ -1167,6 +1168,13 @@ serve_set() {
         msg=$(serve_message "$port" "$stype")
     fi
     serve_commit
+    # serve-fail-after-write: this `funnel` run as root fails after its config was written (as
+    # one ended by its time limit after the daemon took the change)
+    if [ "$command" = funnel ] && [ "${TS_FAKE_ROOT:-0}" = 1 ] && [ -f "$STATE_DIR/serve-fail-after-write" ]; then
+        rm -f "$STATE_DIR/serve-fail-after-write"
+        echo "stand-in: stopped after the config was written" >&2
+        exit 1
+    fi
     [ -n "$msg" ] && printf '%s\n' "$msg"
     return 0
 }

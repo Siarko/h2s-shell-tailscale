@@ -9,10 +9,12 @@ import qs.api
 // again) is the set of networks done with: stored only once the choice applied (or nothing was
 // needed). A choice not applied stays open and is tried again when what stopped it changes —
 // the chosen node appears or comes back online, this user becomes the operator — and the user is
-// notified once per change (a privacy choice). It acts only as an automatic change: plainly, as
-// origin "network" — never a password prompt; not the operator → "Needs the operator" on the
-// page, nothing run. While Tailscale is not Running (or its peers are not read yet) it waits,
-// the key not taken, and acts once Tailscale is up.
+// notified once per change (a privacy choice). An exit node picked by hand while a choice is held
+// ends the hold (the networks taken): a choice made by hand stays until the networks change, also
+// across a restart (the hold is kept in the store with the exit node seen when it began). It
+// acts only as an automatic change: plainly, as origin "network" — never a password prompt; not
+// the operator → "Needs the operator" on the page, nothing run. While Tailscale is not Running
+// (or its peers are not read yet) it waits, the key not taken, and acts once Tailscale is up.
 QtObject {
     id: root
 
@@ -33,18 +35,22 @@ QtObject {
     // The last decision (for the page and the IPC)
     property var decision: ({ kind: "", key: "", text: "" })
     property int runs: 0
-    // The last decision that did not apply the choice (NetworkExitRules.react), null none
-    property var _held: null
-    // The change last notified (NetworkExitRules.noticeKey)
-    property string _noticed: ""
+    // The last decision that did not apply the choice (NetworkExitRules.react), null none. Kept
+    // in the store: after a restart an exit node chosen by hand meanwhile is still left alone
+    property var _held: NetworkExitRules.restoredHold(store?.get("exitByNetwork.held", null) ?? null)
+    // The change last notified (NetworkExitRules.noticeKey): a restored hold was notified already
+    property string _noticed: _held !== null ? NetworkExitRules.noticeKey(_held) : ""
     property bool _inFlight: false
+    // Serve's check after a Funnel is waiting for the change lock: no automatic change takes it
+    readonly property bool _serveChecking: client?.serve?.checking === true
 
     // Everything decide reads, and busy: a switch deferred while another change runs is tried
-    // again when that change ends; the wanted nodes' state, so one coming back is tried again
+    // again when that change ends; the wanted nodes' state, so one coming back is tried again;
+    // why using an exit node is refused, so the end of that is noticed
     readonly property string _inputs: running ? JSON.stringify([NetworkExitRules.activeKey(table, networks), client.prefs?.ok === true,
-        client.prefs?.exitNodeId ?? "", client.exitNodes.count, client.canChange, client.status?.backendState ?? "",
-        client.status?.peersRead === true, client.busy, NetworkExitRules.wanted(table, networks),
-        NetworkExitRules.wantedNodes(table, networks, client.exitNodes)]) : ""
+        client.prefs?.exitNodeId ?? "", client.prefs?.exitNodeIp ?? "", client.exitNodes.count, client.canChange, client.status?.backendState ?? "",
+        client.status?.peersRead === true, client.busy, _serveChecking, NetworkExitRules.wanted(table, networks),
+        NetworkExitRules.wantedNodes(table, networks, client.exitNodes), TailscaleRules.exitNodeUseProblem(client.prefs)]) : ""
     on_InputsChanged: Qt.callLater(follow)
 
     // Started by the first "no marked network up"; when it fires, follow takes that key if it
@@ -65,10 +71,15 @@ QtObject {
 
     // The networks done with: a later return to them is a new change (notified again if needed)
     function _take(key) {
-        _held = null;
+        _setHeld(null);
         _noticed = "";
         lastKey = key;
         store?.set("exitByNetwork.lastKey", lastKey);
+    }
+
+    function _setHeld(held) {
+        _held = held;
+        store?.set("exitByNetwork.held", held ?? undefined);
     }
 
     // A choice not applied, told once per change (never a text with the node's address: the
@@ -107,17 +118,17 @@ QtObject {
         const step = NetworkExitRules.react(result, _held, _noticed);
         switch (step.act) {
         case "take":
-            decision = { kind: result.kind, key: result.key, text: result.text };
+            decision = { kind: step.manual === true ? "manual" : result.kind, key: result.key, text: step.manual === true ? "" : result.text };
             _take(result.key);
             return;
         case "hold":
-            _held = step.held;
+            _setHeld(step.held);
             decision = { kind: result.kind, key: result.key, text: result.text };
             if (step.notify)
                 _notify(result, result.text);
             return;
         case "release":
-            _held = null;
+            _setHeld(null);
             _noticed = "";
             if (result.key === "")
                 decision = { kind: "none-marked", key: "", text: "" };
@@ -127,8 +138,9 @@ QtObject {
         default:
             return;
         }
-        // Busy with another change: tried again when it ends (busy is one of the inputs)
-        if (client.busy)
+        // Busy with another change, or Serve's check waiting for the lock: tried again when it
+        // ends (both are inputs)
+        if (client.busy || _serveChecking)
             return;
         const command = TailscaleRules.commandFor(result.name, result.args);
         if (!command.ok)
@@ -142,8 +154,10 @@ QtObject {
                 _take(result.key);
                 return;
             }
-            _held = { key: result.key, choice: result.choice, kind: "failed" };
-            if (NetworkExitRules.noticeKey(result) !== _noticed)
+            // Asked before the hold is set: _noticed follows a restored hold until first assigned
+            const fresh = NetworkExitRules.noticeKey(result) !== _noticed;
+            _setHeld({ key: result.key, choice: result.choice, kind: "failed", seen: result.current });
+            if (fresh)
                 _notify(result, outcome.message);
         });
     }

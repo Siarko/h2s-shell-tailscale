@@ -105,10 +105,13 @@ Singleton {
     // Only "already" and "none-marked" take the key by themselves, "run" once it succeeded; the
     // rest leave it open (react says when to try again)
     function decide(input) {
-        const result = (kind, extra) => Object.assign({ kind: kind, key: "", choice: "", name: "", args: {}, text: "" }, extra ?? {});
+        let current = "";
+        const result = (kind, extra) => Object.assign({ kind: kind, key: "", choice: "", current: current, name: "", args: {}, text: "" }, extra ?? {});
         const prefs = input?.prefs ?? null;
         if (prefs?.ok !== true || input?.backendState !== "Running")
             return result("wait");
+        // The exit node in use now (id and address), for react: a change by hand while held
+        current = String(prefs.exitNodeId ?? "") + "|" + String(prefs.exitNodeIp ?? "");
         const key = activeKey(input?.table, input?.networks);
         if (key === String(input?.lastKey ?? ""))
             return result("same", { key: key });
@@ -169,6 +172,11 @@ Singleton {
     function react(result, held, noticed) {
         const kind = result?.kind ?? "";
         const same = held !== null && held !== undefined && held.key === result?.key && held.choice === result?.choice;
+        // The exit node changed by hand on the held networks (another one than when the hold
+        // began): a choice made by hand stays until the networks change — the networks taken
+        if (held !== null && held !== undefined && kind !== "wait" && held.key === result?.key && typeof held.seen === "string"
+                && typeof result?.current === "string" && result.current !== held.seen)
+            return { act: "take", held: null, notify: false, manual: true };
         if (kind === "same" && held !== null && held !== undefined && held.key !== result?.key)
             return { act: "release", held: null, notify: false };
         if (kind === "wait" || kind === "same" || kind === "")
@@ -179,7 +187,19 @@ Singleton {
             return same && held.kind === "failed" ? { act: "none", held: held, notify: false } : { act: "run", held: held ?? null, notify: false };
         if (same && held.kind === kind)
             return { act: "none", held: held, notify: false };
-        return { act: "hold", held: { key: result.key, choice: result.choice, kind: kind }, notify: noticeKey(result) !== String(noticed ?? "") };
+        return { act: "hold", held: { key: result.key, choice: result.choice, kind: kind, seen: String(result.current ?? "") },
+                 notify: noticeKey(result) !== String(noticed ?? "") };
+    }
+
+    // A hold as kept in the module's store (so a restart keeps "a choice made by hand stays")
+    // → the hold, or null when it is not one. A failed run is tried once more after a restart
+    // (kind "restart"); the exit node seen when it began still guards a choice made by hand
+    function restoredHold(stored) {
+        if (!_isObject(stored) || typeof stored.key !== "string" || stored.key === "" || typeof stored.choice !== "string"
+                || typeof stored.kind !== "string" || typeof stored.seen !== "string")
+            return null;
+        return { key: stored.key.slice(0, 2000), choice: stored.choice.slice(0, 2000), kind: stored.kind === "failed" ? "restart" : stored.kind.slice(0, 32),
+                 seen: stored.seen.slice(0, 200) };
     }
 
     // The label of a choice

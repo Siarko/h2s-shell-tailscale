@@ -151,23 +151,31 @@ QtObject {
         return client._runChange(_command(first), asked, "serve", null, prepare, outcome => {
             if (!outcome.ok && !outcome.dismissed)
                 message = outcome.message;
-            if (outcome.ok && ran.publicPort > 0)
-                _checkPublic(ran.publicPort, asked);
+            // Checked whatever the outcome but a dismissed prompt (nothing was sent then): a
+            // `funnel` ended by its time limit may have written its config before it was stopped
+            if (ran.publicPort > 0 && !outcome.dismissed)
+                _checkPublic(ran.publicPort, asked, 1);
             else
                 read();
         });
     }
 
-    readonly property string _stillPublic: "Still public, check in a terminal"
-    readonly property string _turnedOff: "Turned Funnel off, the port changed"
+    // How often the check after a Funnel waits for another change to end before it gives up
+    property int funnelCheckTries: 5
+    // The check waiting for the change lock: { port, origin, tries }, null none
+    property var _checkWaiting: null
 
     // After Funnel went on for `port`: the config read again and checked (ServeRules.publicCheck);
     // a port that now holds more than the plan allowed has Funnel turned off at once, with the
     // click's origin (a user's click may ask for the password again; anything else never does),
-    // and the user is told either way. No other change starts meanwhile (`checking`)
-    function _checkPublic(port, origin) {
+    // and the user is told either way. No change of this page starts meanwhile (`checking`); a
+    // change from elsewhere holding the lock is waited for, and the check is made again once it
+    // ended, at most funnelCheckTries times
+    function _checkPublic(port, origin, tries) {
         checking = true;
         _readConfig(parsed => {
+            if (!checking)
+                return;
             const check = ServeRules.publicCheck(parsed, port, client.status, client.prefs);
             if (check.kind === "nothing") {
                 checking = false;
@@ -176,6 +184,15 @@ QtObject {
             if (check.kind !== "run") {
                 checking = false;
                 _tell(check.error);
+                return;
+            }
+            if (client.busy) {
+                if (tries >= funnelCheckTries) {
+                    checking = false;
+                    _tell(ServeRules.funnelNotice("failed", port));
+                    return;
+                }
+                _checkWaiting = { port: port, origin: origin, tries: tries + 1 };
                 return;
             }
             const prepare = (token, go) => _readFresh(token, (fresh, again) => {
@@ -189,10 +206,11 @@ QtObject {
                 if (plan.kind !== "nothing")
                     _tell(plan.error);
             });
-            // Every way it ends (refused at once included) comes through onEnd
+            // Not busy (checked just above, nothing runs in between): every way it ends comes
+            // through onEnd
             client._runChange(_command(check), origin, "serve", null, prepare, outcome => {
                 checking = false;
-                _tell(outcome.ok ? _turnedOff : _stillPublic);
+                _tell(ServeRules.funnelNotice(outcome.ok ? "off" : "failed", port));
                 read();
             });
         });
@@ -200,14 +218,25 @@ QtObject {
 
     function _tell(text) {
         message = text;
-        client.failed("Putting a share on the internet", text);
+        client.failed(ServeRules.funnelNoticeTitle, text);
     }
 
+    readonly property Connections _lock: Connections {
+        target: root.client
+        function onBusyChanged() {
+            const waiting = root._checkWaiting;
+            if (root.client.busy || waiting === null)
+                return;
+            root._checkWaiting = null;
+            root._checkPublic(waiting.port, waiting.origin, waiting.tries);
+        }
+    }
     function _reset() {
         config = null;
         readError = "";
         reading = false;
         checking = false;
+        _checkWaiting = null;
         message = "";
     }
 

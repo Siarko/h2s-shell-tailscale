@@ -128,16 +128,26 @@ Singleton {
         result.ok = true;
         const tcp = _isObject(_own(raw, "TCP")) ? _own(raw, "TCP") : {};
         const web = _isObject(_own(raw, "Web")) ? _own(raw, "Web") : {};
-        const funnel = _isObject(_own(raw, "AllowFunnel")) ? _own(raw, "AllowFunnel") : {};
         const services = _isObject(_own(raw, "Services")) ? _own(raw, "Services") : {};
         const foreground = _isObject(_own(raw, "Foreground")) ? _own(raw, "Foreground") : {};
         result.services = Object.keys(services).length;
         result.foreground = Object.keys(foreground).length;
         result.foregroundPorts = _portsOf(foreground);
         result.servicePorts = _portsOf(services);
-        const funnelFor = (host, port) => Object.keys(funnel).some(key => {
+        // The host:ports with Funnel on: the top-level AllowFunnel and every terminal session's
+        // own, as tailscaled honours both (ServeConfigView.HasFunnelForTarget)
+        const funnelKeys = [];
+        const addFunnel = map => {
+            for (const key of Object.keys(_isObject(map) ? map : {}))
+                if (map[key] === true && !funnelKeys.includes(key))
+                    funnelKeys.push(key);
+        };
+        addFunnel(_own(raw, "AllowFunnel"));
+        for (const session of Object.keys(foreground))
+            addFunnel(_own(_own(foreground, session), "AllowFunnel"));
+        const funnelFor = (host, port) => funnelKeys.some(key => {
             const parsed = _hostPort(key);
-            return parsed !== null && parsed.port === port && (host === "" || parsed.host === host) && funnel[key] === true;
+            return parsed !== null && parsed.port === port && (host === "" || parsed.host === host);
         });
         const entries = [];
         for (const portKey of Object.keys(tcp).sort((a, b) => Number(a) - Number(b))) {
@@ -183,8 +193,8 @@ Singleton {
         result.entries = entries.slice(0, maxEntries);
         result.unlisted = [...new Set(unlisted.concat(entries.slice(maxEntries).map(entry => entry.port), result.foregroundPorts))];
         result.empty = entries.length === 0 && unlisted.length === 0 && result.services === 0 && result.foreground === 0;
-        result.funnelOn = Object.keys(funnel).some(key => funnel[key] === true);
-        result.funnelHosts = Object.keys(funnel).filter(key => funnel[key] === true).map(key => _hostPort(key)).filter(hostPort => hostPort !== null);
+        result.funnelOn = funnelKeys.length > 0;
+        result.funnelHosts = funnelKeys.map(key => _hostPort(key)).filter(hostPort => hostPort !== null);
         return result;
     }
 
@@ -492,16 +502,35 @@ Singleton {
     // the whole host:port) | "refused" (no entry the module could send again: error) }
     function publicCheck(config, port, status, prefs) {
         if (config?.ok !== true)
-            return _plan("refused", { error: "Still public, check in a terminal" });
+            return _plan("refused", { error: funnelNotice("unchecked", port) });
         if (!portPublic(config, port, status) || publicProblem(config, port, status) === "")
             return _plan("nothing");
         const entry = (config.entries ?? []).find(item => item.port === port && _resendTarget(item, status) !== "") ?? null;
         if (entry === null || !preconditions(status, prefs).canServeHttps)
-            return _plan("refused", { error: "Still public, check in a terminal" });
+            return _plan("refused", { error: funnelNotice("public", port) });
         return _plan("run", {
             argv: ["tailscale", "serve", "--bg", "--yes", "--https=" + port].concat(entry.mount === "/" ? [] : ["--set-path=" + entry.mount], [_resendTarget(entry, status)]),
             description: "Taking a share off the internet"
         });
+    }
+
+    // The title of what the check after a Funnel tells
+    readonly property string funnelNoticeTitle: "Funnel"
+
+    // What the check after a Funnel tells, naming the port: "off" (turned off again),
+    // "failed" (turning it off failed), "unchecked" (the config could not be read), "public"
+    // (still public, nothing the module could send to turn it off)
+    function funnelNotice(kind, port) {
+        switch (kind) {
+        case "off":
+            return "Funnel off. Something else is on port " + port + ".";
+        case "failed":
+            return "Couldn't turn Funnel off on port " + port + ".";
+        case "unchecked":
+            return "Couldn't check port " + port + ". Funnel may still be on.";
+        default:
+            return "Port " + port + " is public. Turn Funnel off in a terminal.";
+        }
     }
 
     // Everything off: `serve reset` (empties the whole config, Funnel included)

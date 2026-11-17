@@ -277,11 +277,24 @@ TestCase {
                                                      Foreground: { "0000000000000004": { TCP: { "443": { HTTPS: true } } } } });
         assertEqual(check(terminalNow).kind, "run", "a terminal session appeared on the port: Funnel off");
         same([check(config({ "/files": { Path: "/srv/share" } }, true)).kind, check(config({ "/files": { Path: "/srv/share" } }, true)).error],
-             ["refused", "Still public, check in a terminal"], "nothing the module could send again: said");
-        assertEqual(check({ ok: false, error: "x", entries: [] }).error, "Still public, check in a terminal", "the read failed: said");
+             ["refused", "Port 443 is public. Turn Funnel off in a terminal."], "nothing the module could send again: said");
+        assertEqual(check({ ok: false, error: "x", entries: [] }).error, "Couldn't check port 443. Funnel may still be on.", "the read failed: not checked, said so");
         const noHttps = Object.assign({}, serveStatus, { self: Object.assign({}, serveStatus.self, { caps: [] }) });
         assertEqual(ServeRules.publicCheck(config({ "/": ours, "/files": { Path: "/srv/share" } }, true), 443, noHttps, prefs).kind, "refused",
                     "serve with HTTPS not possible now: said, not sent");
+
+        // A terminal session's own AllowFunnel counts too (tailscaled honours it)
+        const fgFunnel = ServeRules.parseConfig({ TCP: { "443": { HTTPS: true } }, Web: { [self]: { Handlers: { "/": ours } } },
+                                                  Foreground: { "0000000000000005": { AllowFunnel: { [self]: true, "self.example-tailnet.ts.net:8443": false } } } });
+        same([fgFunnel.funnelOn, fgFunnel.funnelHosts, fgFunnel.entries[0].funnel], [true, [{ host: "self.example-tailnet.ts.net", port: 443 }], true],
+             "a session's Funnel: on, its host:port known, the entry marked public");
+        assert(ServeRules.portPublic(fgFunnel, 443, serveStatus), "… the port public");
+        assert(!ServeRules.portPublic(fgFunnel, 8443, serveStatus), "… a false one is not");
+        same(ServeRules.parseConfig({ Foreground: { a: { AllowFunnel: 1 }, b: null } }).funnelHosts, [], "a malformed session: no Funnel");
+        // The notices name the port
+        same(["off", "failed", "unchecked", "public"].map(kind => ServeRules.funnelNotice(kind, 8443)),
+             ["Funnel off. Something else is on port 8443.", "Couldn't turn Funnel off on port 8443.", "Couldn't check port 8443. Funnel may still be on.",
+              "Port 8443 is public. Turn Funnel off in a terminal."], "the notices");
     }
 
     function certificates() {
@@ -355,7 +368,7 @@ TestCase {
         const react = (result, held, noticed) => NetworkExitRules.react(result, held ?? null, noticed ?? "");
         const gone = decide({ table: { "cafe-uuid": { choice: "nGONE" } } });
         const unavailable = react(gone);
-        same([unavailable.act, unavailable.notify, unavailable.held], ["hold", true, { key: "cafe-uuid", choice: "nGONE", kind: "unavailable" }], "unavailable: held open, notified");
+        same([unavailable.act, unavailable.notify, unavailable.held], ["hold", true, { key: "cafe-uuid", choice: "nGONE", kind: "unavailable", seen: "|" }], "unavailable: held open, notified");
         same([react(gone, unavailable.held, NetworkExitRules.noticeKey(gone)).act, react(gone, unavailable.held, NetworkExitRules.noticeKey(gone)).notify], ["none", false],
              "… the same again: nothing new, no second notice");
         const back = decide({ table: { "cafe-uuid": { choice: online.id } } });
@@ -372,6 +385,28 @@ TestCase {
         same(react(decide({ networks: [], lastKey: "" }), { key: "cafe-uuid", choice: online.id, kind: "failed" }), { act: "release", held: null, notify: false },
              "back on the networks last done with: the hold dropped");
         assertEqual(react(decide({ networks: [], lastKey: "" })).act, "none", "… nothing held: nothing");
+
+        // A choice made by hand while held stays: the exit node in prefs other than when the
+        // hold began → the networks taken, never switched back by the module
+        const heldGone = react(gone).held;
+        assertEqual(heldGone.seen, "|", "the hold keeps the exit node seen when it began");
+        const manual = react(decide({ prefs: Object.assign({}, prefs, { exitNodeId: "nManual" }) }), Object.assign({}, heldGone, { choice: online.id }));
+        same([manual.act, manual.manual], ["take", true], "the node back after a manual pick: taken, not switched");
+        const operatorManual = react(decide({ prefs: Object.assign({}, prefs, { exitNodeId: "nManual" }) }),
+                                     { key: "cafe-uuid", choice: online.id, kind: "needs-operator", seen: "|" });
+        assertEqual(operatorManual.act, "take", "made the operator after a manual pick: taken");
+        assertEqual(react(decide({}), { key: "cafe-uuid", choice: online.id, kind: "needs-operator", seen: "|" }).act, "run", "nothing picked by hand: applied");
+        assertEqual(react(decide({ networks: [], lastKey: "" }), { key: "cafe-uuid", choice: online.id, kind: "failed", seen: "nOther|" }).act, "release",
+                    "another set of networks: the hand check does not apply");
+        // After a restart: the hold from the store
+        same(NetworkExitRules.restoredHold({ key: "cafe-uuid", choice: online.id, kind: "failed", seen: "|" }), { key: "cafe-uuid", choice: online.id, kind: "restart", seen: "|" },
+             "a failed run is tried once more after a restart");
+        same([NetworkExitRules.restoredHold(null), NetworkExitRules.restoredHold({ key: 1 }), NetworkExitRules.restoredHold({ key: "", choice: "", kind: "x", seen: "" })],
+             [null, null, null], "not a hold: none");
+        assertEqual(react(decide({}), NetworkExitRules.restoredHold({ key: "cafe-uuid", choice: online.id, kind: "failed", seen: "|" })).act, "run", "… so it runs");
+        assertEqual(react(decide({ prefs: Object.assign({}, prefs, { exitNodeId: "nManual" }) }),
+                          NetworkExitRules.restoredHold({ key: "cafe-uuid", choice: online.id, kind: "unavailable", seen: "|" })).act, "take",
+                    "… and a pick by hand before the restart still stays");
         same(Object.keys(NetworkExitRules.withRow({}, "__proto__", "none")), [], "a prototype name is not a network");
     }
 }
