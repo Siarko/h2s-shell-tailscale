@@ -30,22 +30,30 @@ When other test runs may share the machine, wrap the runners in `flock /tmp/h2s-
 ### `tests/run.sh`
 
 - Runs the suites listed under `tests` in `module/module.json`.
-- Uses the shell's `tests/run-modules.sh` when the checkout has it.
-- Otherwise builds its own isolated session and loads the suites with `tests/harness.qml`.
-- `H2S_OWN_HARNESS=1` forces the own harness.
+- Hands the module to the shell's `tests/run-modules.sh`, which loads it through the module host in a private headless compositor.
+- A shell checkout without `tests/run-modules.sh` cannot run the suites: status 2, with the reason.
+- The tools (Quickshell, labwc, util-linux, coreutils) are found by the shell's runner: the pinned ones through `nix` where there is a `nix` command, else those on `PATH`. Its first lines say which.
 - `--log <file>` saves the output.
 - Names after that run only those suites. A suite is named by its file in `module/tests/` without `.qml`.
-- Naming suites needs the shell's `tests/run-modules.sh` with `--suite`. The own harness runs every suite.
 - Exit status: 0 all passed, 1 a failure, 2 the runner could not start or a name is not a suite of the module.
 
 The suites extend the shell's `TestCase` (`import qs.tests`).
 They run the live client against the stand-ins only.
+
+#### NixOS
+
+`nix` provides the pinned labwc; Quickshell is the one the `h2s-shell` launcher runs.
+
+#### Arch
+
+Without `nix`, labwc has to be installed; Quickshell is the `qs` on `PATH`.
 
 ### `tests/lock-bed/run.sh`
 
 Starts the real shell in the shell's lock test bed, with this module and the stand-ins.
 The tests are in `tests/lock-bed/tests/`.
 The shell's `tests/lock/run.sh` must support `LOCKTEST_EXTRA_TESTS`.
+It needs `nix`, on NixOS and on Arch: the shell's lock test bed takes its tools from it only.
 
 ### `tools/test.sh`
 

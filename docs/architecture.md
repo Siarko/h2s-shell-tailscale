@@ -45,7 +45,6 @@ tools/stand-in/                fake tailscale, pkexec, curl and other tools for 
 tools/test.sh                  checks the stand-ins
 tools/redact-status.jq         turns a real `status --json` into a fixture
 tests/run.sh                   runs the QML suites
-tests/harness.qml              suite loader for a shell without tests/run-modules.sh
 tests/lock-bed/                runs the real shell with the module and the stand-ins
 ```
 

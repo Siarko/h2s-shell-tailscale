@@ -17,7 +17,7 @@ Read the core's `CLAUDE.md` too: its development rules apply here.
 
 ```
 module/            the module: module.json (manifest), qmldir, the QML, module/tests/ (suites)
-tests/             runners: run.sh (QML suites, headless), lock-bed/ (the real shell), harness.qml
+tests/             runners: run.sh (QML suites, headless), lock-bed/ (the real shell)
 tools/stand-in/    fake tailscale, pkexec, curl, systemctl, … for the tests
 tools/test.sh      checks the stand-ins; tools/redact-status.jq makes fixtures
 fixtures/          CLI and local API output, redacted (fixtures/README.md lists each file)
@@ -44,6 +44,10 @@ in `tests/lock-bed/tests/` without `.sh`; a name that does not exist is an error
 runs. When other runs may share the machine, wrap them in `flock /tmp/h2s-locktest.flock …`. A
 failure saying something "could not be checked within 5 s" is usually machine load: run once
 more before looking into it. Never run the suites with `quickshell -p` in your own session.
+
+`tests/run.sh` only hands the module to the core's `tests/run-modules.sh` (a core checkout
+without it: status 2), so the tools are the core's: the pinned ones through `nix` where
+there is a `nix` command, else labwc and Quickshell from `PATH`. The lock bed needs `nix`.
 
 ## Conventions
 
