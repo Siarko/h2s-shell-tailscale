@@ -184,6 +184,14 @@ TestCase {
         });
     }
 
+    // A script for thenShellUntil: how many of the scenario's processes (by the stand-ins' state
+    // directory in their environment) have a command line matching `pattern` (grep -E). One
+    // grep over every environ (a grep per process overran a step's time on a busy machine)
+    function processesScript(pattern) {
+        return "for f in $(grep -lzx \"TS_FAKE_STATE_DIR=$1/state\" /proc/[0-9]*/environ 2> /dev/null); do p=${f%/environ}; tr '\\0' ' ' < \"$p/cmdline\" 2> /dev/null | grep -qE '"
+            + pattern + "' && echo \"$p\"; done | wc -l";
+    }
+
     property Timer _clock: Timer {
         interval: 40
         repeat: true
@@ -266,10 +274,9 @@ TestCase {
             assert(running.client.exitNodes.suggested !== null || running.client.suggestedName !== "", "suggest: the suggestion is known");
             running.readsBefore = running.client.reads;
         });
-        waitMs(running, 2600);
-        then(running, "the slow poll", () => true, () => {
-            assert(running.client.streamUp, "the stream still up");
-            assert(running.client.reads > running.readsBefore, "the slow poll re-reads while the stream is up too (peers' online state)");
+        // The slow poll re-reads while the stream is up too (peers' online state)
+        then(running, "the slow poll read again", () => running.client.reads > running.readsBefore, () => {
+            assert(running.client.streamUp, "the slow poll read again, the stream still up");
         });
         thenLogs(running, "reads only", () => {
             assertEqual(changesIn(running).length, 0, "running: nothing changed by just watching");
@@ -552,8 +559,9 @@ TestCase {
             cancel.client.cancelLogin();
             assert(!cancel.client.busy, "… cancelled at once too (a plain login: ended)");
         });
-        waitMs(cancel, 4500);
-        thenLogs(cancel, "the old root login ended by itself", () => {
+        thenShellUntil(cancel, "the root login ended by itself", processesScript("tailscale login"), "loginsLeft", "0",
+            left => assertEqual(left, "0", "the root login (pkexec, timeout, the login) ended by itself"));
+        thenLogs(cancel, "after the old root login ended", () => {
             assertEqual(cancel.failures.length, 0, "the late exit (a failed login) changes nothing: no failure shown");
             assertEqual(cancel.client.operation + "|" + cancel.client.authUrl, "|", "… not busy, no URL");
             assertEqual(count(cancel.pkexecLines, elevatedLine(60, "login")), 1, "… pkexec ran once: timeout around the login, so it ends by itself");
@@ -574,8 +582,7 @@ TestCase {
         // The ended processes go (waited for: on a loaded machine that takes a moment); a step's
         // time without that is the failure
         thenShellUntil(slowUp, "the pending `up` ended",
-            // One grep over every environ (a grep per process overran the step's time on a busy machine)
-            "for f in $(grep -lzx \"TS_FAKE_STATE_DIR=$1/state\" /proc/[0-9]*/environ 2> /dev/null); do p=${f%/environ}; tr '\\0' ' ' < \"$p/cmdline\" 2> /dev/null | grep -qE 'tailscale up|sleep 30' && echo \"$p\"; done | wc -l",
+            processesScript("tailscale up|sleep 30"),
             "upLeft", "0", left => assertEqual(left, "0", "the plain `up` process (and its wait) ended, not left behind"));
         thenLogs(slowUp, "after the pending connect", () => {
             assertEqual(count(slowUp.logLines, /^up$/), 1, "bare `up` once");
@@ -666,10 +673,8 @@ TestCase {
             assert(noCurl.client.warnings.some(warning => warning.kind === "curl-missing"), "… and the card");
             noCurl.readsBefore = noCurl.client.reads;
         });
-        waitMs(noCurl, 2600);
-        then(noCurl, "polled", () => true, () => {
-            assertEqual(noCurl.client.streamStarts, 0, "no stream started (nothing that cannot start, restarted)");
-            assert(noCurl.client.reads > noCurl.readsBefore, "… the slow poll reads instead");
+        then(noCurl, "the slow poll read instead", () => noCurl.client.reads > noCurl.readsBefore, () => {
+            assertEqual(noCurl.client.streamStarts, 0, "no stream started (nothing that cannot start, restarted): the slow poll reads instead");
         });
 
         // ---- programs this user could replace: not trusted, nothing runs ----
@@ -797,8 +802,10 @@ TestCase {
             assertEqual(beforeRead.client._readIntent, "connect", "… the click kept for after the read");
             assertEqual(beforeRead.client.operation, "", "… no operation under way");
         });
+        // The read's process is started; its call shows in the stand-in's log a moment later
+        thenShellUntil(beforeRead, "the read reached the stand-in", "grep -c '^status --json$' \"$1/log\"", "statusCalls", "1",
+            calls => assertEqual(calls, "1", "the read reached Tailscale, no answer yet"));
         thenLogs(beforeRead, "nothing run blind", () => {
-            assertEqual(count(beforeRead.logLines, /^status --json$/), 1, "the read reached Tailscale, no answer yet");
             assertEqual(changesIn(beforeRead).length, 0, "no `up` before the read has answered");
             assertEqual(beforeRead.pkexecLines.length, 0, "… nothing through pkexec");
             assertEqual(beforeRead.client.status, null, "… the read still held");
@@ -1015,9 +1022,8 @@ TestCase {
         // ---- the plain login refused before any move (not the operator), prompt dismissed ----
         const refusedBefore = scenario("login-dismissed-no-move", { state: "running", env: { TS_FAKE_PKEXEC: "dismiss" } });
         then(refusedBefore, "read", () => refusedBefore.client.status !== null, () => refusedBefore.client.addAccount());
-        then(refusedBefore, "dismissed", () => !refusedBefore.client.busy, () => {});
-        waitMs(refusedBefore, 600);
-        then(refusedBefore, "nothing moved", () => !refusedBefore.client._reading, () => {
+        then(refusedBefore, "dismissed", () => !refusedBefore.client.busy, () => refusedBefore.readsAtDismiss = refusedBefore.client.reads);
+        then(refusedBefore, "read again: nothing moved", () => refusedBefore.client.reads > refusedBefore.readsAtDismiss && !refusedBefore.client._reading, () => {
             assertEqual(refusedBefore.client.loginInterrupted, null, "still on the account: nothing offered");
             assertEqual(refusedBefore.client.view.phase, "running", "… still connected");
         });

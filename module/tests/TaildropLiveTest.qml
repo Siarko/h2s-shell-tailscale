@@ -80,6 +80,30 @@ TestCase {
         });
     }
 
+    // Runs `script` (as thenShell) again and again (300 ms apart) until its first line is
+    // `wanted` — a condition outside the client (a process gone, a line in a log) — then
+    // action(that line)
+    function thenShellUntil(s, description, script, key, wanted, action) {
+        const run = () => {
+            s[key + "Running"] = true;
+            s[key + "At"] = Date.now();
+            _shell.run(["sh", "-c", script, "sh", s.dir], result => {
+                s[key] = (result.lines[0] ?? "").trim();
+                s[key + "Running"] = false;
+            });
+        };
+        then(s, description, () => {
+            if (s[key] === wanted)
+                return true;
+            if (!s[key + "Running"] && Date.now() - s[key + "At"] >= 300)
+                run();
+            return false;
+        }, () => action(s[key]), () => {
+            s[key] = undefined;
+            run();
+        });
+    }
+
     function logs(s, description, action) {
         thenShell(s, description + " (logs read)", "cat \"$1/log\"; echo '----'; cat \"$1/pkexec.log\"", "_logLines", lines => {
             const cut = lines.indexOf("----");
@@ -251,8 +275,11 @@ TestCase {
             assert(drop(cancel).cancelSend(), "cancel");
             same([drop(cancel).send.state, drop(cancel).send.files[0].outcome], ["cancelled", "not sent"], "… cancelled, not sent");
         });
-        waitMs(cancel, 4000);
-        thenShell(cancel, "killed", "ls \"$1/state/sent\" 2> /dev/null | wc -l", "killed", lines => same(lines, ["0"], "the process was killed: nothing arrived after its delay"));
+        // One grep over every environ, then the command lines of this scenario's processes
+        thenShellUntil(cancel, "the send's process gone",
+            "for f in $(grep -lzx \"TS_FAKE_STATE_DIR=$1/state\" /proc/[0-9]*/environ 2> /dev/null); do p=${f%/environ}; tr '\\0' ' ' < \"$p/cmdline\" 2> /dev/null | grep -q 'tailscale file cp' && echo \"$p\"; done | wc -l",
+            "sendsLeft", "0", left => assertEqual(left, "0", "the send's process ended"));
+        thenShell(cancel, "killed", "ls \"$1/state/sent\" 2> /dev/null | wc -l", "killed", lines => same(lines, ["0"], "the process was killed: nothing arrived"));
         const stall = scenario("stall", { idleLimitMs: 1200, env: Object.assign({ TS_FAKE_SEND_DELAY: "6" }, operator), setup: [operatorPrefs, "printf 'abc' > \"$1/files/a.txt\""] });
         then(stall, "devices read", () => busReady(stall) && stall.client.canChange && drop(stall).targets.length > 0, () => {
             drop(stall).targetId = "nPEER4CNTRL";
@@ -377,7 +404,7 @@ TestCase {
             assertEqual(drop(op).saved.filter(item => item.outcome === "skipped").length, 1, "a file left again: one line, not two");
             assert(drop(op).openFolder(), "Open folder");
         });
-        waitMs(op, 400);
+        thenShellUntil(op, "the folder opened", "grep -c '^xdg-open file://' \"$1/log\"", "opened", "1", () => {});
         logs(op, "after saving", () => {
             assertEqual(op.pkexecLines.length, 0, "receiving never runs anything as root");
             assert(count(op.logLines, /^curl -sS --fail --unix-socket \S+ http:\/\/local-tailscaled\.sock\/localapi\/v0\/files\/$/) >= 3, "the listing: GET files/");

@@ -65,8 +65,9 @@ TestCase {
         return s;
     }
 
-    function then(s, description, condition, action, start) {
-        s.steps.push({ description: description, condition: condition, action: action, start: start ?? null });
+    // timeoutMs: how long the step may wait for its condition (12 s when not given)
+    function then(s, description, condition, action, start, timeoutMs) {
+        s.steps.push({ description: description, condition: condition, action: action, start: start ?? null, timeoutMs: timeoutMs ?? 12000 });
     }
 
     // Runs `script` (sh -c, $1 the scenario's directory) and stores its output's lines in s[key]
@@ -117,7 +118,7 @@ TestCase {
                     continue;
                 if (!s.started) {
                     s.started = true;
-                    s.waitedUntil = Date.now() + 12000;
+                    s.waitedUntil = Date.now() + step.timeoutMs;
                     try {
                         step.start?.();
                     } catch (error) {
@@ -181,11 +182,10 @@ TestCase {
             assert(share.client.serve.setFunnel(entry.key, true), "Funnel on");
         });
         // The stand-in is a long shell script; beside the other live suites a root run of it has
-        // been seen to take ten seconds: more time than one step's 12 s
-        waitMs(share, 6000);
+        // been seen to take ten seconds: this step gets more than the usual 12 s
         then(share, "public", () => !share.client.busy && share.client.serve.entries[0]?.funnel === true && !share.client.serve.reading, () => {
             assertEqual(share.client.serve.message, "", "no message");
-        });
+        }, null, 18000);
         logs(share, "what ran", () => {
             assertEqual(count(share.pkexecLines, new RegExp("\\tserve\\t--bg\\t--yes\\t--https=443\\thttp://127\\.0\\.0\\.1:3000$")), 1, "root ran the module's own argv");
             assertEqual(count(share.pkexecLines, new RegExp("\\tfunnel\\t--bg\\t--yes\\t--https=443\\thttp://127\\.0\\.0\\.1:3000$")), 1, "Funnel on: the same handler with funnel");
