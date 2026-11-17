@@ -46,7 +46,8 @@ They run the live client against the stand-ins only.
 
 #### Arch
 
-Without `nix`, labwc has to be installed; Quickshell is the `qs` on `PATH`.
+Without `nix`, labwc has to be installed; Quickshell is `qs` on `PATH`, else
+`quickshell`.
 
 ### `tests/lock-bed/run.sh`
 

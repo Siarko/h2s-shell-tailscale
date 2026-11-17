@@ -788,8 +788,9 @@ TestCase {
         });
         then(startFails, "running", () => startFails.client.daemon === "running" && _entry(startFails).state === "activated", () => {});
         // A click before the first read has answered: kept, done once the state is known, not
-        // dropped. The stand-in holds the first `status` until the click has been made
-        const beforeRead = scenario("connect-before-read", { state: "stopped", holdStatus: true });
+        // dropped. The stand-in holds the first `status` until the click has been made (the read's
+        // limit above a step's budget: a slow machine fails the step, never drops the click)
+        const beforeRead = scenario("connect-before-read", { state: "stopped", holdStatus: true, timeLimits: { read: 60 } });
         then(beforeRead, "the first read under way, held", () => beforeRead.client.cli === "present" && beforeRead.client._reading, () => {
             assertEqual(beforeRead.client.status, null, "the first read has not answered");
             assert(!beforeRead.client.connect("user"), "Connect while the state is unknown: nothing started yet");
@@ -797,6 +798,7 @@ TestCase {
             assertEqual(beforeRead.client.operation, "", "… no operation under way");
         });
         thenLogs(beforeRead, "nothing run blind", () => {
+            assertEqual(count(beforeRead.logLines, /^status --json$/), 1, "the read reached Tailscale, no answer yet");
             assertEqual(changesIn(beforeRead).length, 0, "no `up` before the read has answered");
             assertEqual(beforeRead.pkexecLines.length, 0, "… nothing through pkexec");
             assertEqual(beforeRead.client.status, null, "… the read still held");
@@ -806,11 +808,7 @@ TestCase {
             assertEqual(beforeRead.client._readIntent, "", "the kept click used up");
             assertEqual(beforeRead.failures.length, 0, "… no failure");
         });
-        thenLogs(beforeRead, "one connect", () => {
-            assertEqual(count(beforeRead.pkexecLines, elevatedLine(60, "up")), 1, "the click ran `up` once (through pkexec)");
-            assert(beforeRead.logLines.indexOf("status --json") >= 0 && beforeRead.logLines.indexOf("status --json") < beforeRead.logLines.indexOf("up"),
-                   "… after the read");
-        });
+        thenLogs(beforeRead, "one connect", () => assertEqual(count(beforeRead.pkexecLines, elevatedLine(60, "up")), 1, "the click ran `up` once (through pkexec)"));
 
         // ---- switched off: the stream process gone, nothing acts ----
         const off = scenario("off", { state: "running" });

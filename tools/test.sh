@@ -485,14 +485,18 @@ check "hung status by the state file: stopped too" test "$status" = 124 -a $((SE
 rm -f "$work/state/status-hang"
 check "… answering again without it" cmp -s <("$TS" status --json) "$FIXTURES/status-running.json"
 : > "$work/state/status-hold"
+calls=$(grep -cx "status --json" "$work/log")
 "$TS" status --json > "$work/held" &
 held=$!
 start=$SECONDS
-until grep -qx "status --json" "$work/log" || [ $((SECONDS - start)) -ge 10 ]; do sleep 0.1; done
-check "held status: called, no answer while the state dir holds status-hold" test ! -s "$work/held" -a -e "/proc/$held"
+until [ "$(grep -cx "status --json" "$work/log")" -gt "$calls" ] || [ $((SECONDS - start)) -ge 10 ]; do sleep 0.1; done
+check "held status: called, waiting" test "$(grep -cx "status --json" "$work/log")" -gt "$calls" -a ! -s "$work/held"
+# What status prints is read when it answers: a name set while it is held shows the answer came after
+echo "StatusHostname=held" >> "$work/state/prefs"
 rm -f "$work/state/status-hold"
 wait "$held"
-check "… answering once the file is gone" cmp -s "$work/held" "$FIXTURES/status-running.json"
+check "… answering only once the file is gone (it has the name set meanwhile)" grep -q '"HostName": "held"' "$work/held"
+echo "StatusHostname=" >> "$work/state/prefs"
 export TS_FAKE_OPERATOR=1
 "$TS" down > /dev/null 2>&1
 start=$SECONDS
