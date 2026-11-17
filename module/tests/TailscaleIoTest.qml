@@ -127,6 +127,11 @@ TestCase {
             assertEqual(kind(1, "stderr-timeout.txt"), "timeout", "error: the CLI's timeout");
             const other = rules.errorKind(1, fixture("stderr-switch-no-profile.txt"));
             same(other, { kind: "other", message: "No profile named \"zz99\"" }, "error: anything else, its first line");
+            same(rules.errorKind(1, "\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/REDACTED\n\nbackend error: example login failure\n"),
+                 { kind: "other", message: "backend error: example login failure" }, "error: what a waiting login printed is not the reason");
+            assertEqual(rules.errorKind(1, "To authenticate, visit:\n\thttps://login.tailscale.com/a/REDACTED\n").message, "Tailscale exited with status 1.",
+                        "error: a login link alone is never the reason");
+            assert(rules.errorKind(1, "failed: see https://login.tailscale.com/a/REDACTED now").message.indexOf("/a/") < 0, "error: a login link inside a line is cut out");
             assertEqual(rules.errorKind(0, fixture("stderr-access-denied-set.txt")).kind, "", "error: exit 0 is no error");
             assertEqual(rules.errorKind(124, "").kind, "timeout", "error: timeout(1)'s 124");
             same(rules.errorKind(1, null), { kind: "other", message: "Tailscale exited with status 1." }, "error: no stderr");
@@ -303,12 +308,12 @@ TestCase {
                   rules.commandFor("shieldsUp", { on: true }).timeLimit], ["up", "login", "read", "change"], "commands: their time limits");
             assertEqual(rules.errorKind(124, "").message, "Tailscale did not answer in time and was stopped: check its service and the network.", "error: 124's sentence");
             assertEqual(rules.errorKind(137, "").kind, "timeout", "error: 137 (KILLed after TERM) is a timeout too");
-            assert(/did not connect within 60 s\. It keeps trying by itself; Disconnect stops it\./.test(rules.timeoutMessage("connect", 60)), "timeout: connect's sentence");
+            assertEqual(rules.timeoutMessage("connect", 60), "Still connecting after 60 s. Disconnect to stop.", "timeout: connect's sentence");
             assert(/within 10 minutes/.test(rules.timeoutMessage("login", 600)), "timeout: login's sentence");
             const exitNode = rules.commandFor("exitNode", { node: "100.64.0.4" });
             assert(exitNode.description.indexOf("100.64") < 0, "commands: the exit node's description has no address: " + exitNode.description);
             assertEqual(rules.withoutAddresses("invalid value \"100.64.0.4\" for --exit-node; fd7a:115c:a1e0::1 and 10.0.0.0/8 too, version 1.104.4 at 12:30"),
-                        "invalid value \"<address>\" for --exit-node; <address> and <address> too, version 1.104.4 at 12:30", "withoutAddresses: IPv4, IPv6, prefixes gone; versions and times kept");
+                        "invalid value \"[address]\" for --exit-node; [address] and [address] too, version 1.104.4 at 12:30", "withoutAddresses: IPv4, IPv6, prefixes gone; versions and times kept");
         }
 
         // --- which programs run: the probe and the trust check ---
@@ -332,7 +337,7 @@ TestCase {
                 "stat\ttailscale\t1000\t755\t/home/u/.local/bin", "stat\ttailscale\t1000\t755\t/home/u/.local/bin/tailscale", "stat\ttailscale\t1000\t755\t/home/u/.local/bin"]);
             const bad = rules.toolsProbe(writable, true);
             same(bad.untrusted, ["tailscale"], "trust: a tailscale this user owns is refused");
-            assert(/not trusted/.test(bad.tools.tailscale.reason) && bad.tools.tailscale.reason.indexOf("/home/") < 0, "trust: the reason says so, without the path: " + bad.tools.tailscale.reason);
+            assert(/isn't trusted/.test(bad.tools.tailscale.reason) && bad.tools.tailscale.reason.indexOf("/home/") < 0, "trust: the reason says so, without the path: " + bad.tools.tailscale.reason);
             const linkInHome = probe(["tool\tpkexec\t/home/u/bin/pkexec", "real\tpkexec\t/run/wrappers/wrappers.x/pkexec",
                 "stat\tpkexec\t1000\t755\t/home/u/bin", "stat\tpkexec\t0\t4511\t/run/wrappers/wrappers.x/pkexec", "stat\tpkexec\t0\t755\t/run/wrappers/wrappers.x"]);
             same(rules.toolsProbe(linkInHome, true).untrusted, ["pkexec"], "trust: a link to a good pkexec in a directory this user owns is refused (it could be swapped)");
@@ -341,6 +346,27 @@ TestCase {
             same(rules.toolsProbe(groupWritable, true).untrusted, ["timeout"], "trust: a group-writable directory is refused");
             same(rules.toolsProbe(probe(["tool\ttailscale\t/usr/bin/tailscale"]), true).untrusted, ["tailscale"], "trust: not checkable (no stat): refused");
             same(rules.toolsProbe(writable, false).untrusted, [], "trust: the seam's programs are not judged");
+            // Arch and other distributions without Nix: root's files in /usr/bin (merged /usr:
+            // /bin a link to usr/bin — stat -L reads the directory it leads to), a set-uid
+            // pkexec (4755), a tailscale in /usr/local/bin
+            const arch = probe([
+                "tool\ttailscale\t/usr/bin/tailscale", "real\ttailscale\t/usr/bin/tailscale",
+                "stat\ttailscale\t0\t755\t/usr/bin", "stat\ttailscale\t0\t755\t/usr/bin/tailscale", "stat\ttailscale\t0\t755\t/usr/bin",
+                "tool\ttimeout\t/bin/timeout", "real\ttimeout\t/usr/bin/timeout",
+                "stat\ttimeout\t0\t755\t/bin", "stat\ttimeout\t0\t755\t/usr/bin/timeout", "stat\ttimeout\t0\t755\t/usr/bin",
+                "tool\tpkexec\t/usr/bin/pkexec", "real\tpkexec\t/usr/bin/pkexec",
+                "stat\tpkexec\t0\t755\t/usr/bin", "stat\tpkexec\t0\t4755\t/usr/bin/pkexec", "stat\tpkexec\t0\t755\t/usr/bin",
+                "tool\tcurl\t/usr/bin/curl", "socket\t/var/run/tailscale/tailscaled.sock"]);
+            const archFound = rules.toolsProbe(arch, true);
+            same(archFound.untrusted, [], "trust: Arch's /usr/bin programs (pkexec set-uid, timeout through the /bin link) are trusted");
+            same([archFound.tools.tailscale.path, archFound.tools.timeout.path, archFound.tools.pkexec.path], ["/usr/bin/tailscale", "/bin/timeout", "/usr/bin/pkexec"],
+                 "trust: … by the paths found");
+            const local = probe(["tool\ttailscale\t/usr/local/bin/tailscale", "real\ttailscale\t/usr/local/bin/tailscale",
+                "stat\ttailscale\t0\t755\t/usr/local/bin", "stat\ttailscale\t0\t755\t/usr/local/bin/tailscale", "stat\ttailscale\t0\t755\t/usr/local/bin"]);
+            same(rules.toolsProbe(local, true).untrusted, [], "trust: root's /usr/local/bin is trusted");
+            const linked = probe(["tool\ttailscale\t/usr/local/bin/tailscale", "real\ttailscale\t/opt/tailscale/tailscale",
+                "stat\ttailscale\t0\t755\t/usr/local/bin", "stat\ttailscale\t0\t755\t/opt/tailscale/tailscale", "stat\ttailscale\t1000\t755\t/opt/tailscale"]);
+            same(rules.toolsProbe(linked, true).untrusted, ["tailscale"], "trust: a root link to a program in a directory this user owns is refused");
             assertEqual(rules.toolsProbe(probe(["tool\ttailscale\t"]), true).tools.tailscale.path, "", "probe: not found");
             assertEqual(rules.toolsProbe(probe(["socket\t/tmp/evil.sock"]), true).socket, "", "probe: only the known socket paths");
             for (const hostile of [null, undefined, 5, "tool\t__proto__\t/x", "stat\ttailscale\t0"])

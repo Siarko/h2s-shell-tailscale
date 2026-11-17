@@ -224,7 +224,7 @@ Singleton {
     }
 
     function _plain(text, limit) {
-        return String(text ?? "").replace(_unsafeCharacters, "").replace(/\b100\.\d+\.\d+\.\d+\b/g, "<address>").slice(0, limit ?? 200);
+        return String(text ?? "").replace(_unsafeCharacters, "").replace(/\b100\.\d+\.\d+\.\d+\b/g, "[address]").slice(0, limit ?? 200);
     }
 
     // ---- The bus's file fields (ipn.Notify) ----

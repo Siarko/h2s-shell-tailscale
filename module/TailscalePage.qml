@@ -59,6 +59,9 @@ ColumnLayout {
         _watched?.unwatch();
         _watched = wanted;
         _watched?.watch();
+        // On screen: Tailscale may have been installed or started since the last look
+        if (typeof _watched?.wake === "function")
+            _watched.wake();
     }
 
     Hint {
@@ -89,7 +92,9 @@ ColumnLayout {
         }
         SmallButton {
             objectName: "tailscaleConnect"
+            // Not beside an attention's own action (Log in, Start, a failure's): that one acts
             visible: root.view !== null && ["stopped", "unknown"].includes(root.view.phase)
+                     && (root.client?.entry.attention?.action ?? "") === ""
             label: "Connect"
             kind: "save"
             available: root._free
@@ -103,10 +108,20 @@ ColumnLayout {
             onClicked: root.client.disconnect("user")
         }
         SmallButton {
+            objectName: "tailscaleAttend"
             visible: (root.client?.entry.attention?.action ?? "") !== ""
             label: root.client?.entry.attention?.action ?? ""
             available: root._free
             onClicked: root.client.attend()
+        }
+        // Installed or started outside the shell: look again now (the attention's own action
+        // says it already while Tailscale is not found)
+        SmallButton {
+            objectName: "tailscaleCheckAgain"
+            visible: root.client?.canLookAgain === true && (root.client.entry.attention?.action ?? "") !== "Check again"
+            label: "Check again"
+            available: root._free
+            onClicked: root.client.recheck()
         }
         DeleteButton {
             visible: root._loggedIn

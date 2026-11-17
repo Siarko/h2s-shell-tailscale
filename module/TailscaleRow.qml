@@ -20,6 +20,15 @@ ColumnLayout {
     spacing: 2
     visible: _choosing || _loggingIn
 
+    // Made each time the network popup opens: Tailscale may have been installed or started
+    // since the last look (the client looks only while something is missing)
+    onClientChanged: _wake()
+    Component.onCompleted: _wake()
+    function _wake() {
+        if (typeof client?.wake === "function")
+            client.wake();
+    }
+
     ExitNodeChooser {
         Layout.fillWidth: true
         client: root.client
