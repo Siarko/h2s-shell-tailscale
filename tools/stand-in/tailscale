@@ -68,6 +68,8 @@
 # denied: serve config denied"); a config with a Path handler needs root (TS_FAKE_ROOT=1); Funnel
 # on with ShieldsUp is refused. `serve`/`funnel` without --bg (foreground), with --service, --tun,
 # --accept-app-caps, --proxy-protocol or a unix: target are refused: exit 2 "not replayed".
+# State dir file "serve-next.json": moved over serve.json when the next `funnel` run as root
+# starts (a change by another client while the password dialog was open).
 # State dir files read by `status --json` (and so by serve, funnel and cert):
 #   caps          extra capability names, one per line, added to Self's CapMap (as `"<name>":
 #                 null`): "https" (HTTPS certs: serve over HTTPS), "funnel", and
@@ -1045,6 +1047,11 @@ serve_set() {
         fi
     done
     [ $count -gt 1 ] && serve_fail "cannot serve multiple types for a single mount point"
+    # serve-next.json: another client's change landing between the module's plan and this
+    # `funnel` run as root (the password dialog's time): it becomes the config this run reads
+    if [ "$command" = funnel ] && [ "${TS_FAKE_ROOT:-0}" = 1 ] && [ -f "$STATE_DIR/serve-next.json" ]; then
+        mv "$STATE_DIR/serve-next.json" "$SERVE_JSON"
+    fi
     table=$(serve_table)
     need_running
     host=$(self_dns)

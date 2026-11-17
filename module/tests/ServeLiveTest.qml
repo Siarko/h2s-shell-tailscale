@@ -15,7 +15,7 @@ TestCase {
     asynchronous: true
     Component.onCompleted: {
         if ("timeLimitMs" in suite)
-            suite["timeLimitMs"] = 60000;
+            suite["timeLimitMs"] = 90000;
     }
 
     function _path(url) {
@@ -259,7 +259,37 @@ TestCase {
             assertEqual(pathPort.pkexecLines.length, 0, "nothing through pkexec");
         });
 
-        then(pathPort, "next", () => true, () => plainScenario());
+        then(pathPort, "next", () => true, () => raceScenario());
+    }
+
+    function raceScenario() {
+        const serveScenario = "printf 'serve\\n' > \"$1/state/scenario\"";
+        const proxyOnly = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"}}}}}";
+        const withPath = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"},\"/files\":{\"Path\":\"/srv/share\"}}}}}";
+        // ---- Funnel on through pkexec, and a path handler lands on 443 while the password
+        // dialog is open (the stand-in's serve-next.json: after the module's last read, before
+        // the CLI's own) → read again after the change, Funnel turned off at once, the user told ----
+        const race = scenario("race", { setup: [serveScenario, "printf '%s\\n' '" + proxyOnly + "' > \"$1/state/serve.json\"",
+                                                "printf '%s\\n' '" + withPath + "' > \"$1/state/serve-next.json\""] });
+        then(race, "status read", () => busReady(race) && race.client.serve.ready.canFunnel, () => assert(race.client.serve.read(), "the config is read"));
+        then(race, "config read", () => race.client.serve.config !== null && !race.client.serve.reading, () => {
+            assertEqual(race.client.serve.entries.length, 1, "only `/` shared");
+            assert(race.client.serve.setFunnel(race.client.serve.entries[0].key, true), "Funnel on: allowed on what is read");
+        });
+        then(race, "Funnel went on", () => race.client.serve.checking || race.client.serve.message !== "", () => {});
+        then(race, "checked and turned off", () => race.client.serve.message !== "" && !race.client.serve.checking && !race.client.busy && !race.client.serve.reading, () => {
+            assertEqual(race.client.serve.message, "Turned Funnel off, the port changed", "the user told on the page");
+            same(race.failures.map(failure => failure.reason), ["Turned Funnel off, the port changed"], "… and by a notification");
+            same(race.client.serve.entries.map(entry => [entry.mount, entry.what, entry.funnel]), [["/", "proxy", false], ["/files", "path", false]], "the port is private again");
+            assert(!ServeRules.portPublic(race.client.serve.config, 443, race.client.status), "… Funnel off for 443");
+        });
+        logs(race, "what ran", () => {
+            assertEqual(count(race.pkexecLines, /\tfunnel\t--bg\t--yes\t--https=443\thttp:\/\/127\.0\.0\.1:3000$/), 1, "Funnel on, as root");
+            assertEqual(count(race.pkexecLines, /\tserve\t--bg\t--yes\t--https=443\thttp:\/\/127\.0\.0\.1:3000$/), 1, "then off again with serve");
+            assertEqual(race.pkexecLines.length, 2, "nothing else as root");
+        });
+
+        then(race, "next", () => true, () => plainScenario());
     }
 
     function plainScenario() {

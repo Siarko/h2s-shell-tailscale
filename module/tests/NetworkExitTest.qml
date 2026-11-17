@@ -7,7 +7,9 @@ import ".."
 // first, Tailscale Running or its peers read later, or Tailscale off and turned on later by the
 // user — and is then applied once; a switch deferred while another change runs is applied when
 // it ends; a short pass through "no marked network" (a Wi-Fi reconnect) does not apply the
-// choice again over a manual change, a lasting one does.
+// choice again over a manual change, a lasting one does. A choice not applied (the node offline,
+// not the operator, a failed run) leaves the network open, is notified once, and is applied when
+// what stopped it changes — never retried in a loop, never with a prompt.
 TestCase {
     id: suite
     suiteName: "tailscale: exit node per network, waiting for Tailscale"
@@ -43,9 +45,15 @@ TestCase {
             property bool busy: false
             property var module: null
             property var ran: []
+            // true: every run fails as a refused change would
+            property bool failRuns: false
+            property var notices: []
+            signal failed(string what, string reason)
+            onFailed: (what, reason) => notices = notices.concat([reason])
             function _runChange(command, origin, operationName, onSuccess, prepare, onEnd) {
                 ran = ran.concat([command.argv.join(" ") + " (" + origin + ")"]);
-                Qt.callLater(() => onEnd({ ok: true, dismissed: false, message: "" }));
+                const ok = !failRuns;
+                Qt.callLater(() => onEnd({ ok: ok, dismissed: false, message: ok ? "" : "Tailscale refused the change." }));
                 return true;
             }
         }
@@ -63,15 +71,57 @@ TestCase {
         return { fake: fake, follower: follower };
     }
 
+    function same(actual, expected, message) {
+        assertEqual(JSON.stringify(actual), JSON.stringify(expected), message);
+    }
+
     function step(waitMs, action) {
         _steps.push({ waitMs: waitMs, action: action });
+    }
+
+    // A step that waits for `condition` (checked every 20 ms, at most 5 s), then acts
+    function until(description, condition, action) {
+        _steps.push({ waitMs: 1, condition: condition, description: description, action: action ?? (() => {}) });
+    }
+
+    // A step that acts once everything queued by the change before it has run: the follower
+    // reacts to its inputs through Qt.callLater, and a marker queued after them fires after them
+    function settled(description, action) {
+        let marker = false;
+        _steps.push({ waitMs: 1, start: () => Qt.callLater(() => marker = true), condition: () => marker, description: description, action: action });
     }
 
     property Timer _clock: Timer {
         onTriggered: suite._next()
     }
 
+    property var _waiting: null
+    property double _waitingUntil: 0
+
     function _next() {
+        if (_waiting === null && _steps.length > 0 && _steps[0].condition) {
+            _waiting = _steps[0];
+            _waitingUntil = Date.now() + 5000;
+            _waiting.start?.();
+        }
+        if (_waiting !== null) {
+            let ready = false;
+            try {
+                ready = _waiting.condition();
+            } catch (error) {}
+            if (!ready && Date.now() < _waitingUntil) {
+                _clock.interval = 20;
+                _clock.start();
+                return;
+            }
+            _waiting = null;
+            if (!ready) {
+                fail("timed out waiting: " + _steps[0].description);
+                _steps = [];
+                finish();
+                return;
+            }
+        }
         const current = _steps.shift();
         if (!current) {
             finish();
@@ -146,6 +196,60 @@ TestCase {
             s.follower.networks = cafeUp;
         });
         step(300, () => assertEqual(s.fake.ran.length, 2, "back after that: applied again"));
+
+        // The chosen node offline when the network comes up: not taken, said once; applied when
+        // it comes back
+        const offline = { own: nodes.own.map(option => option.id === online.id ? Object.assign({}, option, { online: false }) : option),
+                          countries: nodes.countries.map(country => Object.assign({}, country, { cities: country.cities.map(city => Object.assign({}, city, {
+                              nodes: city.nodes.map(option => option.id === online.id ? Object.assign({}, option, { online: false }) : option) })) })),
+                          count: nodes.count };
+        step(1, () => s = make(running, offline));
+        step(1, () => s.follower.networks = cafeUp);
+        until("decided unavailable", () => s.follower.decision.kind === "unavailable", () => {
+            same([s.fake.ran.length, s.follower.lastKey, s.fake.notices.length], [0, "", 1], "node offline: nothing run, the network not taken, said once");
+            s.follower.follow();
+            s.fake.busy = true;
+        });
+        settled("inputs changed, the same networks", () => {
+            s.fake.busy = false;
+        });
+        settled("… and back", () => same([s.fake.ran.length, s.fake.notices.length], [0, 1], "asked again: no run, no second notice"));
+        step(1, () => s.fake.exitNodes = nodes);
+        until("the node back: applied", () => s.follower.decision.kind === "applied", () => {
+            same([JSON.stringify(s.fake.ran), s.follower.lastKey, s.fake.notices.length], [JSON.stringify([wanted]), "cafe-uuid", 1], "applied once it came back, the network taken");
+        });
+
+        // Not the operator: held and said once; made the operator: applied
+        step(1, () => s = make(running, nodes, { canChange: false }));
+        step(1, () => s.follower.networks = cafeUp);
+        until("decided needs-operator", () => s.follower.decision.kind === "needs-operator", () => {
+            same([s.fake.ran.length, s.follower.lastKey, s.fake.notices.length], [0, "", 1], "needs the operator: nothing run, never a prompt, said once");
+            s.fake.canChange = true;
+        });
+        until("applied as the operator", () => s.follower.decision.kind === "applied", () => {
+            same([s.fake.ran.length, s.follower.lastKey], [1, "cafe-uuid"], "made the operator: applied");
+            assert(s.fake.ran[0].endsWith("(network)"), "… as an automatic change");
+        });
+
+        // A run that fails: not taken, said once, not retried in a loop; a new pass on the
+        // network tries again
+        step(1, () => s = make(running, nodes, { failRuns: true }));
+        step(1, () => s.follower.networks = cafeUp);
+        until("the run failed", () => s.follower.decision.kind === "failed", () => {
+            same([s.fake.ran.length, s.follower.lastKey, s.fake.notices], [1, "", ["Tailscale refused the change."]], "failed: not taken, said once");
+            s.fake.busy = true;
+        });
+        settled("busy", () => s.fake.busy = false);
+        settled("not busy again", () => {
+            s.follower.follow();
+            same([s.fake.ran.length, s.fake.notices.length], [1, 1], "not retried for the same networks, no second notice");
+            s.fake.failRuns = false;
+            s.follower.networks = cafeDown;
+        });
+        until("a lasting drop taken", () => s.follower.decision.kind === "none-marked", () => s.follower.networks = cafeUp);
+        until("back: tried again", () => s.follower.decision.kind === "applied", () => {
+            same([s.fake.ran.length, s.follower.lastKey], [2, "cafe-uuid"], "a new pass on the network: applied");
+        });
         step(1, () => {});
         _clock.interval = 1;
         _clock.start();

@@ -4,11 +4,15 @@ import qs.api
 
 // An exit node per network, live (delivery step 5): follows the shell's networks (Api.networks,
 // module API 1.3 — no polling) and the client's prefs and status; when the marked networks that
-// are up change, NetworkExitRules.decide says what to do, once per set of networks ("lastKey",
-// kept in the module's store so a restart on the same network does not act again). It acts only
-// as an automatic change: plainly, as origin "network" — never a password prompt; not the
-// operator → "Needs the operator" on the page, nothing run. While Tailscale is not Running (or
-// its peers are not read yet) it waits, the key not taken, and acts once Tailscale is up.
+// are up change, NetworkExitRules.decide says what to do and NetworkExitRules.react whether to
+// act. "lastKey" (kept in the module's store, so a restart on the same network does not act
+// again) is the set of networks done with: stored only once the choice applied (or nothing was
+// needed). A choice not applied stays open and is tried again when what stopped it changes —
+// the chosen node appears or comes back online, this user becomes the operator — and the user is
+// notified once per change (a privacy choice). It acts only as an automatic change: plainly, as
+// origin "network" — never a password prompt; not the operator → "Needs the operator" on the
+// page, nothing run. While Tailscale is not Running (or its peers are not read yet) it waits,
+// the key not taken, and acts once Tailscale is up.
 QtObject {
     id: root
 
@@ -29,12 +33,18 @@ QtObject {
     // The last decision (for the page and the IPC)
     property var decision: ({ kind: "", key: "", text: "" })
     property int runs: 0
+    // The last decision that did not apply the choice (NetworkExitRules.react), null none
+    property var _held: null
+    // The change last notified (NetworkExitRules.noticeKey)
+    property string _noticed: ""
+    property bool _inFlight: false
 
     // Everything decide reads, and busy: a switch deferred while another change runs is tried
-    // again when that change ends
+    // again when that change ends; the wanted nodes' state, so one coming back is tried again
     readonly property string _inputs: running ? JSON.stringify([NetworkExitRules.activeKey(table, networks), client.prefs?.ok === true,
         client.prefs?.exitNodeId ?? "", client.exitNodes.count, client.canChange, client.status?.backendState ?? "",
-        client.status?.peersRead === true, client.busy]) : ""
+        client.status?.peersRead === true, client.busy, NetworkExitRules.wanted(table, networks),
+        NetworkExitRules.wantedNodes(table, networks, client.exitNodes)]) : ""
     on_InputsChanged: Qt.callLater(follow)
 
     // Started by the first "no marked network up"; when it fires, follow takes that key if it
@@ -53,11 +63,26 @@ QtObject {
         setChoice(networkId, null);
     }
 
+    // The networks done with: a later return to them is a new change (notified again if needed)
+    function _take(key) {
+        _held = null;
+        _noticed = "";
+        lastKey = key;
+        store?.set("exitByNetwork.lastKey", lastKey);
+    }
+
+    // A choice not applied, told once per change (never a text with the node's address: the
+    // client's notification path strips addresses)
+    function _notify(result, text) {
+        _noticed = NetworkExitRules.noticeKey(result);
+        client.failed("Exit node for this network", text);
+    }
+
     // `settled`: called by the hold timer — "no marked network up" has lasted
     function follow(settled) {
         // No networks at all: the shell has not read them yet (a restart) — deciding now would
         // take "none up" and act again once they arrive
-        if (!running || (networks ?? []).length === 0)
+        if (!running || _inFlight || (networks ?? []).length === 0)
             return;
         const result = NetworkExitRules.decide({
             table: table, networks: networks, lastKey: lastKey, prefs: client.prefs, exitNodes: client.exitNodes,
@@ -66,7 +91,9 @@ QtObject {
         });
         if (result.kind === "wait")
             return;
-        if (result.kind === "none-marked") {
+        // Off the held networks with none up counts only once it lasted, as "none-marked" does
+        const leaving = result.kind === "same" && _held !== null && result.key !== _held.key;
+        if (result.kind === "none-marked" || (leaving && result.key === "")) {
             if (settled !== true) {
                 if (!_noneMarkedTimer.running)
                     _noneMarkedTimer.start();
@@ -77,23 +104,47 @@ QtObject {
             // through "none" never counted
             _noneMarkedTimer.stop();
         }
-        if (result.kind === "same")
-            return;
-        if (result.kind === "run") {
-            // Busy with another change: tried again when it ends (busy is one of the inputs)
-            if (client.busy)
-                return;
-            const command = TailscaleRules.commandFor(result.name, result.args);
-            if (!command.ok)
-                return;
-            runs++;
-            client._runChange(command, "network", "exit-node", null, null, outcome => {
-                decision = { kind: outcome.ok ? "applied" : "failed", key: result.key, text: outcome.ok ? "" : outcome.message };
-            });
-        } else {
+        const step = NetworkExitRules.react(result, _held, _noticed);
+        switch (step.act) {
+        case "take":
             decision = { kind: result.kind, key: result.key, text: result.text };
+            _take(result.key);
+            return;
+        case "hold":
+            _held = step.held;
+            decision = { kind: result.kind, key: result.key, text: result.text };
+            if (step.notify)
+                _notify(result, result.text);
+            return;
+        case "release":
+            _held = null;
+            _noticed = "";
+            if (result.key === "")
+                decision = { kind: "none-marked", key: "", text: "" };
+            return;
+        case "run":
+            break;
+        default:
+            return;
         }
-        lastKey = result.key;
-        store?.set("exitByNetwork.lastKey", lastKey);
+        // Busy with another change: tried again when it ends (busy is one of the inputs)
+        if (client.busy)
+            return;
+        const command = TailscaleRules.commandFor(result.name, result.args);
+        if (!command.ok)
+            return;
+        runs++;
+        _inFlight = true;
+        client._runChange(command, "network", "exit-node", null, null, outcome => {
+            _inFlight = false;
+            decision = { kind: outcome.ok ? "applied" : "failed", key: result.key, text: outcome.ok ? "" : outcome.message };
+            if (outcome.ok) {
+                _take(result.key);
+                return;
+            }
+            _held = { key: result.key, choice: result.choice, kind: "failed" };
+            if (NetworkExitRules.noticeKey(result) !== _noticed)
+                _notify(result, outcome.message);
+        });
     }
 }
