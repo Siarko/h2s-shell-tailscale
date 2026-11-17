@@ -188,7 +188,7 @@ TestCase {
     // directory in their environment) have a command line matching `pattern` (grep -E). One
     // grep over every environ (a grep per process overran a step's time on a busy machine)
     function processesScript(pattern) {
-        return "for f in $(grep -lzx \"TS_FAKE_STATE_DIR=$1/state\" /proc/[0-9]*/environ 2> /dev/null); do p=${f%/environ}; tr '\\0' ' ' < \"$p/cmdline\" 2> /dev/null | grep -qE '"
+        return "for f in $(grep -lzx \"TS_FAKE_STATE_DIR=$1/state\" /proc/[0-9]*/environ 2> /dev/null); do p=${f%/environ}; { tr '\\0' ' ' < \"$p/cmdline\"; } 2> /dev/null | grep -qE '"
             + pattern + "' && echo \"$p\"; done | wc -l";
     }
 

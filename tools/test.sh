@@ -36,12 +36,14 @@ fresh() {
 }
 
 # The pids of this run's processes (by the stand-ins' state directory in their environment)
-# whose command line is exactly $1: what a stand-in left behind, never another process
+# whose command line is exactly $1: what a stand-in left behind, never another process.
+# (The braces: a process gone meanwhile fails the `<`, which the shell reports before a
+# redirection of the same command applies)
 own_processes() {
     local file pid
     for file in $(grep -lzx "TS_FAKE_STATE_DIR=$work/state" /proc/[0-9]*/environ 2> /dev/null); do
         pid=${file#/proc/}; pid=${pid%/environ}
-        [ "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null)" = "$1 " ] && echo "$pid"
+        [ "$({ tr '\0' ' ' < "/proc/$pid/cmdline"; } 2> /dev/null)" = "$1 " ] && echo "$pid"
     done
     return 0
 }
@@ -529,7 +531,8 @@ sleep 0.5
 "$TS" down > /dev/null 2>&1
 wait "$up_pid"
 check "slow up, then down meanwhile: up fails, never Running" test $? = 1 -a "$(backend)" = Stopped
-# Ended the moment its URL shows, many times over: the wait's sleep is never left behind
+# Ended the moment its URL shows, many times over: the wait's sleep is never left behind.
+# Counted after each round (a sleep left by an early round would be over by the last one)
 "$TS" down > /dev/null 2>&1
 orphans=0
 for round in $(seq 1 60); do
@@ -540,12 +543,48 @@ for round in $(seq 1 60); do
     until grep -q REDACTED "$work/err" || [ $((SECONDS - start)) -ge 10 ]; do :; done
     kill -TERM "$up_pid"
     wait "$up_pid" 2> /dev/null
+    # A sleep that was ended is gone in a moment; one still there after that was left behind
+    start=$SECONDS
+    until [ -z "$(own_processes "sleep 31")" ] || [ $((SECONDS - start)) -ge 3 ]; do sleep 0.05; done
+    for pid in $(own_processes "sleep 31"); do orphans=$((orphans + 1)); kill "$pid" 2> /dev/null; done
     "$TS" down > /dev/null 2>&1
 done
-start=$SECONDS
-until [ "$(own_processes "sleep 31" | wc -l)" = 0 ] || [ $((SECONDS - start)) -ge 3 ]; do sleep 0.1; done
-for pid in $(own_processes "sleep 31"); do orphans=$((orphans + 1)); kill "$pid" 2> /dev/null; done
 check "slow up ended as its URL shows, 60 times: no sleep left behind ($orphans)" test "$orphans" = 0
+
+# Ended between the wait's trap and its sleep (held there by the gate; the stand-in is at the
+# gate once it says so, and a TERM that comes while it reads the gate is acted on after the
+# read): 143 and no sleep, in a process's first wait and in a later one
+gate_waiting() { { wc -l < "$work/state/pause-waiting"; } 2> /dev/null || echo 0; }
+gate_wait() { # gate_wait <count>: until that many waits have reached the gate
+    local start=$SECONDS
+    until [ "$(gate_waiting)" -ge "$1" ] || [ $((SECONDS - start)) -ge 10 ]; do sleep 0.05; done
+    [ "$(gate_waiting)" -ge "$1" ]
+}
+mkfifo "$work/state/pause-gate"
+exec 9<> "$work/state/pause-gate" # held open both ways: neither side ever blocks on opening it
+"$TS" down > /dev/null 2>&1
+TS_FAKE_UP_DELAY=31 "$TS" up > /dev/null 2> "$work/err" &
+up_pid=$!
+check "gate: a slow up reaches its wait" gate_wait 1
+kill -TERM "$up_pid"
+echo >&9
+wait "$up_pid" 2> /dev/null
+check "ended before its first wait's sleep started: 143" test $? = 143
+check "… no sleep started" test -z "$(own_processes "sleep 31")"
+"$TS" down > /dev/null 2>&1; "$TS" logout > /dev/null 2>&1
+rm -f "$work/state/pause-waiting"
+TS_FAKE_LOGIN_URL_DELAY=0.1 TS_FAKE_LOGIN_DELAY=31 "$TS" login > /dev/null 2> "$work/err" &
+login_pid=$!
+check "gate: a login reaches its first wait (before the URL)" gate_wait 1
+echo >&9
+check "… and, that one over, its second" gate_wait 2
+kill -TERM "$login_pid"
+echo >&9
+wait "$login_pid" 2> /dev/null
+check "ended before a later wait's sleep started: 143 (the earlier sleep's pid is not signalled)" test $? = 143
+check "… no sleep started" test -z "$(own_processes "sleep 31")"
+exec 9>&-
+rm -f "$work/state/pause-gate" "$work/state/pause-waiting"
 unset TS_FAKE_OPERATOR
 "$TS" logout > /dev/null 2>&1; TS_FAKE_ROOT=1 "$TS" logout > /dev/null 2>&1
 start=$SECONDS

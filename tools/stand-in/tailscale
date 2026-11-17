@@ -43,6 +43,10 @@
 #                        also a file "status-hang" in the state dir holding the seconds
 #                        A file "status-hold" in the state dir: `status` waits until the
 #                        file is gone (a test lets the read go when it is ready for it)
+#   (no variable)        A FIFO "pause-gate" in the state dir: every wait (login, a slow `up`,
+#                        a hung status, …) stops between setting its TERM trap and starting
+#                        its sleep: it adds a line to "pause-waiting", then reads one line
+#                        from the FIFO (a test ends it exactly there, or lets it go on)
 #   TS_FAKE_LOG          a file each call's arguments are appended to (one line per call)
 #   TS_FAKE_SSH_CAP      0: the tailnet does not allow Tailscale SSH (`set --ssh` refused as the
 #                        daemon does); also a file "no-ssh-cap" in the state dir
@@ -159,9 +163,17 @@ need_write() { # $1 the denial text, then the command as typed
 
 # Waits $1 seconds, ended with its sleep by TERM (as the module's timeout or the module ends it).
 # The trap is there before the sleep is started: a TERM that lands while the sleep is being
-# started still takes it along ($!: the sleep, once it is started)
+# started still takes it along. It ends only a sleep this call started ($! differs from what
+# it was before): until then $! is unset or an earlier, finished job, a pid no longer ours.
+# A kill that fails (the sleep over already) must not end the trap through set -e: 143 always
 pause() {
-    trap 'kill "$!" 2> /dev/null; exit 143' TERM INT HUP
+    pause_before=${!-}
+    trap 'if [ "${!-}" != "$pause_before" ]; then kill "$!" 2> /dev/null || :; fi; exit 143' TERM INT HUP
+    # A test's gate between the trap and the sleep: see "pause-gate" above
+    if [ -p "$STATE_DIR/pause-gate" ]; then
+        echo >> "$STATE_DIR/pause-waiting"
+        head -n 1 "$STATE_DIR/pause-gate" > /dev/null
+    fi
     sleep "$1" &
     wait "$!"
     trap - TERM INT HUP
