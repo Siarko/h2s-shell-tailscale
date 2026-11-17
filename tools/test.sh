@@ -35,6 +35,17 @@ fresh() {
     export TS_FAKE_LOGIN_DELAY=0 TS_FAKE_USER=tester TS_FAKE_FIXTURES=$FIXTURES
 }
 
+# The pids of this run's processes (by the stand-ins' state directory in their environment)
+# whose command line is exactly $1: what a stand-in left behind, never another process
+own_processes() {
+    local file pid
+    for file in $(grep -lzx "TS_FAKE_STATE_DIR=$work/state" /proc/[0-9]*/environ 2> /dev/null); do
+        pid=${file#/proc/}; pid=${pid%/environ}
+        [ "$(tr '\0' ' ' < "/proc/$pid/cmdline" 2> /dev/null)" = "$1 " ] && echo "$pid"
+    done
+    return 0
+}
+
 backend() { "$TS" status --json | sed -n 's/^  "BackendState": "\(.*\)",$/\1/p'; }
 pref() { "$TS" debug prefs | sed -n "s/^  \"$1\": \\(.*\\),\$/\\1/p"; }
 run() { # run <stdout file> <stderr file> <command…> → the exit status in $status
@@ -514,6 +525,23 @@ sleep 0.5
 "$TS" down > /dev/null 2>&1
 wait "$up_pid"
 check "slow up, then down meanwhile: up fails, never Running" test $? = 1 -a "$(backend)" = Stopped
+# Ended the moment its URL shows, many times over: the wait's sleep is never left behind
+"$TS" down > /dev/null 2>&1
+orphans=0
+for round in $(seq 1 60); do
+    : > "$work/err"
+    TS_FAKE_UP_DELAY=31 TS_FAKE_UP_URL=1 "$TS" up > /dev/null 2> "$work/err" &
+    up_pid=$!
+    start=$SECONDS
+    until grep -q REDACTED "$work/err" || [ $((SECONDS - start)) -ge 10 ]; do :; done
+    kill -TERM "$up_pid"
+    wait "$up_pid" 2> /dev/null
+    "$TS" down > /dev/null 2>&1
+done
+start=$SECONDS
+until [ "$(own_processes "sleep 31" | wc -l)" = 0 ] || [ $((SECONDS - start)) -ge 3 ]; do sleep 0.1; done
+for pid in $(own_processes "sleep 31"); do orphans=$((orphans + 1)); kill "$pid" 2> /dev/null; done
+check "slow up ended as its URL shows, 60 times: no sleep left behind ($orphans)" test "$orphans" = 0
 unset TS_FAKE_OPERATOR
 "$TS" logout > /dev/null 2>&1; TS_FAKE_ROOT=1 "$TS" logout > /dev/null 2>&1
 start=$SECONDS

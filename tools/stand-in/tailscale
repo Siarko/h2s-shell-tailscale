@@ -157,12 +157,13 @@ need_write() { # $1 the denial text, then the command as typed
     can_write || denied "$what" "$@"
 }
 
-# Waits $1 seconds, ended with its sleep by TERM (as the module's timeout or the module ends it)
+# Waits $1 seconds, ended with its sleep by TERM (as the module's timeout or the module ends it).
+# The trap is there before the sleep is started: a TERM that lands while the sleep is being
+# started still takes it along ($!: the sleep, once it is started)
 pause() {
+    trap 'kill "$!" 2> /dev/null; exit 143' TERM INT HUP
     sleep "$1" &
-    sleeper=$!
-    trap 'kill "$sleeper" 2> /dev/null; exit 143' TERM INT HUP
-    wait "$sleeper"
+    wait "$!"
     trap - TERM INT HUP
 }
 
@@ -408,11 +409,7 @@ login_flow() {
     [ "${TS_FAKE_LOGIN_URL_DELAY:-0}" != 0 ] && pause "$TS_FAKE_LOGIN_URL_DELAY"
     printf '\nTo authenticate, visit:\n\n\thttps://login.tailscale.com/a/REDACTED\n\n' >&2
     # Killable while it waits (the module ends a login that takes too long): the sleep goes too
-    sleep "${TS_FAKE_LOGIN_DELAY:-2}" &
-    sleeper=$!
-    trap 'kill "$sleeper" 2> /dev/null; exit 143' TERM INT HUP
-    wait "$sleeper"
-    trap - TERM INT HUP
+    pause "${TS_FAKE_LOGIN_DELAY:-2}"
     if [ "${TS_FAKE_LOGIN_RESULT:-}" = fail ]; then
         save_scenario needs-login
         echo "backend error: example login failure" >&2
