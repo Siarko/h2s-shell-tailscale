@@ -149,7 +149,9 @@ QtObject {
         _inFlight = true;
         client._runChange(command, "network", "exit-node", null, null, outcome => {
             _inFlight = false;
-            decision = { kind: outcome.ok ? "applied" : "failed", key: result.key, text: outcome.ok ? "" : outcome.message };
+            // The CLI's words as plain text (TailscaleRules.plainText), as on the entry
+            const reason = outcome.ok ? "" : TailscaleRules.plainText(outcome.message, 300);
+            decision = { kind: outcome.ok ? "applied" : "failed", key: result.key, text: reason };
             if (outcome.ok) {
                 _take(result.key);
                 return;
@@ -158,7 +160,7 @@ QtObject {
             const fresh = NetworkExitRules.noticeKey(result) !== _noticed;
             _setHeld({ key: result.key, choice: result.choice, kind: "failed", seen: result.current });
             if (fresh)
-                _notify(result, outcome.message);
+                _notify(result, reason);
         });
     }
 }

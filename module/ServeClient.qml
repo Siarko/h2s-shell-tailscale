@@ -68,7 +68,7 @@ QtObject {
             }
             reads++;
             if (!result.ok) {
-                readError = TailscaleRules.errorKind(result.code, result.err).message;
+                readError = TailscaleRules.plainText(TailscaleRules.errorKind(result.code, result.err).message, 300);
                 done(null);
                 return;
             }
@@ -91,7 +91,7 @@ QtObject {
                 // A failed read is not an empty config: planning on "nothing shared" would miss
                 // what is on a port (Funnel is per port) — not ok, so nothing is planned on it
                 if (!result.ok) {
-                    readError = TailscaleRules.errorKind(result.code, result.err).message;
+                    readError = TailscaleRules.plainText(TailscaleRules.errorKind(result.code, result.err).message, 300);
                     done(fresh, { ok: false, error: readError, entries: [] });
                     return;
                 }
@@ -149,8 +149,9 @@ QtObject {
             message = plan.kind === "nothing" ? "" : plan.error;
         });
         return client._runChange(_command(first), asked, "serve", null, prepare, outcome => {
+            // The CLI's words as plain text (TailscaleRules.plainText), as on the entry
             if (!outcome.ok && !outcome.dismissed)
-                message = outcome.message;
+                message = TailscaleRules.plainText(outcome.message, 300);
             // Checked whatever the outcome but a dismissed prompt (nothing was sent then): a
             // `funnel` ended by its time limit may have written its config before it was stopped
             if (ran.publicPort > 0 && !outcome.dismissed)

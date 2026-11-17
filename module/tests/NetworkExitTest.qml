@@ -47,6 +47,8 @@ TestCase {
             property var ran: []
             // true: every run fails as a refused change would
             property bool failRuns: false
+            // What a failed run says (the CLI's words: made plain before shown)
+            property string failMessage: "Tailscale refused the change."
             property var notices: []
             // Serve's check after a Funnel (client.serve.checking)
             property QtObject serve: QtObject {
@@ -57,7 +59,7 @@ TestCase {
             function _runChange(command, origin, operationName, onSuccess, prepare, onEnd) {
                 ran = ran.concat([command.argv.join(" ") + " (" + origin + ")"]);
                 const ok = !failRuns;
-                Qt.callLater(() => onEnd({ ok: ok, dismissed: false, message: ok ? "" : "Tailscale refused the change." }));
+                Qt.callLater(() => onEnd({ ok: ok, dismissed: false, message: ok ? "" : failMessage }));
                 return true;
             }
         }
@@ -265,10 +267,11 @@ TestCase {
 
         // A run that fails: not taken, said once, not retried in a loop; a new pass on the
         // network tries again
-        step(1, () => s = make(running, nodes, { failRuns: true }));
+        step(1, () => s = make(running, nodes, { failRuns: true, failMessage: "Tailscale <b>refused</b>\nthe change & more" }));
         step(1, () => s.follower.networks = cafeUp);
         until("the run failed", () => s.follower.decision.kind === "failed", () => {
-            same([s.fake.ran.length, s.follower.lastKey, s.fake.notices], [1, "", ["Tailscale refused the change."]], "failed: not taken, said once");
+            same([s.fake.ran.length, s.follower.lastKey, s.fake.notices], [1, "", ["Tailscale ‹b›refused‹/b› the change ＆ more"]], "failed: not taken, said once, as plain text");
+            assertEqual(s.follower.decision.text, "Tailscale ‹b›refused‹/b› the change ＆ more", "… the page's line plain too");
             s.fake.busy = true;
         });
         settled("busy", () => s.fake.busy = false);

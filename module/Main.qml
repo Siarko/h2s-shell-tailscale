@@ -47,9 +47,10 @@ QtObject {
     }
 
     // Never a text starting with "-" into a notification (notify-send would read it as an
-    // option), and no addresses (a notification may show on a shared screen)
+    // option), no addresses (a notification may show on a shared screen), and plain text
+    // (TailscaleRules.plainText: a notification daemon may read markup in the body)
     function _plain(text) {
-        return TailscaleRules.withoutAddresses(String(text ?? "")).replace(/^[\s-]+/, "");
+        return TailscaleRules.plainText(TailscaleRules.withoutAddresses(String(text ?? "")), 1000).replace(/^[\s-]+/, "");
     }
 
     // The shell's networks (module API 1.3), for the exit node per network
