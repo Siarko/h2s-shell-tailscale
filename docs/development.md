@@ -1,0 +1,92 @@
+# Development
+
+## Loading a checkout
+
+The shell's launcher reads `H2S_SHELL_MODULE_PATH`, a colon-separated list.
+Each entry is a module directory or a directory of modules.
+It is searched before `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/modules`.
+The shell takes the first module of an id and reports later ones as duplicates.
+
+```bash
+H2S_SHELL_MODULE_PATH=<checkout>/module
+```
+
+Set it in the launcher's environment, then start the shell.
+`h2s-shell ipc call modules list` shows which directory was loaded.
+
+## Tests
+
+Both test runners need a checkout of h2s-shell. Set `H2S_SHELL_DIR`; the default is `../h2s-shell-wt`.
+
+```bash
+tests/run.sh             # the QML suites, headless
+tests/lock-bed/run.sh    # the real shell in the lock test bed
+tools/test.sh            # the stand-ins
+```
+
+When other test runs may share the machine, wrap the runners in `flock /tmp/h2s-locktest.flock`.
+
+### `tests/run.sh`
+
+- Runs the suites listed under `tests` in `module/module.json`.
+- Uses the shell's `tests/run-modules.sh` when the checkout has it.
+- Otherwise builds its own isolated session and loads the suites with `tests/harness.qml`.
+- `H2S_OWN_HARNESS=1` forces the own harness.
+- `--log <file>` saves the output.
+- Exit status: 0 all passed, 1 a failure, 2 the runner could not start.
+
+The suites extend the shell's `TestCase` (`import qs.tests`).
+They run the live client against the stand-ins only.
+
+### `tests/lock-bed/run.sh`
+
+Starts the real shell in the shell's lock test bed, with this module and the stand-ins.
+The tests are in `tests/lock-bed/tests/`.
+The shell's `tests/lock/run.sh` must support `LOCKTEST_EXTRA_TESTS`.
+
+### `tools/test.sh`
+
+Checks the stand-ins. It runs each one by absolute path, so the real tools never run.
+
+### Safety
+
+- Never run the suites with `quickshell -p` in your own session.
+- Never point the stand-in tests at the real `tailscale`.
+
+## Stand-ins
+
+`tools/stand-in/` holds fake programs. None of them touches a real daemon or the network.
+
+| Program | Does |
+|---|---|
+| `tailscale` | a state machine over the fixtures: accounts, `set` flags with the real refusals, approval, Taildrop, serve, `cert`, `lock status` |
+| `pkexec` | asks nobody; `ok`, dismissed (126), no agent (127) or unkillable; logs what it ran |
+| `curl` | the event bus and Taildrop's inbox |
+| `timeout` | runs the real coreutils `timeout` |
+| `systemctl` | starts and stops the stand-in daemon |
+| `xdg-open` | opens nothing, logs the link |
+| `openssl` | reads the stand-in certificate's end date |
+| `nmcli` | answers nothing |
+
+They are configured with `TS_FAKE_*` variables. Each script's header lists them.
+State lives in `TS_FAKE_STATE_DIR`, one directory per test.
+
+## Fixtures
+
+`fixtures/` holds CLI and local API output, real and synthetic.
+`fixtures/README.md` lists each file and where it comes from.
+
+Fixtures must not identify a real tailnet. Use these placeholders:
+
+| Kind | Placeholder |
+|---|---|
+| tailnet | `example-tailnet.ts.net` |
+| accounts | `user1@example.com` |
+| Tailscale addresses | `100.64.0.N`, `fd7a:115c:a1e0::N` |
+| public endpoints | `198.51.100.0/24` |
+| LANs | `192.168.x.0/24` |
+| keys | zeroed, or `nodekey:peerN` |
+| URLs | `…/a/REDACTED` |
+
+`tools/redact-status.jq` turns a real `tailscale status --json` into a fixture.
+Check the result by hand before adding it.

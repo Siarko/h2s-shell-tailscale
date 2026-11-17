@@ -1,426 +1,87 @@
 # h2s-shell-tailscale
 
-The Tailscale module for [h2s-shell](../h2s-shell), the Quickshell desktop shell: Tailscale
-listed among the shell's VPNs (connect, disconnect, log in and out, exit nodes), with a page of
-its own for the main switches, the accounts, this device, sharing this computer (exit node, routes,
-SSH server, web interface), Taildrop (sending files, saving received ones), serve and Funnel,
-certificates, tailnet lock status, an exit node per network, the devices and diagnostics — and a
-bar widget of its own with a popup. The plan is the shell's
-`docs/plans/tailscale.md`; the module system it plugs into is `docs/plans/modules.md`. It needs
-module API 1.3 (the VPN slots, the handle's `resumed()`, the pages' `shown`; since 1.3 the networks
-and the VPNs up, and its widget's presets).
+Tailscale for the h2s-shell desktop shell.
+The module lists Tailscale among the shell's VPNs and adds a settings page, a bar widget and a popup.
+It works through the `tailscale` CLI and the daemon's local API.
 
-## What works (delivery step 1)
+## Features
 
-- **The entry among the VPNs** — "Tailscale" (or "Tailscale · <organisation>" for a named
-  tailnet; never the account's e-mail address, which is on the card) in the bar's VPN glyph, the network
-  popup's VPN section, the overview and Settings → System → Network → VPN, in every state: off,
-  connecting, connected ("Tailnet only" / "Via <exit node>"), and what needs you, with its
-  button: log in, key expired, waiting for approval (opens the admin console), the service not
-  running ("Start"), the exit node offline ("Use none", after a minute's grace), not installed,
-  not trusted (a tailscale, timeout or pkexec on PATH this user could replace: nothing runs),
-  not answering ("Not answering — state unknown": a read timed out; retried with a backoff).
-- **Time limits**: every command runs under coreutils' `timeout -k 5 <s>` — reads 15 s,
-  changes 60 s, a bare `up` 60 s (past that the daemon keeps trying by itself; Disconnect
-  stops it), login 10 minutes — and through pkexec as `pkexec timeout … tailscale …`, so a
-  root process ends by itself. Without `timeout`, nothing is run as administrator.
-- **Connect / disconnect** (bare `tailscale up` / `down`), **log in** (bare `tailscale login`:
-  the link opens in the browser — setting "Open Tailscale's login page in the browser" — and
-  can be copied; cancel — at once, even for a login running as root; given up after 10
-  minutes), **log out** (confirmed with the shell's delete button). A pending connect shows a
-  login URL as soon as `up` prints it or the bus sends it; Disconnect or Cancel ends it.
-- **Exit nodes**: under Tailscale's row in the popup and on the page — none, the suggested one,
-  this tailnet's own, Mullvad locations by country (collapsed) and city, offline ones disabled,
-  a filter when the list is long; "Allow the local network".
-- **The switches**: use routes from other devices, use Tailscale's DNS, block incoming
-  connections (shields up). Every change is a `tailscale set`.
-- **The devices**: name, owner, system, online / last seen, direct or relayed, addresses and
-  name to copy (a click), the traffic while the page is open, a filter, the exit-node mark.
-- **Privileges**: tried plainly; when Tailscale says "Access denied" and you clicked, it is
-  run again through pkexec (the shell's polkit agent asks); buttons carry the lock while
-  changes need a password. "Make <you> the operator" on the page asks once instead (with what
-  an operator may do), and shows the NixOS line to make it last. "Bring it up with this
-  network" never prompts and never opens a browser: the entry asks for you instead.
-- **The card** on the VPN page: tailnet, account, this computer's name and addresses, the exit
-  node, the key's expiry, warnings (Tailscale's health, an accepted route that covers the local
-  network, two VPNs up), and that the shell's blocking of traffic outside a VPN does not
-  support Tailscale (the owner's decision).
-- **Live**: one reader of tailscaled's event bus (`curl` on the LocalAPI socket,
-  /var/run/tailscale/tailscaled.sock or /run/tailscale/tailscaled.sock), each message a trigger
-  for one coalesced re-read of `status --json` and `debug prefs`; restarted with a backoff
-  when it ends; a 60 s poll AT ALL TIMES; a re-read after the computer slept (`resumed()`).
-  Without curl: "live updates need curl", the poll only. **To confirm on the real machine**:
-  whether the bus (mask 11414: no peer changes) sends a message when a peer goes offline —
-  until then a peer's or exit node's online state may be up to a minute old.
-- Profile facts `tailscale.connected` and `tailscale.exitNodeInUse` (true/false — never which
-  node); IPC target `tailscale` (`state`: phase, state, attention, counts — no names,
-  addresses or URLs; `connect`/`disconnect` act as origin "network": they never prompt —
-  except while the tools seam names stand-ins, for the lock-bed test). Failure notifications
-  carry no addresses; peers' names are shown as plain text, never as markup.
+- Connect, disconnect, log in and log out from the network popup.
+- Pick an exit node, including Mullvad locations.
+- Pick an exit node per Wi-Fi or Ethernet network.
+- Switch, add and remove Tailscale accounts.
+- Rename this device and see when its key expires.
+- Turn on accepted routes, Tailscale DNS and shields up.
+- Offer this computer as an exit node or subnet router.
+- Run Tailscale's SSH server and web interface.
+- Send and receive files with Taildrop.
+- Share local ports with serve and Funnel.
+- Get an HTTPS certificate for this device.
+- See tailnet lock status.
+- List the tailnet's devices and ping them.
+- Run network diagnostics.
 
-## What works (delivery step 2)
+## Requirements
 
-- **Accounts** (Tailscale's profiles), on the page: the account in use and its tailnet under
-  the connection state (any user may read that); the list (`switch --list --json`) only on
-  "Show accounts" — it needs root or the operator, so it asks for a password and is kept in
-  memory only (it holds e-mail addresses); while you are the operator it is read again by
-  itself after each change. Switch (`switch <id>`), remove another account (`switch remove
-  <id>`, the shell's delete button; the account in use cannot be removed), add one (a bare
-  `login`, the existing login flow: link opened, copy, cancel, 10 minutes), a nickname for the
-  account in use (`set --nickname=`, the field shows the one it has).
-  **How `tailscale login` really behaves** (tailscale 1.104.4's source, cmd/tailscale/cli/login.go
-  and ipn/ipnlocal/profiles.go): it ALWAYS moves to a new, empty profile first — the connection
-  drops at once, before any link, until the login is done. Another account there becomes a new
-  profile (with default settings — the operator too is a setting of each profile). The SAME
-  account is merged into its old profile with login's default settings: its exit node, accepted
-  routes, hostname, advertised routes, shields up, SSH, nickname and operator are lost. A login
-  that started from a logged-in account and did not finish (cancelled, timed out, failed, the
-  password prompt dismissed after the move) leaves Tailscale on that empty profile: the next
-  read decides, the page says so and offers "Switch back" (`switch <id>`, which restores the
-  old profile with its settings; "Show accounts" when the list was not read). A cancelled login
-  running as administrator cannot be stopped: the page asks you to close its browser page.
-- **The tailnet's name**: an organisation's tailnet by its name; a personal tailnet — whose
-  name IS the account's e-mail address — by its MagicDNS suffix (`tail1234.ts.net`), on the
-  card and the page. The e-mail address appears only as the account (the page's account line
-  and the accounts list), never in the VPN entry's name.
-- **This device**: its name (and whether it was set here or is the system's), rename
-  (`set --hostname=`; checked first: one DNS label, letters, digits, inner dashes, ≤ 63 — a dot
-  is refused, Tailscale uses the first label only), back to the system's (`--hostname=`), its
-  addresses and MagicDNS name to copy (a click), online and its home relay, the key's expiry
-  (date, "expires in N days", expired, expiry off).
-- **The key's expiry**: a warning from 14 days before (the page, the card), and within 7 days
-  (`TailscaleRules.reauthSoonDays`) the entry's status line says it too ("Tailnet only · key
-  expires in 3 days") — never attention with an action: nothing here renews a key without
-  harm (a bare `login` disconnects and, with the same account, resets this device's settings;
-  `up --force-reauth` is a flag on `up`). The page links the admin console, where the key is
-  renewed or its expiry turned off. An expired key keeps step 1's "Log in" — the page says
-  beside it that logging in again resets this device's Tailscale settings (exit node, routes,
-  name).
-- **Diagnostics**, a collapsed section, run only on "Check the network": client version
-  (`version --json`), `netcheck --format=json` (UDP, IPv4/IPv6, NAT, port mapping, the nearest
-  relay by name — `debug derp-map`, read once — and the next ones, captive portal; never the
-  public address), `dns status --json` (Tailscale DNS in use, MagicDNS, resolvers, split DNS,
-  search domains), every health warning with its title and text (the bus's, else status's),
-  the update notice (shown, never run). "Copy diagnostics" copies it all without keys or links.
-  `tailscale bugreport` is not offered (it uploads logs). Time limits: netcheck 30 s, the
-  others 15 s; one run at a time, beside changes (reads only).
-- **Ping a device** from its row: `ping --c=1 --timeout=3s <its address>` → "direct, 4 ms",
-  "relayed (DERP fra), 31 ms", "no reply" (a 10 s limit around it).
+| What | Needed for |
+|---|---|
+| h2s-shell with module API 1.3 | everything |
+| `tailscale` and a running `tailscaled` | everything |
+| coreutils `timeout` and `pkexec` | changes that need an administrator |
+| `curl` | live updates and saving received files |
+| `openssl` | showing a certificate's end date |
 
-## What works (delivery step 3)
+Without `curl`, the module polls Tailscale once a minute.
 
-- **Sharing** (a section of the page): offer this computer as an **exit node** (`set
-  --advertise-exit-node=true|false`); offer its networks as **subnet routes** (`set
-  --advertise-routes=<every route, comma-separated>`, `=` for none) — a route is checked before
-  it is sent (address/prefix, no host bits, IPv4 or IPv6, not a default route — that is the exit
-  node —, no duplicate; a warning inside 100.64.0.0/10 or fd7a:115c:a1e0::/48). Each shows its
-  **approval**, read from `status --json`: Self's AllowedIPs holds the routes an admin approved,
-  PrimaryRoutes those this device serves now (approved but not primary: another router serves
-  it), ExitNodeOption (both /0 in AllowedIPs) the exit node; while not connected: unknown. The
-  admin console's page of this machine is linked while something waits.
-  **How the exit node and the routes compose** (tailscale 1.104.4, cmd/tailscale/cli/set.go
-  calcAdvertiseRoutesForSet): they are one preference, AdvertiseRoutes; `--advertise-routes`
-  alone keeps the exit-node pair as it is, `--advertise-exit-node` alone keeps the routes — so
-  the module sends one flag per command, never both, and never a /0 in the route list.
-  A route edit is an intent (add or remove one network): its command is planned from prefs read
-  again just before it runs — and again before the retry through pkexec —, so it never drops
-  routes from a stale list or writes one account's routes into another; it is refused while
-  Tailscale's settings are being read again after a change (try again in a moment), and aborted
-  ("Changed meanwhile") when the account changed. Once the password dialog is up, the command
-  is fixed.
-  Offering an exit node while using one is refused by the daemon ("Cannot advertise an exit node
-  and use an exit node at the same time.", ipnlocal checkExitNodePrefsLocked): the switch is off
-  with the reason and a "Stop using it" button; choosing an exit node while offering one says so.
-- **IP forwarding**: `/proc/sys/net/ipv4/ip_forward` and `/proc/sys/net/ipv6/conf/all/forwarding`
-  are read (any user may) while the page is shown and something is offered, and after offering;
-  off for a family that matters → a warning with what to put in the NixOS configuration
-  (`services.tailscale.useRoutingFeatures = "server";`, or the two `boot.kernel.sysctl` lines)
-  and Tailscale's own health warning ("ip-forwarding-off") when it sends one. The module writes
-  no sysctl.
-- **The web interface** (`--webclient`, port 5252) with its link; under **More** (collapsed):
-  app connector (`--advertise-connector`), source NAT for offered routes
-  (`--snat-subnet-routes`), stateful filtering (`--stateful-filtering`), the peer relay
-  (`--relay-server-port=<port>`, 0 any port, empty = off), posture reports (`--report-posture`),
-  and read only: the netfilter mode and the tags (asked for and applied).
-- **SSH**: Tailscale's SSH server (`set --ssh=true|false`) — "who may log in is decided by the
-  tailnet's access rules", the admin console's ACL page linked; off with the reason when the
-  tailnet does not allow it (Self's CapMap lacks https://tailscale.com/cap/ssh — the daemon
-  refuses then); Tailscale's own SSH health warnings; the system's sshd is not touched (Tailscale
-  SSH answers on the Tailscale addresses only). The risk check of `set --ssh` (cli/up.go
-  presentSSHToggleRisk) asks only when the CLI runs inside an SSH session over Tailscale
-  (SSH_CLIENT from a 100.x address; pkexec clears it): from the desktop it does not ask; if it
-  does, the refusal is explained. Device rows of devices that run Tailscale SSH (status's
-  `sshHostKeys`) have **Copy ssh command** (`ssh <MagicDNS name>`, else `ssh <IPv4>`). No
-  terminal is opened: the shell has no terminal setting or launch API (none in its
-  SettingsSchema) — a possible later core addition.
-- **About**: update checks (`--update-check`), automatic updates (`--auto-update`; off with the
-  reason where Tailscale is updated with the system — on NixOS the daemon refuses: "Auto-updates
-  are not supported on this platform.").
-- **This device's name** (a fix): a name set while disconnected is the name shown; while
-  status (what the tailnet has) still shows the old one the row says "the tailnet shows it after
-  connecting" (off) or "updating" (connected), and the old MagicDNS name is marked, not offered
-  to copy. Going back to the system's name is judged the same way (the system's name read once
-  from /proc/sys/kernel/hostname).
+On NixOS, `services.tailscale.enable = true;` provides `tailscale` and `tailscaled`.
 
-**Left out, with the reason** (tailscale 1.104.4's cmd/tailscale/cli/set.go): changing tags —
-`--advertise-tags` is a flag of `up` only (up.go), and changing tags there re-authenticates;
-changing the netfilter mode (shown only: it can break the system's firewall); `--posture-checking`
-does not exist (the flag is `--report-posture`); `--relay-server-static-endpoints` and
-`--remote-config` (hidden) are not offered.
+## Install
 
-## What works (delivery step 4: Taildrop)
+Clone the repository and link its `module` directory into the shell's module directory:
 
-Taildrop — sending and saving received files — needs your user to be Tailscale's operator.
-Nothing of it runs through pkexec. Not the operator: the section says so and offers "Let this
-user manage Tailscale without a password" (one password, once).
-
-- **Send** from the page's Taildrop section, or **Send file…** on a device row: devices that can
-  receive (status's `TaildropTarget`; offline ones shown, not offered), files from the file
-  chooser, pasted absolute paths, or dropped on the section. `tailscale file cp -- <paths…>
-  <IPv4>:` runs as you, outside the module's change lock: Disconnect and the settings stay free
-  while it runs, and Disconnect, logout or an account switch end it. Per-file progress from the
-  bus's OutgoingFiles; Cancel kills it; no progress for 2 minutes stops it; 6 hours at most. A
-  `find -P` first only gives a clear message for links, folders, unreadable or missing files.
-- **Receive**: anyone sees that files arrived (the bus's IncomingFiles and FilesWaiting): a
-  notification with the name, "Files received" on the entry's status line (a fact, never
-  attention). The operator saves them (Save, the notification's action, or automatically —
-  default off) into a folder (default `XDG_DOWNLOAD_DIR`, read from user-dirs.dirs, else
-  `~/Downloads`), fetched from the LocalAPI as you, with a conflict policy (keep both, replace,
-  leave waiting; saving automatically never replaces). Names are made safe again (no separator,
-  nothing invisible, no leading "." or "-", at most 200 bytes). Auto-save runs for an arrival
-  only; a file it left is not tried again until the next arrival or a manual Save. **Open
-  folder** opens the folder (checked to be one), never a file.
-- **The operator**: Administration says whether you are the operator of this account; become it,
-  or stop being it (`set --operator=`).
-
-**Why the operator, and no pkexec** (tailscale 1.104.4's source): the LocalAPI's `file-put` and
-`files/` need write access — root or the operator (feature/taildrop/localapi.go; ipn/ipnauth
-IsReadonlyConn). The CLI opens and writes the files itself (cli/file.go). A root `file cp` was
-built first and rejected: root opens the chosen paths long after any check, so a swapped file or
-parent link makes root read and send a file you cannot read, and no cheap check closes that race.
-A root `file get` would leave root's files in your folder.
-
-**Limits**: the sender of a received file is not known (the bus does not say); a non-operator
-sees that files wait, not how many; the target is addressed by its IPv4 address; saving needs curl.
-The file and folder dialogs are untested by click in Quickshell (a real-machine check is open);
-pasting paths and dropping files work without them.
-
-**Helper programs**: `tailscale`, `timeout`, `curl` and `pkexec` run by absolute path (the tools
-seam); `sh`, `find`, `mv`, `mktemp`, `rm`, `test`, `cat` are found through PATH, like the module's
-other small helpers.
-
-## What works (delivery step 5)
-
-- **Serve and Funnel** (a collapsed section): the current config (`serve status --json` — any user
-  may read it: LocalAPI GET serve-config needs read access only), each entry with where it listens,
-  what it serves, "Public" when Funnel is on, its links to copy. Share a local port over HTTPS
-  (`serve --bg --yes --https=<443|8443|10000> [--set-path=/x] http://127.0.0.1:<port>`; `funnel` in
-  place of `serve` for the internet), a TCP forward (`serve --bg --yes --tcp=<port>
-  tcp://127.0.0.1:<port>`), Funnel on or off per HTTPS entry (the entry's own handler sent again with
-  `funnel` or `serve` — the CLI's only way), remove one (`serve --bg --yes --https=<port>
-  --set-path=<mount> off`), stop all (`serve reset`, behind the delete button). Every change is
-  planned again from prefs and the config read under the change lock (another account since the
-  click: "Changed meanwhile"). Shown when unmet, with the admin console: connected, MagicDNS, HTTPS
-  certificates, the `funnel` attribute and a port its `funnel-ports` capability lists, shields up off.
-  Funnel is per port, not per entry (AllowFunnel is keyed by host:port): turning it on publishes
-  every share on that port, so "Funnel on" asks first and names the others ("Public, with 2
-  more?"), and adding a share to a public port says "Share publicly". A port holding anything the
-  module would not send itself — a file or folder, a unix socket, a redirect, a remote proxy,
-  forwarded app capabilities, a share under an old device name — is never made public here
-  ("Change this one in a terminal"), also not through pkexec; remove and Funnel off still work.
-  Funnel off needs HTTPS serving (else only Remove). Stop all says when it also stops files,
-  terminal shares or services.
-- **Certificates** (collapsed): for this computer's MagicDNS name (status's CertDomains, never
-  typed), the operator only, as you: `tailscale cert --cert-file=… --key-file=… <name>` into
-  `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/tailscale/certs` (700, not a link; key 600, certificate
-  644, as the CLI writes them). The paths to copy and the end date (openssl, when installed). Not
-  renewed by itself.
-- **Tailnet lock**: status only (`lock status --json`, any user may): off, on and signed, or locked
-  out — then the entry asks for you while connected ("Open admin console"); the keys to copy and the
-  trusted keys' count. Initialising, signing, adding or removing keys and disabling the lock are the
-  tailnet's administration and not offered.
-- **Exit node by network** (in Exit node): mark networks (the shell's saved Wi-Fi and Ethernet
-  networks, module API 1.3) with no exit node, automatic (`auto:any`) or one of this tailnet's exit
-  nodes. When the marked networks that are up change, the module sets or clears the exit node once;
-  a choice made by hand afterwards stays until the networks change. While Tailscale is not running
-  (off, or still starting at boot or resume) or its devices are not known yet, it waits and applies
-  the choice once Tailscale is up — it never turns Tailscale on. A short drop to no marked network
-  (under 30 s, a Wi-Fi reconnect) does not count as a change. Two marked networks up that
-  disagree: nothing. Only for the operator (an automatic change never asks for a password); not the
-  operator: "Needs the operator". Offering an exit node blocks using one, as in step 3.
-- **Another VPN** up beside the exit node: one line (both want all traffic; Tailscale's wins). The
-  shell says which VPNs are up, not whether one is a full tunnel: the line shows for any.
-
-**Left out, with the reason** (tailscale 1.104.4's source): serving files and folders — `tailscaled`
-(root) opens them at request time, following links (ipnlocal serveFileOrDirectory), and the daemon
-asks for root or a sudo-capable operator for any config holding one (ipn/localapi/serve.go): existing
-ones are listed and may be removed, never added. Unix sockets, Tailscale Services, foreground
-`serve`: counted, not managed. Funnel over TCP. Certificate renewal. Changing the tailnet lock.
-
-## What works (delivery step 6: the bar widget)
-
-A bar widget of its own, **Tailscale**, with a popup. It is not on the bar by default.
-
-**Adding it**: Settings → Behaviour → Bar, in the left, center or right section "＋ Add widget",
-then "Tailscale" — offered while the module is loaded. Its ⚙ in the section editor has the
-popup mode (click or hover, as every popup widget) and, once the entry has a preset ("Customize"),
-its settings:
-
-- **Text** beside the icon: None (default), State ("On", "Off", "Connecting", "Log in", …) or
-  Exit node (the exit node's name while one is in use).
-- **Badge**: a count on the icon while received Taildrop files wait (a dot when only the bus said
-  so: not the operator). On by default.
-- **Devices**: how many the popup lists (3, 5, 10 or 20; default 5).
-
-The presets are read and written through the module's handle (`module.presetValue` /
-`setPresetValue`, shell module API 1.3).
-
-**The icon**: Tailscale's VPN glyph (the one the network widget shows for it), coloured like the
-network widget's links: dim while there is nothing to use (not installed, the service stopped,
-the state not read), plain while off, the accent while connected (dimmed while connecting or
-disconnecting), the warning colour when something needs you (logged out, key expired, waiting
-for approval, exit node offline, no access). A small globe beside it while an exit node carries
-the internet traffic. No tooltip: the colour, the optional text and the popup say it.
-
-**The popup**: the state (the entry's own line, as in the network popup) with Connect or
-Disconnect — or the attention's own button (Log in, Start) — and the lock when it will ask for a
-password; the account and tailnet; the exit node (the network popup's chooser, with None); this
-device's addresses and name to copy; the devices, online ones first, each with its address to
-copy and **Send file…** for the operator (it opens the settings page with the file chooser),
-"All devices…" past the cap; received files with **Save** (the operator) and the last save's
-result; **Settings…** (the module's page) and **Admin console**.
-
-The widget and the popup render the live client's state: they start nothing (no timer, no
-process), and the popup does no work while closed. With the module off the widget shows
-nothing (the core's rule for a module's widget); without the daemon, logged out or not installed,
-both say so. Nothing of it is on the lock screen. No middle-click action: no other widget of the
-shell has one.
-
-## What needs root (asked through pkexec, answered by the shell's polkit agent)
-
-Unless your user is Tailscale's operator, these are tried plainly, denied by Tailscale, and run
-again as `pkexec <timeout> -k 5 <limit> <tailscale> …` — only after a click: `up`, `down`,
-`login` (log in, add an account), `logout`, every `set …` (exit node, allow
-LAN, routes, DNS, shields up, hostname, nickname, operator; since step 3: offering the exit node and routes,
-SSH, the web interface, app connector, NAT, stateful filtering, peer relay, posture, update checks and
-automatic updates), `switch <id>`, `switch remove
-<id>`, and the read `switch --list --json`. Since step 5: serve and Funnel changes (`serve …`, `funnel …`, `serve reset`), after a click. Certificates and the exit node by network never run through pkexec (the operator only, as you). Taildrop (step 4) never runs through pkexec: it is the operator's, as you. Never through pkexec: `status --json`,
-`debug prefs`, `exit-node suggest`, the bus, `netcheck`, `dns status`, `debug derp-map`,
-`version`, `ping` (any user may), the two IP-forwarding files in /proc, and `systemctl start tailscaled.service` (systemd asks
-polkit itself).
-
-## IPC (`qs ipc call tailscale …`)
-
-`state` (phase, state, attention, counts — no names, addresses or URLs), `connect`,
-`disconnect` (origin "network": never a prompt), `refresh`; since step 2: `profiles` (ids,
-the one in use, outdated, the hostname set here, the key's state, whether a login was
-interrupted — no names or addresses), `readProfiles`, `switchProfile <id>`, `setHostname
-<name>` (these three only while no password is needed — the operator — or the tools seam names
-stand-ins; outside the seam they are asked as origin "network": a denial is a failure, never a
-prompt), `runDiagnostics`, `diagnostics` (ran, row counts, the nearest relay's code, error
-and health counts). Since step 3: `sharing` (what is offered and its approval, SSH, forwarding — counts and
-states, never the networks), `advertiseRoute <network>`, `removeRoute <network>`, `advertiseExitNode
-<true|false>`, `setSsh <true|false>` (under the same rule as `setHostname`), `readForwarding`;
-`profiles` also says `namePending` and `nameNote`.
-Since step 4: `taildrop` (counts and states: targets, the send's per-file outcomes, waiting count, saves — no names, paths or addresses), `sendFile <device id> <absolute path>` (the operator only, as you: never a prompt), `cancelSend`, `saveReceived` (the operator only: never a prompt).
-Since step 5: `serve` (counts and states: entries, types, ports, Funnel per entry, what is missing — no names or links), `readServe`, `sharePort <port> <local port>`, `setFunnel <port> <true|false>` (under the rule of `setHostname`), `tailnetLock` (read, enabled, signed, locked out, trusted keys), `readTailnetLock`, `networkExit` (rows, networks, decision, runs), `setNetworkExit <network id> <none|auto|node id>`.
-Since step 6: `widget` (the bar widget's state: kind, tone, the exit-node mark, the badge — no names).
-
-
-## Trying it in a development shell
-
-Start a development shell (never your session's) with the module directory in its
-environment:
-
-```
-H2S_SHELL_MODULE_PATH=/home/h2s/src/h2s-shell-tailscale/module
+```bash
+git clone <repository-url> h2s-shell-tailscale
+mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/h2s-shell/modules"
+ln -s "$PWD/h2s-shell-tailscale/module" \
+    "${XDG_DATA_HOME:-$HOME/.local/share}/h2s-shell/modules/tailscale"
 ```
 
-The shell's launcher hands it to the shell; `qs ipc call modules list` shows it loaded, and
-Settings → System → Network → Tailscale is its page. It reads Tailscale with your user's
-rights; the first change asks for an administrator's password.
+The shell's launcher looks for modules each time it starts the shell. Restart it:
 
-## Layout
-
-```
-module/                 the module itself — what gets installed
-  module.json           the manifest: main, a bar widget, two VPN slots (row, card), the page, a setting, facts, tests
-  qmldir                its types and singletons
-  TailscaleRules.qml    pure functions: status/prefs → the VPN entry, devices, exit nodes,
-                        the event bus, errors, plans, every command's argv
-  TailscaleClient.qml   the live side: the stream, reads, actions, the tools seam (I/O only)
-  Tailscale.qml         a singleton that points at the running client (for the page)
-  Main.qml              made by the shell's host: the client, the VPN provider, IPC, facts
-  TailscaleRow.qml      slot network.vpn.row: the exit-node chooser, the login link
-  TailscaleCard.qml     slot network.vpn.card: tailnet, account, this computer, warnings
-  TailscalePage.qml     the settings page "tailscale" (where the card's "Settings…" leads)
-  ExitNodeChooser.qml   the chooser (row and page)
-  DeviceRow.qml         one device on the page (with Ping)
-  CopyChips.qml         addresses and names to copy with a click
-  SharingSection.qml    the page's Sharing (exit node, routes, forwarding, web interface, More)
-  SshSection.qml        the page's SSH (the server switch, access rules)
-  TaildropRules.qml     pure: targets, paths, the bus's file fields, safe names, the save script
-  TaildropClient.qml    Taildrop's live side, on the client's runner and operation lock
-  TaildropSection.qml   the page's Taildrop (send, received files, folder, conflicts, auto-save)
-  Serve{Rules,Client,Section}.qml        serve and Funnel (step 5)
-  Cert{Rules,Client,Section}.qml         certificates
-  Lock{Rules,Client,Section}.qml         tailnet lock (status)
-  NetworkExit{Rules,Client,Table}.qml    the exit node by network
-  TailscaleWidget.qml   the bar widget "tailscale" (step 6): icon, state colour, exit-node mark, badge
-  TailscalePopup.qml    its popup
-  TailscaleWidgetSettings.qml  its preset pane (text, badge, device cap)
-  TailscaleWidgetRules.qml  pure: the icon's state, text, badge, the popup's devices, the send request
-  tests/                its suites (extend the shell's TestCase: `import qs.tests`)
-fixtures/               redacted real outputs and synthetic ones (see fixtures/README.md)
-tools/
-  stand-in/tailscale    a stand-in CLI: a state machine over the fixtures (accounts: profiles, switch,
-                        login adding one, remove, nickname; hostname; netcheck, dns status, derp-map);
-                        sharing: every `set` flag with set.go's composition and refusals, approval
-  stand-in/pkexec       a stand-in pkexec: ok / 126 / 127 / unkillable, logs what it was asked to run
-  stand-in/timeout      runs the real coreutils timeout (so the seam names every program)
-  stand-in/curl         a stand-in for the LocalAPI: the event stream (also followed as it grows),
-                        Taildrop's inbox (files/: list, fetch, delete; operator only)
-  stand-in/systemctl    starts / stops the stand-in daemon (a file)
-  stand-in/xdg-open     opens nothing, logs the link
-  stand-in/nmcli        answers nothing (for the lock-bed test's shell)
-  test.sh               checks the stand-ins
-  redact-status.jq      turns a live `tailscale status --json` into a fixture
-tests/
-  run.sh                runs the module's suites through the shell's tests/run-modules.sh
-  harness.qml           its own loader, for a shell without run-modules.sh
-  lock-bed/run.sh       the lock-bed tests, through the shell's tests/lock/run.sh
-  lock-bed/tests/       … tailscale.sh: the real shell with the module and the stand-ins
+```bash
+h2s-shell --restart
 ```
 
-## The tools seam
+Check that the module loaded:
 
-One place (`TailscaleClient.tool()`) decides which `tailscale`, `timeout`, `curl`, `pkexec`,
-`systemctl` and `xdg-open` run: a directory given by the owner (the suites), else
-`H2S_TAILSCALE_TOOLS` in the shell's environment (the lock-bed test), else — under the shell's
-module test runner — `tools/stand-in` next to the module, else (unset: the normal case) the
-names on PATH, resolved once to absolute paths with `command -v` and checked with `stat`
-(TailscaleRules.toolsProbe: owned by root and not group/other-writable, or in the Nix store —
-the found path's directory, the real file and its directory). With a directory in use a link
-is opened by its `xdg-open`, never by the shell's. (`stand-in/timeout` runs the real
-coreutils timeout; `stand-in/pkexec` has an "unkillable" mode, `stand-in/tailscale` a slow
-`up` and a hanging `status`.)
-
-## Running the tests
-
-```
-flock /tmp/h2s-locktest.flock tests/run.sh             # the QML suites, headless
-flock /tmp/h2s-locktest.flock tests/lock-bed/run.sh    # the real shell in the lock test bed
-tools/test.sh                                          # the stand-ins
+```bash
+h2s-shell ipc call modules list
 ```
 
-Both runners need a checkout of the shell: `H2S_SHELL_DIR` (default `../h2s-shell-wt`); the
-lock-bed runner needs its `tests/lock/run.sh` to take `LOCKTEST_EXTRA_TESTS`. The suites run
-the live client against the stand-ins only (they put the stand-ins first on PATH as well).
-Never run the suites with `quickshell -p` in a real session, and never point the stand-in
-tests at the real `tailscale`: `tools/test.sh` runs every stand-in by its absolute path.
+The page is under Settings → System → Network → Tailscale.
+The bar widget is not added by default. Add it in Settings → Behaviour → Bar with "＋ Add widget".
 
-## Installing
+For a development checkout, see [docs/development.md](docs/development.md).
 
-Once the shell supports it: add this repository's link in the shell's Settings → Modules
-(the shell clones it and loads `module/`). On NixOS the shell's `programs.h2s-shell.modules`
-option will take it as a package (a flake comes later).
+## Privileges
+
+Reading Tailscale's state needs no privileges.
+Most changes need root or Tailscale's operator. The module first tries them as you.
+If Tailscale refuses, a click asks for an administrator's password through pkexec.
+The page offers to make your user the operator, so it asks only once.
+Taildrop, certificates and the exit node per network work only for the operator.
+
+Details are in [docs/privileges.md](docs/privileges.md).
+
+## Documentation
+
+| File | Content |
+|---|---|
+| [features.md](docs/features.md) | what each part does |
+| [privileges.md](docs/privileges.md) | what runs as you, what runs as root, the operator |
+| [settings.md](docs/settings.md) | the setting, widget options, stored data, facts |
+| [ipc.md](docs/ipc.md) | the `tailscale` IPC target |
+| [architecture.md](docs/architecture.md) | file map, how state is read, the tools seam |
+| [limitations.md](docs/limitations.md) | what is not offered and why, known gaps |
+| [development.md](docs/development.md) | tests, stand-ins, fixtures |
+| [CHANGELOG.md](CHANGELOG.md) | changes |

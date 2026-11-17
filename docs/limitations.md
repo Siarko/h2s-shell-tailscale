@@ -1,0 +1,32 @@
+# Limitations
+
+## Not offered, by design
+
+| What | Why |
+|---|---|
+| Renewing the key | a bare `login` disconnects and, with the same account, resets this device's settings. The page links the admin console instead. |
+| Changing tags | `--advertise-tags` is a flag of `up` only, and changing tags re-authenticates. Tags are shown. |
+| Changing the netfilter mode | it can break the system's firewall. It is shown. |
+| `tailscale bugreport` | it uploads logs |
+| Serving files and folders | `tailscaled` opens them as root at request time, following links. Existing ones are listed and can be removed. |
+| Managing unix sockets, Tailscale Services, foreground `serve` | shown and counted only |
+| Certificate renewal | the files are written only on "Get certificate" |
+| Changing tailnet lock | init, sign, add, remove and disable belong to the tailnet's administration |
+| Taildrop or certificates through pkexec | root would read or write paths long after any check |
+| Opening a terminal for SSH | the shell has no terminal setting. Rows offer "Copy ssh command". |
+
+Also not offered: Funnel over TCP, `--relay-server-static-endpoints`, `--remote-config`.
+
+## Known gaps
+
+- The event bus is watched without peer changes. A device's online state can be up to a minute old.
+- The sender of a received file is not known. The event bus does not say.
+- A user who is not the operator sees that files wait, not how many.
+- Taildrop addresses the target device by its IPv4 address.
+- Saving received files needs `curl`.
+- The "Another VPN is also on" line shows for any VPN. The shell does not say whether a VPN is a full tunnel.
+- The shell's blocking of traffic outside a VPN does not let Tailscale through. The VPN card says so.
+- The widget has no tooltip and no middle-click action.
+- Nothing of the module is on the lock screen.
+- A login started through pkexec cannot be stopped from the shell. It ends at its time limit. The page asks you to close the login page in the browser.
+- A login from a logged-in account that does not finish leaves Tailscale on a new, empty profile. The page offers "Switch back".
