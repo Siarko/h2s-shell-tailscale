@@ -15,7 +15,7 @@ TestCase {
     asynchronous: true
     Component.onCompleted: {
         if ("timeLimitMs" in suite)
-            suite["timeLimitMs"] = 60000;
+            suite["timeLimitMs"] = 120000;
     }
 
     function _path(url) {
@@ -259,7 +259,73 @@ TestCase {
             assertEqual(pathPort.pkexecLines.length, 0, "nothing through pkexec");
         });
 
-        then(pathPort, "next", () => true, () => plainScenario());
+        then(pathPort, "next", () => true, () => raceScenario());
+    }
+
+    function raceScenario() {
+        const serveScenario = "printf 'serve\\n' > \"$1/state/scenario\"";
+        const proxyOnly = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"}}}}}";
+        const withPath = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"},\"/files\":{\"Path\":\"/srv/share\"}}}}}";
+        // ---- Funnel on through pkexec, and a path handler lands on 443 while the password
+        // dialog is open (the stand-in's serve-next.json: after the module's last read, before
+        // the CLI's own) → read again after the change, Funnel turned off at once, the user told ----
+        const race = scenario("race", { setup: [serveScenario, "printf '%s\\n' '" + proxyOnly + "' > \"$1/state/serve.json\"",
+                                                "printf '%s\\n' '" + withPath + "' > \"$1/state/serve-next.json\""] });
+        then(race, "status read", () => busReady(race) && race.client.serve.ready.canFunnel, () => assert(race.client.serve.read(), "the config is read"));
+        then(race, "config read", () => race.client.serve.config !== null && !race.client.serve.reading, () => {
+            assertEqual(race.client.serve.entries.length, 1, "only `/` shared");
+            assert(race.client.serve.setFunnel(race.client.serve.entries[0].key, true), "Funnel on: allowed on what is read");
+        });
+        then(race, "Funnel went on", () => race.client.serve.checking || race.client.serve.message !== "", () => {});
+        then(race, "checked and turned off", () => race.client.serve.message !== "" && !race.client.serve.checking && !race.client.busy && !race.client.serve.reading, () => {
+            assertEqual(race.client.serve.message, "Funnel off. Something else is on port 443.", "the user told on the page");
+            same(race.failures.map(failure => [failure.what, failure.reason]), [["Funnel", "Funnel off. Something else is on port 443."]], "… and by a notification");
+            same(race.client.serve.entries.map(entry => [entry.mount, entry.what, entry.funnel]), [["/", "proxy", false], ["/files", "path", false]], "the port is private again");
+            assert(!ServeRules.portPublic(race.client.serve.config, 443, race.client.status), "… Funnel off for 443");
+        });
+        logs(race, "what ran", () => {
+            assertEqual(count(race.pkexecLines, /\tfunnel\t--bg\t--yes\t--https=443\thttp:\/\/127\.0\.0\.1:3000$/), 1, "Funnel on, as root");
+            assertEqual(count(race.pkexecLines, /\tserve\t--bg\t--yes\t--https=443\thttp:\/\/127\.0\.0\.1:3000$/), 1, "then off again with serve");
+            assertEqual(race.pkexecLines.length, 2, "nothing else as root");
+        });
+
+        then(race, "next", () => true, () => lockScenario());
+    }
+
+    function lockScenario() {
+        const serveScenario = "printf 'serve\\n' > \"$1/state/scenario\"";
+        const proxyOnly = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"}}}}}";
+        const withPath = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"},\"/files\":{\"Path\":\"/srv/share\"}}}}}";
+        // ---- The same race, but the `funnel` run fails after its write reached the daemon (as
+        // one ended by its time limit), and another change takes the lock the moment the check
+        // starts → checked anyway, the revert waits for that change and then runs ----
+        const lock = scenario("lock", { setup: [serveScenario, "printf '%s\\n' '" + proxyOnly + "' > \"$1/state/serve.json\"",
+                                                "printf '%s\\n' '" + withPath + "' > \"$1/state/serve-next.json\"", ": > \"$1/state/serve-fail-after-write\""] });
+        then(lock, "status read", () => busReady(lock) && lock.client.serve.ready.canFunnel, () => assert(lock.client.serve.read(), "the config is read"));
+        then(lock, "config read", () => lock.client.serve.config !== null && !lock.client.serve.reading, () => {
+            lock.grabbed = false;
+            lock.client.serve.checkingChanged.connect(() => {
+                if (lock.client.serve.checking && !lock.grabbed) {
+                    lock.grabbed = true;
+                    lock.busyAtCheck = lock.client.busy;
+                    lock.grabbedOk = lock.client.setAllowLan(true);
+                }
+            });
+            assert(lock.client.serve.setFunnel(lock.client.serve.entries[0].key, true), "Funnel on");
+        });
+        then(lock, "the check started, another change took the lock", () => lock.grabbed === true, () => {
+            same([lock.busyAtCheck, lock.grabbedOk], [false, true], "the lock was free and the other change took it");
+        });
+        then(lock, "checked and turned off", () => /^Funnel off|^Couldn.t/.test(lock.client.serve.message) && !lock.client.serve.checking && !lock.client.busy && !lock.client.serve.reading, () => {
+            assertEqual(lock.client.serve.message, "Funnel off. Something else is on port 443.", "turned off after the other change ended");
+            assert(!ServeRules.portPublic(lock.client.serve.config, 443, lock.client.status), "… Funnel off for 443");
+        });
+        logs(lock, "what ran", () => {
+            const order = lock.pkexecLines.map(line => /\tfunnel\t/.test(line) ? "funnel" : /\tset\t/.test(line) ? "set" : /\tserve\t/.test(line) ? "serve" : line);
+            same(order, ["funnel", "set", "serve"], "Funnel on (failed after its write), the other change, then Funnel off");
+        });
+
+        then(lock, "next", () => true, () => plainScenario());
     }
 
     function plainScenario() {

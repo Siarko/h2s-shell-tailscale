@@ -92,16 +92,24 @@ Singleton {
     }
 
     // `serve status --json` (text or object) → { ok, error, empty, entries, funnelOn, funnelHosts,
-    // unlisted, services, foreground }. An entry: { key, type ("https" | "http" | "tcp" |
-    // "tls-terminated-tcp"), port, mount ("" for TCP), host, what (above, "tcp" for a forwarder),
-    // target, complete, appCaps, funnel, url, urls }. Only the node's own listeners are entries;
-    // `services` and `foreground` count what is shown but not managed here (Tailscale Services,
-    // `serve` running in a terminal). `funnelHosts`: the host:ports with Funnel on ({ host, port }).
-    // `unlisted`: ports holding a handler that is not an entry (malformed, or past maxEntries) —
-    // Funnel is per host:port, so a port with something unseen is never made public. Unknown fields
-    // are ignored; anything not an object is not ok.
+    // unlisted, foregroundPorts, servicePorts, services, foreground }. An entry: { key, type
+    // ("https" | "http" | "tcp" | "tls-terminated-tcp"), port, mount ("" for TCP), host, what
+    // (above, "tcp" for a forwarder), target, complete, appCaps, funnel, url, urls }. Only the
+    // node's own background listeners are entries; `services` and `foreground` count what is shown
+    // but not managed here (Tailscale Services, `serve` running in a terminal). `funnelHosts`: the
+    // host:ports with Funnel on ({ host, port }). `unlisted`: ports holding a handler that is not an
+    // entry (malformed, past maxEntries, or a terminal session's) — Funnel is per host:port, so a
+    // port with something unseen is never made public. `foregroundPorts`: the ports of terminal
+    // sessions (Foreground[*] TCP and Web): they sit on this device's own name and port and the
+    // daemon looks them up first (ServeConfigView.FindTCP / FindWeb), so a Funnel on such a port
+    // would publish the terminal's handler; tailscaled also refuses a background listener there
+    // ("foreground listener already exists"). `servicePorts`: the ports of Tailscale Services
+    // (Services[*] TCP and Web): they listen on the service's own address and name, which Funnel
+    // does not reach, but the module does not make such a port public either. Unknown fields are
+    // ignored; anything not an object is not ok.
     function parseConfig(input) {
-        const result = { ok: false, error: "", empty: true, entries: [], funnelOn: false, funnelHosts: [], unlisted: [], services: 0, foreground: 0 };
+        const result = { ok: false, error: "", empty: true, entries: [], funnelOn: false, funnelHosts: [], unlisted: [], foregroundPorts: [], servicePorts: [],
+                         services: 0, foreground: 0 };
         let raw = input;
         if (typeof input === "string") {
             try {
@@ -120,12 +128,26 @@ Singleton {
         result.ok = true;
         const tcp = _isObject(_own(raw, "TCP")) ? _own(raw, "TCP") : {};
         const web = _isObject(_own(raw, "Web")) ? _own(raw, "Web") : {};
-        const funnel = _isObject(_own(raw, "AllowFunnel")) ? _own(raw, "AllowFunnel") : {};
-        result.services = _isObject(_own(raw, "Services")) ? Object.keys(_own(raw, "Services")).length : 0;
-        result.foreground = _isObject(_own(raw, "Foreground")) ? Object.keys(_own(raw, "Foreground")).length : 0;
-        const funnelFor = (host, port) => Object.keys(funnel).some(key => {
+        const services = _isObject(_own(raw, "Services")) ? _own(raw, "Services") : {};
+        const foreground = _isObject(_own(raw, "Foreground")) ? _own(raw, "Foreground") : {};
+        result.services = Object.keys(services).length;
+        result.foreground = Object.keys(foreground).length;
+        result.foregroundPorts = _portsOf(foreground);
+        result.servicePorts = _portsOf(services);
+        // The host:ports with Funnel on: the top-level AllowFunnel and every terminal session's
+        // own, as tailscaled honours both (ServeConfigView.HasFunnelForTarget)
+        const funnelKeys = [];
+        const addFunnel = map => {
+            for (const key of Object.keys(_isObject(map) ? map : {}))
+                if (map[key] === true && !funnelKeys.includes(key))
+                    funnelKeys.push(key);
+        };
+        addFunnel(_own(raw, "AllowFunnel"));
+        for (const session of Object.keys(foreground))
+            addFunnel(_own(_own(foreground, session), "AllowFunnel"));
+        const funnelFor = (host, port) => funnelKeys.some(key => {
             const parsed = _hostPort(key);
-            return parsed !== null && parsed.port === port && (host === "" || parsed.host === host) && funnel[key] === true;
+            return parsed !== null && parsed.port === port && (host === "" || parsed.host === host);
         });
         const entries = [];
         for (const portKey of Object.keys(tcp).sort((a, b) => Number(a) - Number(b))) {
@@ -169,11 +191,28 @@ Singleton {
         }
         // TCP forwarders' addresses: host:port, filled in by entriesFor (they need status)
         result.entries = entries.slice(0, maxEntries);
-        result.unlisted = [...new Set(unlisted.concat(entries.slice(maxEntries).map(entry => entry.port)))];
+        result.unlisted = [...new Set(unlisted.concat(entries.slice(maxEntries).map(entry => entry.port), result.foregroundPorts))];
         result.empty = entries.length === 0 && unlisted.length === 0 && result.services === 0 && result.foreground === 0;
-        result.funnelOn = Object.keys(funnel).some(key => funnel[key] === true);
-        result.funnelHosts = Object.keys(funnel).filter(key => funnel[key] === true).map(key => _hostPort(key)).filter(hostPort => hostPort !== null);
+        result.funnelOn = funnelKeys.length > 0;
+        result.funnelHosts = funnelKeys.map(key => _hostPort(key)).filter(hostPort => hostPort !== null);
         return result;
+    }
+
+    // Every port a map of nested serve configs listens on (Foreground's sessions, Services): the
+    // keys of each one's TCP and the ports of its Web host:ports, whatever their handlers hold (a
+    // malformed one counts too). Sorted, each once
+    function _portsOf(configs) {
+        const ports = [];
+        for (const name of Object.keys(configs)) {
+            const config = _own(configs, name);
+            const tcp = _isObject(_own(config, "TCP")) ? _own(config, "TCP") : {};
+            const web = _isObject(_own(config, "Web")) ? _own(config, "Web") : {};
+            for (const portKey of Object.keys(tcp))
+                ports.push(_port(portKey));
+            for (const hostKey of Object.keys(web))
+                ports.push(_hostPort(hostKey)?.port ?? 0);
+        }
+        return [...new Set(ports.filter(port => port > 0))].sort((a, b) => a - b);
     }
 
     // The entries with what status adds: a TCP forwarder's names to copy (MagicDNS name and the
@@ -263,7 +302,7 @@ Singleton {
     }
 
     function _plan(kind, extra) {
-        return Object.assign({ kind: kind, error: "", argv: [], description: "" }, extra ?? {});
+        return Object.assign({ kind: kind, error: "", argv: [], description: "", publicPort: 0 }, extra ?? {});
     }
 
     // This device's current DNS name, lower case ("" unknown): the host the CLI puts every
@@ -295,10 +334,11 @@ Singleton {
     // Funnel is per host:PORT (AllowFunnel), not per entry: turning it on publishes every mount
     // on that port, and a retry through pkexec would do it as root. So a port is made public only
     // when everything on it is a module-style local proxy or text under this device's name —
-    // never a path (tailscaled serves those files as root), a unix socket, anything unseen.
+    // never a path (tailscaled serves those files as root), a unix socket, anything unseen, a
+    // terminal session's or a service's port.
     // → "" or why not
     function publicProblem(config, port, status) {
-        if ((config?.unlisted ?? []).includes(port))
+        if ((config?.unlisted ?? []).includes(port) || (config?.foregroundPorts ?? []).includes(port) || (config?.servicePorts ?? []).includes(port))
             return "Change this one in a terminal";
         if ((config?.entries ?? []).some(entry => entry.port === port && _resendTarget(entry, status) === ""))
             return "Change this one in a terminal";
@@ -363,7 +403,7 @@ Singleton {
             return _plan("refused", { error: "Choose a port" });
         const entries = config.entries ?? [];
         if (intent?.kind === "tcp") {
-            if (entries.some(entry => entry.port === port) || (config.unlisted ?? []).includes(port))
+            if (entries.some(entry => entry.port === port) || (config.unlisted ?? []).includes(port) || (config.foregroundPorts ?? []).includes(port))
                 return _plan("refused", { error: "Port " + port + " is in use" });
             return _plan("run", { argv: ["tailscale", "serve", "--bg", "--yes", "--tcp=" + port, "tcp://127.0.0.1:" + local],
                                   description: "Sharing a local port with the tailnet" });
@@ -375,7 +415,8 @@ Singleton {
         const mount = mountFor(intent?.path);
         if (!mount.ok)
             return _plan("refused", { error: mount.error });
-        if (entries.some(entry => entry.port === port && (entry.what === "tcp" || entry.type === "http")))
+        // A terminal session's port: tailscaled refuses a background listener there
+        if (entries.some(entry => entry.port === port && (entry.what === "tcp" || entry.type === "http")) || (config.foregroundPorts ?? []).includes(port))
             return _plan("refused", { error: "Port " + port + " is in use" });
         if (entries.some(entry => entry.port === port && entry.mount === mount.mount))
             return _plan("refused", { error: "Already shared" });
@@ -388,7 +429,8 @@ Singleton {
         return _plan("run", {
             argv: ["tailscale", funnel ? "funnel" : "serve", "--bg", "--yes", "--https=" + port].concat(mount.mount === "/" ? [] : ["--set-path=" + mount.mount],
                 ["http://127.0.0.1:" + local]),
-            description: funnel ? "Sharing a local port on the internet" : "Sharing a local port with the tailnet"
+            description: funnel ? "Sharing a local port on the internet" : "Sharing a local port with the tailnet",
+            publicPort: funnel ? port : 0
         });
     }
 
@@ -447,8 +489,48 @@ Singleton {
         }
         return _plan("run", {
             argv: ["tailscale", on === true ? "funnel" : "serve", "--bg", "--yes", "--https=" + entry.port].concat(entry.mount === "/" ? [] : ["--set-path=" + entry.mount], [target]),
-            description: on === true ? "Putting a share on the internet" : "Taking a share off the internet"
+            description: on === true ? "Putting a share on the internet" : "Taking a share off the internet",
+            publicPort: on === true ? entry.port : 0
         });
+    }
+
+    // After Funnel went on for `port`: the plan was made on an earlier read, and the CLI does its
+    // own read-modify-write later (through pkexec: after the password dialog), so a handler added
+    // on that port in between went public with it. Checked on the config read after the change →
+    // { kind: "nothing" (not public, or still only what publicProblem allows) | "run" (Funnel off
+    // again: a module-style entry on the port sent again with `serve`, which turns Funnel off for
+    // the whole host:port) | "refused" (no entry the module could send again: error) }
+    function publicCheck(config, port, status, prefs) {
+        if (config?.ok !== true)
+            return _plan("refused", { error: funnelNotice("unchecked", port) });
+        if (!portPublic(config, port, status) || publicProblem(config, port, status) === "")
+            return _plan("nothing");
+        const entry = (config.entries ?? []).find(item => item.port === port && _resendTarget(item, status) !== "") ?? null;
+        if (entry === null || !preconditions(status, prefs).canServeHttps)
+            return _plan("refused", { error: funnelNotice("public", port) });
+        return _plan("run", {
+            argv: ["tailscale", "serve", "--bg", "--yes", "--https=" + port].concat(entry.mount === "/" ? [] : ["--set-path=" + entry.mount], [_resendTarget(entry, status)]),
+            description: "Taking a share off the internet"
+        });
+    }
+
+    // The title of what the check after a Funnel tells
+    readonly property string funnelNoticeTitle: "Funnel"
+
+    // What the check after a Funnel tells, naming the port: "off" (turned off again),
+    // "failed" (turning it off failed), "unchecked" (the config could not be read), "public"
+    // (still public, nothing the module could send to turn it off)
+    function funnelNotice(kind, port) {
+        switch (kind) {
+        case "off":
+            return "Funnel off. Something else is on port " + port + ".";
+        case "failed":
+            return "Couldn't turn Funnel off on port " + port + ".";
+        case "unchecked":
+            return "Couldn't check port " + port + ". Funnel may still be on.";
+        default:
+            return "Port " + port + " is public. Turn Funnel off in a terminal.";
+        }
     }
 
     // Everything off: `serve reset` (empties the whole config, Funnel included)

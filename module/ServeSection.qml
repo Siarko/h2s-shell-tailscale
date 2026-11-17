@@ -17,7 +17,8 @@ ColumnLayout {
 
     readonly property var serve: client?.serve ?? null
     readonly property var ready: serve?.ready ?? null
-    readonly property bool _free: client !== null && !client.busy
+    // No change while another runs, nor while a Funnel just turned on is being checked
+    readonly property bool _free: client !== null && !client.busy && !(serve?.checking ?? false)
     property bool open: false
     property string _kind: "proxy"
     property int _port: 443

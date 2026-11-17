@@ -53,6 +53,7 @@ Provenance:
 | serve-tcp.json | synthetic, shape from 1.104.4's ipn/serve.go | TCP 2222 → 127.0.0.1:22; TLS-terminated TCP 5432 → 127.0.0.1:5432 (TerminateTLS self.example-tailnet.ts.net) |
 | serve-path.json | synthetic, shape from 1.104.4's ipn/serve.go | HTTPS 443: "/files/" → path /srv/share, "/" → path /home/user1/index.html (served only as root: ipn/localapi/serve.go) |
 | serve-rich.json | synthetic, shape from 1.104.4's ipn/serve.go | what the module only shows: HTTP 80 proxy plus a Redirect handler, a Foreground session (HTTPS 10000), Services "svc:example" (TCP + Web), an unknown top-level "FutureField" (the stand-in refuses to change it) |
+| serve-foreground.json | synthetic, shape from 1.104.4's ipn/serve.go (Foreground: an IPN bus session id → the ServeConfig of `serve` run in a terminal without --bg) | the module's HTTPS 443 proxy, and a terminal session serving the folder /home/user1/docs at "/docs" on HTTPS 8443 |
 | lock-disabled.json | real, redacted (1.104.4, `lock status --json` with tailnet lock off; keys replaced by …0001) | lock off |
 | lock-signed.json | synthetic, shape from 1.104.4's cmd/tailscale/tslockjsonv1 and feature/tailnetlock/tslockjsonv1/status.go (zeroed keys, Head and signatures) | lock on, this node signed: two trusted keys (one this node's), a visible peer, FilteredPeers [] |
 | lock-locked-out.json | synthetic, same shapes | lock on, NodeKeySigned false: three trusted keys (one a pre-auth key), one filtered (locked-out) peer |
