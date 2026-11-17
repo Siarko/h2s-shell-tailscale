@@ -33,11 +33,15 @@ Against a checkout of the core that nobody is editing while the tests run:
 
 ```
 H2S_SHELL_DIR=<core checkout> tests/run.sh             # the QML suites, headless
+H2S_SHELL_DIR=<core checkout> tests/run.sh TaildropTest ServeTest   # only the named suites
 H2S_SHELL_DIR=<core checkout> tests/lock-bed/run.sh    # the real shell in the lock test bed
+H2S_SHELL_DIR=<core checkout> tests/lock-bed/run.sh tailscale       # only the named tests
 tools/test.sh                                          # the stand-ins
 ```
 
-When other runs may share the machine, wrap them in `flock /tmp/h2s-locktest.flock …`. A
+A suite is named by its file in `module/tests/` without `.qml`, a lock-bed test by its file
+in `tests/lock-bed/tests/` without `.sh`; a name that does not exist is an error and nothing
+runs. When other runs may share the machine, wrap them in `flock /tmp/h2s-locktest.flock …`. A
 failure saying something "could not be checked within 5 s" is usually machine load: run once
 more before looking into it. Never run the suites with `quickshell -p` in your own session.
 

@@ -2,8 +2,11 @@
 # Runs the module's QML suites (module/module.json "tests") headless, against a checkout of
 # h2s-shell (they extend its TestCase and run in its Quickshell).
 #
-#   tests/run.sh                 against $H2S_SHELL_DIR (default: ../h2s-shell-wt)
-#   tests/run.sh --log <file>    the output also saved to <file>
+#   tests/run.sh                                 every suite, against $H2S_SHELL_DIR
+#                                                (default: ../h2s-shell-wt)
+#   tests/run.sh TaildropTest ServeTest          only the named ones (a suite's file in
+#                                                module/tests/ without ".qml")
+#   tests/run.sh --log <file> [<suite>…]         the output also saved to <file>
 #
 # Two ways, one result:
 # - The shell has tests/run-modules.sh (its official module test runner): that is used, with
@@ -15,7 +18,8 @@
 #   addresses that lead nowhere, no new privileges — and tests/harness.qml loads the module's
 #   suites by file:// URL from a private copy of the shell's tree (Quickshell binds `qs.` to
 #   the directory of the root file, and the shell's tree must not be written to).
-#   H2S_OWN_HARNESS=1 forces this way even when the official runner exists.
+#   H2S_OWN_HARNESS=1 forces this way even when the official runner exists. This way runs
+#   every suite: naming suites needs the shell's runner.
 #
 # Tools: as the shell's runners find them (tests/lock/resolve.sh: labwc from
 # tests/lock/tools.nix through nix, Quickshell from the h2s-shell launcher or LOCKTEST_QS).
@@ -23,7 +27,8 @@
 #
 # Exit status: 0 every suite passed; 1 a check FAILed, a TypeError / ReferenceError was
 # printed, a suite did not compile or report, Quickshell exited non-zero or timed out, no
-# suite reported; 2 the runner could not be set up.
+# suite reported; 2 the runner could not be set up, or a name is not a suite of the module
+# (nothing runs then).
 set -uo pipefail
 
 REPOSITORY=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd -P)
@@ -38,6 +43,12 @@ if [ "${1:-}" = --log ]; then
     [ -n "$output_copy" ] || { echo "run.sh: --log needs a file" >&2; exit 2; }
     shift 2
 fi
+# What is left names suites: given to the shell's runner, which knows the module's list
+suite_arguments=()
+for name in "$@"; do
+    case "$name" in -*) echo "usage: tests/run.sh [--log <file>] [<suite>…]" >&2; exit 2 ;; esac
+    suite_arguments+=(--suite "$name")
+done
 
 # The stand-ins first on PATH, whatever runs a program by name (the shell's Api.openUrl runs
 # xdg-open): the module itself takes them through its tools seam under the module runner
@@ -45,11 +56,15 @@ export PATH="$REPOSITORY/tools/stand-in:$PATH"
 
 if [ -x "$SHELL_DIR/tests/run-modules.sh" ] && [ "${H2S_OWN_HARNESS:-0}" != 1 ]; then
     echo "run.sh: using the shell's tests/run-modules.sh ($SHELL_DIR)"
+    grep -q -- '--suite' "$SHELL_DIR/tests/run-modules.sh" || [ ${#suite_arguments[@]} -eq 0 ] \
+        || { echo "run.sh: $SHELL_DIR's tests/run-modules.sh cannot run named suites (no --suite); nothing was run" >&2; exit 2; }
     if [ -n "$output_copy" ]; then
-        exec "$SHELL_DIR/tests/run-modules.sh" --log "$output_copy" "$MODULE_DIR"
+        exec "$SHELL_DIR/tests/run-modules.sh" --log "$output_copy" "${suite_arguments[@]}" "$MODULE_DIR"
     fi
-    exec "$SHELL_DIR/tests/run-modules.sh" "$MODULE_DIR"
+    exec "$SHELL_DIR/tests/run-modules.sh" "${suite_arguments[@]}" "$MODULE_DIR"
 fi
+[ ${#suite_arguments[@]} -eq 0 ] \
+    || { echo "run.sh: the module's own harness runs every suite; naming suites needs the shell's tests/run-modules.sh. Nothing was run" >&2; exit 2; }
 echo "run.sh: using the module's own harness (tests/harness.qml) with $SHELL_DIR"
 
 LOCKTEST_DIR=$SHELL_DIR/tests/lock

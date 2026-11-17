@@ -20,6 +20,7 @@ Both test runners need a checkout of h2s-shell. Set `H2S_SHELL_DIR`; the default
 
 ```bash
 tests/run.sh             # the QML suites, headless
+tests/run.sh TaildropTest ServeTest    # only the named suites
 tests/lock-bed/run.sh    # the real shell in the lock test bed
 tools/test.sh            # the stand-ins
 ```
@@ -33,7 +34,9 @@ When other test runs may share the machine, wrap the runners in `flock /tmp/h2s-
 - Otherwise builds its own isolated session and loads the suites with `tests/harness.qml`.
 - `H2S_OWN_HARNESS=1` forces the own harness.
 - `--log <file>` saves the output.
-- Exit status: 0 all passed, 1 a failure, 2 the runner could not start.
+- Names after that run only those suites. A suite is named by its file in `module/tests/` without `.qml`.
+- Naming suites needs the shell's `tests/run-modules.sh` with `--suite`. The own harness runs every suite.
+- Exit status: 0 all passed, 1 a failure, 2 the runner could not start or a name is not a suite of the module.
 
 The suites extend the shell's `TestCase` (`import qs.tests`).
 They run the live client against the stand-ins only.
