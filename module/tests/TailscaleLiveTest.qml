@@ -424,7 +424,7 @@ TestCase {
         // ---- CLI missing ----
         const missing = scenario("cli-missing", { emptyTools: true });
         then(missing, "resolved", () => missing.client.cli === "missing", () => {
-            assertEqual(_entry(missing).attention?.reason, "Tailscale is not installed on this computer", "CLI missing: the entry says \"not installed\"");
+            assertEqual(_entry(missing).attention?.reason, "Tailscale isn't installed", "CLI missing: the entry says \"not installed\"");
             assertEqual(_entry(missing).status, "Not installed", "… its status");
             assert(missing.client.ready, "… ready (there is nothing to read)");
             assertEqual(_entry(missing).attention?.action, "Check again", "… its action looks again");
@@ -452,15 +452,35 @@ TestCase {
             assertEqual(noAgent.failures[0].reason, "No authentication agent answered.", "no agent: failed with the contract's sentence");
             assertEqual(noAgent.failures[0].what, "Connecting Tailscale", "… what: the command table's description");
             assertEqual(_entry(noAgent).state, "", "… the state back to off");
-            // The notification may never show (no notify-send): the entry keeps it
-            assertEqual(_entry(noAgent).attention?.reason, "No authentication agent answered.", "… and the entry says it, where the click was");
-            assertEqual(_entry(noAgent).attention?.action, "Connect", "… with Connect again as its action");
-            assert(noAgent.client.attend(), "… which tries again");
+            // The notification may never show (no notify-send): the entry's status line keeps it
+            assertEqual(_entry(noAgent).status, "No authentication agent answered.", "… and the entry's status line says it, where the click was");
+            assertEqual(_entry(noAgent).attention, null, "… not as attention: Connect stays the button (and the shell may still connect it)");
+            assert(noAgent.client.connect("user"), "… Connect tries again");
         });
         then(noAgent, "tried again", () => noAgent.failures.length > 1 && !noAgent.client.busy, () => {
-            assertEqual(_entry(noAgent).attention?.reason, "No authentication agent answered.", "the second failure said again");
+            assertEqual(_entry(noAgent).status, "No authentication agent answered.", "the second failure said again");
         });
         thenLogs(noAgent, "both tries asked pkexec", () => assertEqual(count(noAgent.pkexecLines, elevatedLine(60, "up")), 2, "pkexec asked for `up` twice"));
+        // A failed Connect leaves no attention: the shell's "VPN with a network" still connects
+        // it (origin network, as the operator now), and the failure text goes
+        const thenNetwork = scenario("failed-then-network-connect", { state: "stopped", env: { TS_FAKE_PKEXEC: "no-agent" } });
+        then(thenNetwork, "read", () => thenNetwork.client.status !== null, () => thenNetwork.client.connect("user"));
+        then(thenNetwork, "failed", () => thenNetwork.client.failureText !== "" && !thenNetwork.client.busy, () => {
+            assertEqual(_entry(thenNetwork).attention, null, "failed Connect: no attention on the entry");
+            assertEqual(thenNetwork.client.attentionKind, "", "… nor in what the IPC reports");
+            // This user made the operator elsewhere: a network's connect needs no password
+            thenNetwork.client.environment = Object.assign({}, thenNetwork.env, { TS_FAKE_USER: thenNetwork.client.userName });
+        });
+        thenShell(thenNetwork, "made the operator elsewhere", "printf 'OperatorUser=%s\\n' \"$(id -un)\" >> \"$1/state/prefs\" && echo ok", "operatorSet",
+                  () => thenNetwork.client.refresh());
+        then(thenNetwork, "the operator", () => thenNetwork.client.canChange && !thenNetwork.client._reading, () => {
+            assertEqual(thenNetwork.client.failureText, "No authentication agent answered.", "the failure text still there (same phase)");
+            assert(thenNetwork.client.connect("network"), "a network's connect goes ahead");
+            assertEqual(thenNetwork.client.failureText, "", "… and the failure text is gone once it starts");
+        });
+        then(thenNetwork, "connected", () => _entry(thenNetwork).state === "activated" && !thenNetwork.client.busy, () => {
+            assertEqual(_entry(thenNetwork).status, "Tailnet only", "connected: the normal status line");
+        });
         const elevated = scenario("pkexec-ok", { state: "running" });
         then(elevated, "read", () => elevated.client.prefs !== null, () => {
             assert(elevated.client.prefs.acceptRoutes, "routes accepted before");
@@ -570,14 +590,16 @@ TestCase {
             assertEqual(_entry(upTimeout).status, "Connecting…", "… \"Connecting…\"");
         });
         then(upTimeout, "the connect given up", () => upTimeout.failures.length > 0 && !upTimeout.client.busy, () => {
-            assert(/did not connect within 2 s\. It keeps trying by itself; Disconnect stops it\./.test(upTimeout.failures[0].reason),
+            assertEqual(upTimeout.failures[0].reason, "Still connecting after 2 s. Disconnect to stop.",
                    "after its time limit: failed, saying the daemon keeps trying: " + upTimeout.failures[0].reason);
             assertEqual(upTimeout.client.authUrl, "", "… the URL cleared");
         });
 
         // ---- `up` that waits in vain while the daemon's health says why (it cannot make its
         // network device: a kernel updated without a reboot): the entry shows the daemon's words ----
-        const deviceGone = scenario("up-timeout-health", { state: "stopped", timeLimits: { up: 6 }, env: { TS_FAKE_OPERATOR: "1", TS_FAKE_UP_DELAY: "30" } });
+        // No event stream here (no curl): the stand-in's bus replay would overwrite the health
+        // injected below at a moment of its own; the slow poll reads instead
+        const deviceGone = scenario("up-timeout-health", { state: "stopped", without: "curl", timeLimits: { up: 6 }, env: { TS_FAKE_OPERATOR: "1", TS_FAKE_UP_DELAY: "30" } });
         then(deviceGone, "read", () => deviceGone.client.status !== null, () => assert(deviceGone.client.connect("user"), "connect starts"));
         then(deviceGone, "the daemon trying", () => deviceGone.client.view.phase === "starting", () => {
             deviceGone.client._onBusMessage({ Health: { Warnings: {
@@ -586,17 +608,31 @@ TestCase {
             } } });
         }, () => deviceGone.client._scheduleRead(true));
         then(deviceGone, "the connect given up", () => deviceGone.failures.length > 0 && !deviceGone.client.busy, () => {
-            assertEqual(_entry(deviceGone).attention?.reason, "Tailscale could not create its network device.",
-                        "the entry: the daemon's own health message (the one that cuts the connection), not only \"did not connect\"");
-            assertEqual(_entry(deviceGone).attention?.action, "Disconnect", "… Disconnect, which stops it trying");
+            assertEqual(deviceGone.client.failureText, "Tailscale could not create its network device.",
+                        "the daemon's own health message (the one that cuts the connection), not only \"still connecting\"");
+            assertEqual(_entry(deviceGone).attention, null, "… no attention: Disconnect stays the button");
+        });
+        then(deviceGone, "shown once read", () => !deviceGone.client._reading && deviceGone.client.failure?.settling === false, () => {
+            assert(_entry(deviceGone).status.startsWith("Tailscale could not create its network device."), "… on the entry's status line, still there after the read: " + _entry(deviceGone).status);
         });
 
         // ---- the service started, and gone again at once: said, not back to "Start" in silence ----
         const crashes = scenario("start-then-gone", { state: "running", daemonDown: true, env: { TS_FAKE_DAEMON: "down" } });
         then(crashes, "read", () => crashes.client.daemon === "not-running", () => assert(crashes.client.attend(), "Start"));
-        then(crashes, "gone again", () => crashes.client.notice !== null && !crashes.client.busy, () => {
-            assertEqual(_entry(crashes).attention?.reason, "Tailscale's service stopped right after it started.", "said on the entry");
-            assertEqual(_entry(crashes).attention?.action, "Start", "… \"Start\" again");
+        then(crashes, "gone again", () => crashes.client.failureText !== "" && !crashes.client.busy, () => {
+            assertEqual(_entry(crashes).status, "Tailscale stopped right after starting.", "said on the status line");
+            assertEqual(_entry(crashes).attention?.action, "Start", "… the state's own \"Start\" stays");
+        });
+
+        // ---- the daemon down, read again and again: one log line, not one per read ----
+        const quiet = scenario("log-once", { state: "running", daemonDown: true, recheckMinMs: 200, pollMs: 200 });
+        then(quiet, "several failed reads", () => quiet.client.reads >= 5, () => {
+            assertEqual(quiet.client.logCounts["status --json"], 1, quiet.client.reads + " failed reads: one log line");
+            assert((quiet.client.logCounts["the event stream"] ?? 0) <= 1, "… the stream's failed restarts: at most one");
+        });
+        thenShell(quiet, "started elsewhere", "rm -f \"$1/state/daemon-down\" && echo ok", "quietStarted", () => {});
+        then(quiet, "answers again", () => _entry(quiet).state === "activated", () => {
+            assertEqual(quiet.client.logCounts["status --json"], 2, "the recovery: one more line");
         });
 
         // ---- A2: a `status --json` that hangs: stale, retried, back ----
@@ -610,9 +646,9 @@ TestCase {
             assert(!hung.client._reading, "… the read no longer blocks the next ones");
             assert(!hung.client.connect("user"), "… connect does nothing blind (the state is re-read first)");
         });
-        then(hung, "the click answered", () => hung.client.notice !== null, () => {
-            assertEqual(_entry(hung).attention?.reason, "Tailscale did not answer within 1 s.", "the click while unknown: its read did not answer, said on the entry");
-            assertEqual(_entry(hung).attention?.action, "Connect", "… Connect again as its action");
+        then(hung, "the click answered", () => hung.client.failureText !== "", () => {
+            assertEqual(_entry(hung).status, "Tailscale did not answer within 1 s.", "the click while unknown: its read did not answer, said on the status line");
+            assertEqual(_entry(hung).attention, null, "… no attention");
         });
         thenLogs(hung, "nothing run blind", () => assertEqual(changesIn(hung).length, 0, "no `up` while the state is unknown"));
         thenShell(hung, "the daemon answers again", "rm -f \"$1/state/status-hang\"; echo ok", "hangCleared", () => {});
@@ -638,7 +674,7 @@ TestCase {
         then(untrusted, "judged", () => untrusted.client.cli !== "unknown", () => {
             assertEqual(untrusted.client.cli, "untrusted", "the stand-ins (owned by this user, not in the Nix store) are not trusted");
             assertEqual(_entry(untrusted).status, "Not trusted", "the entry: \"Not trusted\"");
-            assert(/not trusted/.test(_entry(untrusted).attention?.reason ?? ""), "… with the reason: " + _entry(untrusted).attention?.reason);
+            assert(/isn't trusted/.test(_entry(untrusted).attention?.reason ?? ""), "… with the reason: " + _entry(untrusted).attention?.reason);
             assertEqual(_entry(untrusted).attention?.action, "Check again", "… its action looks again");
             assert(untrusted.client.connect("user"), "… Connect only looks at the programs again: nothing runs");
             assert(untrusted.client.ready, "… ready (nothing to read)");
@@ -709,7 +745,7 @@ TestCase {
             assert(freshNoAgent.client.connect("user"), "Connect (user): the login starts");
         });
         then(freshNoAgent, "failed", () => freshNoAgent.failures.length > 0 && !freshNoAgent.client.busy, () => {
-            assertEqual(_entry(freshNoAgent).attention?.reason, "No authentication agent answered.", "no agent: said on the entry");
+            assertEqual(_entry(freshNoAgent).status, "No authentication agent answered.", "no agent: said on the status line");
             assertEqual(_entry(freshNoAgent).attention?.action, "Log in", "… \"Log in\" again as its action");
             assertEqual(_entry(freshNoAgent).state, "", "… off");
         });
@@ -720,16 +756,16 @@ TestCase {
         waitMs(freshDismissed, 300);
         thenLogs(freshDismissed, "dismissed", () => {
             assertEqual(freshDismissed.failures.length, 0, "dismissed: no failure");
-            assertEqual(freshDismissed.client.notice, null, "… no notice");
+            assertEqual(freshDismissed.client.failureText, "", "… no failure text");
             assertEqual(_entry(freshDismissed).attention?.action, "Log in", "… \"Log in\" as before");
             assertEqual(count(freshDismissed.pkexecLines, elevatedLine(60, "login")), 1, "… pkexec was asked");
         });
         // Not the operator, no timeout(1): nothing may run as root — said on the entry
         const noTimeout = scenario("connect-without-timeout", { state: "stopped", without: "timeout" });
         then(noTimeout, "read", () => noTimeout.client.status !== null, () => assert(noTimeout.client.connect("user"), "Connect: the plain `up` runs"));
-        then(noTimeout, "refused", () => noTimeout.client.notice !== null && !noTimeout.client.busy, () => {
-            assert(/timeout was not found/.test(_entry(noTimeout).attention?.reason ?? ""), "no timeout: why, on the entry: " + _entry(noTimeout).attention?.reason);
-            assertEqual(_entry(noTimeout).attention?.action, "Connect", "… Connect again");
+        then(noTimeout, "refused", () => noTimeout.client.failureText !== "" && !noTimeout.client.busy, () => {
+            assertEqual(_entry(noTimeout).status, "Can't ask for the password: timeout is missing.", "no timeout: why, on the status line");
+            assertEqual(_entry(noTimeout).attention, null, "… no attention: Connect stays");
         });
         thenLogs(noTimeout, "nothing as root", () => assertEqual(noTimeout.pkexecLines.length, 0, "no timeout: nothing through pkexec"));
         // The service cannot be started (systemd refuses): said on the entry, "Start" again
@@ -738,14 +774,14 @@ TestCase {
             assert(startFails.client.canLookAgain, "service not running: the page offers to look again too");
             assert(startFails.client.attend(), "Start");
         });
-        then(startFails, "refused", () => startFails.client.notice !== null && !startFails.client.busy, () => {
-            assertEqual(_entry(startFails).attention?.reason, "Failed to start tailscaled.service: Access denied", "systemd's words on the entry");
-            assertEqual(_entry(startFails).attention?.action, "Start", "… \"Start\" again");
+        then(startFails, "refused", () => startFails.client.failureText !== "" && !startFails.client.busy, () => {
+            assertEqual(_entry(startFails).status, "Not started.", "refused (or the prompt cancelled: they look alike): said neutrally");
+            assertEqual(_entry(startFails).attention?.action, "Start", "… the state's own \"Start\" stays");
         });
         // Started outside the shell: "Check again" reads at once
         thenShell(startFails, "started elsewhere", "rm -f \"$1/state/daemon-down\" && echo ok", "startedElsewhere", () => {
             assert(startFails.client.recheck(), "Check again: reads now");
-            assertEqual(startFails.client.notice, null, "… the old failure cleared");
+            assertEqual(startFails.client.failureText, "", "… the old failure cleared");
         });
         then(startFails, "running", () => startFails.client.daemon === "running" && _entry(startFails).state === "activated", () => {});
         // A click before the first read: done once the state is known, not dropped

@@ -464,51 +464,82 @@ TestCase {
             }
         }
 
-        // --- a failed click stays on the entry: failureNotice, and attend on it ---
+        // --- a failed click: its reason on the status line (failureText), its life (failureAfter) ---
         {
-            const view = (statusName, prefsName, extra) => rules.stateOf(statusName ? status(statusName) : null, prefsName ? prefs(prefsName) : null,
-                                                                          Object.assign({ now: now }, extra ?? {}));
-            const stopped = view("stopped", "stopped");
-            const overStopped = rules.failureNotice(stopped, "No authentication agent answered.");
-            same([overStopped.kind, overStopped.reason, overStopped.action, overStopped.under], ["failed", "No authentication agent answered.", "Connect", null],
-                 "notice over an off entry: the reason, \"Connect\" again");
-            let plan = rules.planAttend(Object.assign({}, stopped, { attention: overStopped }), false, "user");
-            assert(plan.kind === "run" && plan.privileged && plan.command.argv.join(" ") === "tailscale up", "attend that notice: connect again (pkexec)");
-            const loggedOut = view("needs-login", "logged-out");
-            const overLogin = rules.failureNotice(loggedOut, "Tailscale refused: only an administrator or its operator may change it.");
-            assert(overLogin.action === "Log in" && overLogin.under?.kind === "login", "notice over \"Log in\": keeps that action, and what it covers");
-            assertEqual(rules.planAttend(Object.assign({}, loggedOut, { attention: overLogin }), false, "user").command?.argv.join(" "), "tailscale login",
-                        "attend that notice: the login again");
-            const down = view(null, null, { daemon: "not-running" });
-            const overStart = rules.failureNotice(down, "Failed to start tailscaled.service: Access denied");
-            assertEqual(overStart.action, "Start", "notice over \"Start\": \"Start\"");
-            same(rules.planAttend(Object.assign({}, down, { attention: overStart }), false, "user").command?.argv, ["systemctl", "start", "tailscaled.service"],
-                 "attend that notice: start the service again");
-            assertEqual(rules.failureNotice(view("running", "running"), "x").action, "Disconnect", "notice while up: \"Disconnect\"");
-            const again = rules.failureNotice(Object.assign({}, loggedOut, { attention: overLogin }), "second");
-            assert(again.under?.kind === "login" && again.action === "Log in", "a notice over a notice keeps what is under it");
-            const long = rules.failureNotice(stopped, "first line\n\n  second line " + "x".repeat(400));
-            assert(long.reason.startsWith("first line second line") && long.reason.length <= 200, "notice: one line, at most 200 characters");
-            assertEqual(rules.failureNotice(stopped, "").reason, "It did not work.", "notice: never empty");
+            assertEqual(rules.failureText("No authentication agent answered."), "No authentication agent answered.", "failure: the reason as it is");
+            assertEqual(rules.failureText(""), "That didn't work.", "failure: never empty");
+            const long = rules.failureText("first line\n\n  second line " + "x".repeat(400));
+            assert(long.startsWith("first line second line") && long.length <= 80, "failure: one line, at most the status line's 80 characters");
             // A failure with no words of its own: the daemon's (a kernel updated without a reboot
             // leaves it without its network device: `up` waits, only health says why)
             const health = [{ code: "update-available", severity: "low", text: "An update is available.", impactsConnectivity: false },
                             { code: "network-device", severity: "high", text: "Tailscale could not create its network device.", impactsConnectivity: true }];
-            assertEqual(rules.failureNotice(stopped, rules.timeoutMessage("connect", 60), { error: "", health: health }).reason,
-                        "Tailscale could not create its network device.", "notice: a time limit with health: the warning that cuts the connection");
-            assertEqual(rules.failureNotice(stopped, "Tailscale exited with status 1.", { error: "", health: ["router: setting up rules failed"] }).reason,
-                        "router: setting up rules failed", "notice: a bare exit status: status's health line");
-            assertEqual(rules.failureNotice(stopped, rules.timeoutMessage("connect", 60), { error: "tun device not available", health: health }).reason,
-                        "Tailscale said: tun device not available", "notice: the daemon's own error first");
-            assertEqual(rules.failureNotice(stopped, "failed to set up the network device: no such device", { error: "x", health: health }).reason,
-                        "failed to set up the network device: no such device", "notice: the CLI's own line is kept");
-            assert(/did not connect within/.test(rules.failureNotice(stopped, rules.timeoutMessage("connect", 60), { error: "", health: [] }).reason),
-                   "notice: nothing from the daemon: the time limit said");
-            assertEqual(typeof rules.failureNotice(stopped, "", { health: [null, 5, { text: 7 }] }).reason, "string", "notice: hostile health");
-            assertEqual(rules.planAttend(Object.assign({}, stopped, { attention: overStopped }), false, "network").kind, "needs-user", "attend from a network: never a prompt");
-            for (const hostile of [null, undefined, "x", { attention: { kind: "failed", under: 5 } }])
-                assertEqual(typeof rules.failureNotice(hostile, "r").action, "string", "notice: hostile view " + JSON.stringify(hostile) + " still gives one");
-            assertEqual(typeof rules.planAttend({ phase: "stopped", attention: { kind: "failed", under: "x" } }, true, "user").kind, "string", "attend: a hostile notice gives a plan");
+            assertEqual(rules.failureText(rules.timeoutMessage("connect", 60), { error: "", health: health }), "Tailscale could not create its network device.",
+                        "failure: a time limit with health: the warning that cuts the connection");
+            assertEqual(rules.failureText(rules.timeoutMessage("connect", 60), { error: "", health: [health[0]] }), "Still connecting after 60 s. Disconnect to stop.",
+                        "failure: an update notice is no reason: the time limit said");
+            assertEqual(rules.failureText("Tailscale exited with status 1.", { error: "", health: [{ severity: "high", text: "router: setting up rules failed" }] }),
+                        "router: setting up rules failed", "failure: a bare exit status: a severe warning");
+            assertEqual(rules.failureText("Tailscale exited with status 1.", { error: "", health: ["router: setting up rules failed"] }),
+                        "Tailscale exited with status 1.", "failure: health without a severity is not taken");
+            assertEqual(rules.failureText(rules.timeoutMessage("connect", 60), { error: "tun device not available", health: health }),
+                        "Tailscale said: tun device not available", "failure: the daemon's own error first");
+            assertEqual(rules.failureText("failed to set up the network device: no such device", { error: "x", health: health }),
+                        "failed to set up the network device: no such device", "failure: the CLI's own line is kept");
+            assertEqual(typeof rules.failureText("", { health: [null, 5, { text: 7 }] }), "string", "failure: hostile health");
+            // Plain text only: nothing a Text could take for markup
+            const marked = rules.failureText("<b>bad</b> & <address> &amp;", { error: "" });
+            assert(!/[<>&]/.test(marked), "failure: no angle brackets or ampersands: " + marked);
+            assertEqual(rules.plainText("a <i>b</i> & c\u0007d"), "a ‹i›b‹/i› ＆ c d", "plainText: look-alikes, no control characters");
+            assertEqual(rules.withoutAddresses("peer 100.64.0.4 gone"), "peer [address] gone", "withoutAddresses: a placeholder without angle brackets");
+            assert(rules.healthList([{ title: "<x>", text: "a & b" }], null).every(item => !/[<>&]/.test(item.title + item.text)), "healthList: plain text");
+
+            // Its life
+            let failure = rules.failureAfter(null, "failed", "stopped", "No authentication agent answered.");
+            same(failure, { text: "No authentication agent answered.", phase: "stopped", settling: true }, "life: a new one settles with the next read");
+            assertEqual(rules.failureAfter(failure, "view", "starting"), failure, "life: while settling, a view change keeps it");
+            const settled = rules.failureAfter(failure, "read", "starting");
+            same(settled, { text: "No authentication agent answered.", phase: "starting", settling: false }, "life: the read after: the phase it left Tailscale in");
+            assertEqual(rules.failureAfter(failure, "read", "running"), null, "life: up after all: gone");
+            assertEqual(rules.failureAfter(settled, "read", "starting"), settled, "life: the same phase: kept");
+            assertEqual(rules.failureAfter(settled, "read", "stopped"), null, "life: another phase (read): gone");
+            assertEqual(rules.failureAfter(settled, "view", "stopped"), null, "life: another phase (view): gone");
+            for (const event of ["acted", "succeeded", "connecting", "stopped"])
+                assertEqual(rules.failureAfter(settled, event, "starting"), null, "life: " + event + ": gone");
+            assertEqual(rules.failureAfter(null, "read", "stopped"), null, "life: none stays none");
+            assertEqual(rules.failureAfter(null, "failed", "stopped", "").text, "That didn't work.", "life: a new one is never empty");
+
+            // Attend does what its button says, whatever the phase reads now
+            const view = (statusName, prefsName, extra) => rules.stateOf(statusName ? status(statusName) : null, prefsName ? prefs(prefsName) : null,
+                                                                          Object.assign({ now: now }, extra ?? {}));
+            const lagging = Object.assign({}, view("running", "running"), { attention: { kind: "needs-privilege", reason: "x", action: "Connect" } });
+            assertEqual(rules.planAttend(lagging, false, "user").kind, "nothing", "attend \"Connect\" while the view says running: never a disconnect");
+            const stoppedMeanwhile = Object.assign({}, view("stopped", "stopped"), { attention: { kind: "needs-privilege", reason: "x", action: "Disconnect" } });
+            assertEqual(rules.planAttend(stoppedMeanwhile, false, "user").command?.argv.join(" "), "tailscale down", "attend \"Disconnect\" while the view says stopped: `down`, never `up`");
+        }
+
+        // --- logging once per change of outcome (logChange) ---
+        {
+            let key = "";
+            const lines = [];
+            const attempt = (ok, reason) => {
+                const decision = rules.logChange(key, "status --json", ok, reason);
+                key = decision.key;
+                if (decision.line !== "")
+                    lines.push(decision.line);
+            };
+            attempt(true, "");
+            for (let i = 0; i < 14; i++)
+                attempt(false, "The Tailscale service (tailscaled) is not running.");
+            attempt(false, "Tailscale did not answer within 15 s.");
+            attempt(false, "Tailscale did not answer within 15 s.");
+            attempt(true, "");
+            attempt(true, "");
+            same(lines, ["[tailscale] status --json failed: The Tailscale service (tailscaled) is not running.",
+                         "[tailscale] status --json still failing, now: Tailscale did not answer within 15 s.",
+                         "[tailscale] status --json answers again"],
+                 "log: 14 failed attempts are one line; a new reason one more; the recovery one");
+            assertEqual(rules.logChange("", "x", false, "").line, "[tailscale] x failed: failed", "log: a failure without a reason still says so");
         }
 
         // --- looking again: recheckPlan, recheckDelayMs ---
@@ -519,6 +550,7 @@ TestCase {
             assertEqual(rules.recheckPlan({ cli: "present", daemon: "not-running", phase: "not-running" }, false), "read", "recheck: the service not running: read (and the stream)");
             assertEqual(rules.recheckPlan({ cli: "present", daemon: "running", phase: "denied" }, false), "read", "recheck: not readable: read");
             assertEqual(rules.recheckPlan({ cli: "present", daemon: "running", phase: "running" }, false), "none", "recheck: all there: nothing (the stream and the poll)");
+            assertEqual(rules.recheckPlan({ cli: "present", daemon: "running", phase: "unknown", readFailing: true }, false), "read", "recheck: status reads failing: read on the backoff");
             assertEqual(rules.recheckPlan({ cli: "present", daemon: "running", phase: "running" }, true), "read", "recheck: asked while all is there: read");
             assertEqual(rules.recheckPlan(null, false), "probe", "recheck: hostile facts: look");
             same([0, 1, 2, 3, 4, 10, 1000].map(attempt => rules.recheckDelayMs(attempt, 5000, 60000)), [5000, 10000, 20000, 40000, 60000, 60000, 60000],
@@ -529,7 +561,7 @@ TestCase {
                 return typeof ms === "number" && ms >= 100 && isFinite(ms);
             }), "recheck: hostile arguments give a sane wait");
             assertEqual(rules.pkexecOutcome(-2).outcome, "not-started", "pkexec: no exit status at all: it could not be started");
-            assertEqual(rules.pkexecOutcome(-2).message, "pkexec could not be started.", "… said so");
+            assertEqual(rules.pkexecOutcome(-2).message, "Couldn't run pkexec.", "… said so");
         }
     }
 }

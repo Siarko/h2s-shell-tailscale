@@ -91,7 +91,7 @@ TestCase {
         same(rules.sendError(1, "can't send to 100.64.0.9: unknown target; not in your Tailnet").message, "Unknown device", "an unknown target");
         same(rules.sendError(1, "directories not supported").kind, "folder", "a folder");
         same(rules.sendError(124, "").kind, "timeout", "timeout(1)'s 124");
-        same(rules.sendError(1, "500 Internal Server Error: \u001b[31mpeer 100.64.0.7 gone").message, "500 Internal Server Error: [31mpeer <address> gone",
+        same(rules.sendError(1, "500 Internal Server Error: \u001b[31mpeer 100.64.0.7 gone").message, "500 Internal Server Error: [31mpeer [address] gone",
              "anything else: its last line, control characters and addresses removed");
     }
 

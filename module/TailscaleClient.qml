@@ -63,11 +63,12 @@ import qs.api
 // process ends by itself). Origin "network" never prompts and never opens a browser: it sets
 // `attention` instead. pkexec 126 (dismissed) shows nothing; 127 is `failed` with the
 // contract's sentence; any other failure is `failed(what, reason)` with the rules' sentence.
-// A failed connect, disconnect, login or start the user asked for also stays on the entry
-// (`notice`, TailscaleRules.failureNotice: the reason and the action that helps) until the
-// user acts again or the phase changes — the notification alone may never show (no
-// notification daemon, no notify-send). A click on Connect while the state is unknown reads
-// first and then tries once more, or says that Tailscale does not answer.
+// A failed connect, disconnect, login or start the user asked for also leaves its reason on
+// the entry's status line (`failure`, TailscaleRules.failureText / failureAfter) — never as
+// attention, so the shell's "VPN with a network" may still connect it — until the phase
+// changes, a change goes through or a connect starts: the notification alone may never show
+// (no notification daemon, no notify-send). A click on Connect while the state is unknown
+// reads first and then tries once more, or says that Tailscale does not answer.
 // A pending connect (a bare `up` waits for Running) shows a login URL from its output or the
 // bus at once, and Disconnect ends it (stops waiting, ends the plain process, runs `down`).
 // `tailscale login` runs as a process of its own (its URL is read while it waits); cancelled
@@ -179,10 +180,8 @@ QtObject {
     // A lasting condition found by an action (origin "network" needing the user, a denied
     // change): attention until the user acts or the phase changes
     property var pendingAttention: null
-    // A failed click of the user's, shown as the entry's attention (TailscaleRules
-    // .failureNotice: { kind "failed", reason, action, under }), or null
-    property var notice: null
-    property string _noticePhase: ""
+    // A failed click of the user's: { text, phase, settling } (TailscaleRules.failureAfter), or null
+    property var failure: null
     // The last error the daemon sent on the bus (shown as a warning)
     property string busError: ""
     // The health warnings the bus sent last (titles and texts; null: none sent yet — status's
@@ -244,37 +243,43 @@ QtObject {
     })
 
     // THE provider entry (TailscaleRules.entry, with the attention an action found, the
-    // operation's own status line, and curl's absence said once)
+    // operation's own status line, a failed click's reason, and curl's absence said once)
+    // Which attention the entry shows, by kind ("" none): the state's, else tailnet lock's
+    // (only while connected: attention on an entry that is down would replace its Connect),
+    // else the one an action found
+    readonly property var _shownAttention: {
+        if (view.attention !== null)
+            return view.attention;
+        if (pendingAttention === null && view.phase === "running" && tailnetLock.attention !== null)
+            return Object.assign({}, tailnetLock.attention, { lockedOut: true });
+        return pendingAttention;
+    }
+    readonly property string attentionKind: _shownAttention?.kind ?? ""
+    // A failed click's reason ("" none): the status line while nothing runs (TailscaleRules
+    // .failureAfter)
+    readonly property string failureText: failure?.text ?? ""
     readonly property var entry: {
         const base = TailscaleRules.entry(status, prefs, facts);
-        // Locked out by tailnet lock (step 5): lasting, the user must act (admin console)
-        // — only while connected: attention on an entry that is down would replace its Connect
-        const locked = base.attention === null && pendingAttention === null && view.phase === "running" ? tailnetLock.attention : null;
-        // A failed click first: it covers the attention under it and carries its action
-        const held = notice !== null && operation === "" ? { reason: notice.reason, action: notice.action }
-            : locked !== null ? { reason: locked.reason, action: locked.action }
-            : pendingAttention !== null && base.attention === null
-            ? { reason: pendingAttention.reason, action: pendingAttention.action } : base.attention;
+        const shown = _shownAttention;
         const label = _operationLabels[operation] ?? "";
-        let line = label !== "" ? label : base.status;
+        let line = label !== "" ? label : (failureText !== "" && operation === "" ? failureText : base.status);
         // Files waiting in Tailscale's inbox: a fact on the status line, never attention
         if (label === "" && taildrop.statusText !== "")
             line = (line !== "" ? line + " · " : "") + taildrop.statusText;
         if (curlMissing && operation === "" && view.phase !== "unknown")
             line = (line !== "" ? line + " · " : "") + "live updates need curl";
-        return Object.assign({}, base, { attention: held, status: line.slice(0, 80), busy: operation !== "" });
+        return Object.assign({}, base, { attention: shown !== null ? { reason: shown.reason, action: shown.action } : null,
+                                         status: line.slice(0, 80), busy: operation !== "" });
     }
     // The view with that attention, for the plans
     readonly property var _planView: pendingAttention !== null && view.attention === null
         ? Object.assign({}, view, { attention: pendingAttention }) : view
-    // … and with a failed click's notice over it, for attend (the notice's action)
-    readonly property var _attendView: notice !== null ? Object.assign({}, _planView, { attention: notice }) : _planView
 
     readonly property var devices: status ? TailscaleRules.peers(status, now, {}) : []
     readonly property var exitNodes: TailscaleRules.exitNodes(status, prefs, suggestedId !== "" ? suggestedId : suggestedName)
     readonly property var routeWarnings: status ? TailscaleRules.routeShadowsLan(status, lanSubnets, prefs) : []
     readonly property var warnings: view.warnings.concat(routeWarnings.map(found => ({ kind: "route-shadows-lan", text: found.text })),
-        busError !== "" ? [{ kind: "error", text: "Tailscale said: " + busError }] : [],
+        busError !== "" ? [{ kind: "error", text: "Tailscale said: " + TailscaleRules.plainText(busError, 500) }] : [],
         curlMissing ? [{ kind: "curl-missing", text: "Live updates need curl: without it Tailscale's state is re-read once a minute." }] : [],
         elevationProblem !== "" ? [{ kind: "no-elevation", text: elevationProblem }] : [],
         cli === "present" && timeoutPath === "" ? [{ kind: "no-timeout", text: "coreutils' timeout was not found: Tailscale's commands run without a time limit." }] : [])
@@ -332,7 +337,7 @@ QtObject {
         _probing = false;
         _startedAt = 0;
         _readIntent = "";
-        notice = null;
+        failure = null;
         if (_stream.running)
             _stream.running = false;
         _opToken++;
@@ -394,6 +399,7 @@ QtObject {
                 pkexecPath = "";
                 untrustedReason = tools[untrusted[0]].reason;
                 cli = "untrusted";
+                _logOutcome("looking for tailscale", false, untrustedReason);
                 _readIntent = "";
                 _followRecheck();
                 return;
@@ -406,12 +412,14 @@ QtObject {
             if (tools.tailscale.path === "") {
                 tailscalePath = "";
                 cli = "missing";
+                _logOutcome("looking for tailscale", false, "not installed");
                 _readIntent = "";
                 _followRecheck();
                 return;
             }
             tailscalePath = tools.tailscale.path;
             cli = "present";
+            _logOutcome("looking for tailscale", true, "");
             _streamFailures = 0;
             _scheduleRead(true);
             _startStream();
@@ -496,6 +504,27 @@ QtObject {
 
     // ---- Reading ----
 
+    // The last `status --json` failed (not answering, or an answer that could not be read):
+    // read again on the look-again backoff
+    property bool _statusFailing: false
+
+    // ---- Logging: once per change of outcome (TailscaleRules.logChange) ----
+    // Per thing logged (status, prefs, the stream, the look for the programs): what was logged
+    // last; and how many lines each produced (for the suites)
+    property var _logKeys: ({})
+    property var logCounts: ({})
+    function _logOutcome(what, ok, reason) {
+        const decision = TailscaleRules.logChange(_logKeys[what] ?? "", what, ok, TailscaleRules.withoutAddresses(reason));
+        _logKeys[what] = decision.key;
+        if (decision.line === "")
+            return;
+        logCounts[what] = (logCounts[what] ?? 0) + 1;
+        if (ok)
+            console.info(decision.line);
+        else
+            console.warn(decision.line);
+    }
+
     property bool _reading: false
     property bool _readAgain: false
     property int _readToken: 0
@@ -524,7 +553,7 @@ QtObject {
 
     // Something is missing that may turn up by itself (installed, started): the page offers
     // "Check again"
-    readonly property bool canLookAgain: running && TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase }, false) !== "none"
+    readonly property bool canLookAgain: running && cli !== "unknown" && TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase, readFailing: _statusFailing }, false) !== "none"
     property bool _probing: false
     property real _wokenAt: 0
     property int _recheckAttempts: 0
@@ -533,7 +562,7 @@ QtObject {
     function recheck() {
         if (!running)
             return false;
-        notice = null;
+        failure = null;
         pendingAttention = null;
         _recheckAttempts = 0;
         return _recheck(true);
@@ -556,7 +585,7 @@ QtObject {
     }
 
     function _recheck(asked) {
-        const plan = TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase }, asked);
+        const plan = TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase, readFailing: _statusFailing }, asked);
         if (plan === "probe") {
             _resolveTools();
             return true;
@@ -575,7 +604,7 @@ QtObject {
 
     // The backoff runs while something is missing, and stops once nothing is
     function _followRecheck() {
-        if (!running || TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase }, false) === "none") {
+        if (!running || TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase, readFailing: _statusFailing }, false) === "none") {
             _recheckTimer.stop();
             _recheckAttempts = 0;
             return;
@@ -584,6 +613,7 @@ QtObject {
         _recheckTimer.restart();
     }
     onDaemonChanged: _followRecheck()
+    on_StatusFailingChanged: _followRecheck()
 
     function _read() {
         if (!running || cli !== "present")
@@ -618,7 +648,9 @@ QtObject {
                 _reading = false;
                 _readFailures = 0;
                 stale = false;
-                _settleNotice();
+                // Only a read begun after the failure shows where it left Tailscale
+                if (readNumber > _failureAfterRead)
+                    _failureEvent("read");
                 _afterRead();
                 if (_readAgain) {
                     _readAgain = false;
@@ -638,6 +670,7 @@ QtObject {
         _readAgain = false;
         stale = true;
         readTimeouts++;
+        _logOutcome("status --json", false, TailscaleRules.timeoutMessage("status", _limit("read")));
         // A click waiting for this read: said, not done blind
         if (_readIntent !== "") {
             _readIntent = "";
@@ -657,9 +690,15 @@ QtObject {
                 status = parsed;
                 daemon = "running";
                 readDenied = false;
+                // Answering: a later stop is not "right after starting"
+                _startedAt = 0;
             }
+            _statusFailing = !parsed.ok;
+            _logOutcome("status --json", parsed.ok, "its answer could not be read");
         } else {
             const error = TailscaleRules.errorKind(statusResult.code, statusResult.err);
+            _statusFailing = true;
+            _logOutcome("status --json", false, error.message);
             if (error.kind === "not-running") {
                 daemon = "not-running";
                 status = null;
@@ -667,20 +706,22 @@ QtObject {
                 // after a kernel update without a reboot, a bad state file) — said on the entry
                 if (_startedAt > 0 && Date.now() - _startedAt < startWatchMs) {
                     _startedAt = 0;
-                    _noteFailure("Tailscale's service stopped right after it started.");
+                    _noteFailure("Tailscale stopped right after starting.", reads - 1);
                 }
             } else if (error.kind === "denied") {
                 readDenied = true;
-            } else {
-                console.warn("[tailscale] status --json failed:", error.message);
             }
         }
         if (prefsResult.ok) {
             const parsed = TailscaleRules.parsePrefs(prefsResult.out);
             if (parsed.ok)
                 prefs = parsed;
+            _logOutcome("debug prefs", parsed.ok, "its answer could not be read");
         } else if (daemon === "not-running") {
             prefs = null;
+        } else if (statusResult.ok) {
+            // Only while status answers: a daemon that is down is said once, by status
+            _logOutcome("debug prefs", false, TailscaleRules.errorKind(prefsResult.code, prefsResult.err).message);
         }
         _followExitNode();
         _rememberTailnet();
@@ -734,6 +775,8 @@ QtObject {
     }
 
     function _streamEnded() {
+        // It had been there (a message, or alive a while): the daemon may just have gone
+        const wasUp = streamUp || Date.now() - _streamStartedAt >= 10000;
         streamUp = false;
         if (!running)
             return;
@@ -742,8 +785,11 @@ QtObject {
         _streamRestart.interval = Math.min(streamBackoffMaxMs, streamBackoffMinMs * Math.pow(2, Math.min(_streamFailures, 10)));
         _streamFailures++;
         _streamRestart.restart();
-        // The daemon may be gone: read now (a read finds "not running")
-        _scheduleRead(true);
+        _logOutcome("the event stream", false, "it ended");
+        // The daemon may be gone: read now (a read finds "not running"). A stream that never
+        // came up is no news — the reads then follow the look-again backoff, not every restart
+        if (wasUp)
+            _scheduleRead(true);
     }
 
     function _onBusText(text) {
@@ -755,6 +801,8 @@ QtObject {
 
     function _onBusMessage(object) {
         events++;
+        if (!streamUp)
+            _logOutcome("the event stream", true, "");
         streamUp = true;
         taildrop._onBus(object);
         const digest = TailscaleRules.notifyDigest(object);
@@ -804,33 +852,34 @@ QtObject {
     onViewChanged: {
         if (pendingAttention !== null && view.phase !== _pendingPhase)
             pendingAttention = null;
-        // Not while settling: the read right after a failure shows where it left Tailscale
-        if (notice !== null && !_noticeSettling && view.phase !== _noticePhase)
-            notice = null;
+        if (failure !== null)
+            failure = TailscaleRules.failureAfter(failure, "view", view.phase);
     }
 
-    // The first read after a failure: up after all — the notice goes; else its phase is the
-    // one the failure left, and a change from there ends the notice
-    property bool _noticeSettling: false
-    function _settleNotice() {
-        if (notice === null || !_noticeSettling)
-            return;
-        _noticeSettling = false;
-        if (view.phase === "running")
-            notice = null;
-        else
-            _noticePhase = view.phase;
-    }
-
-    // A failed click of the user's: kept on the entry (`notice`) with the action that helps
-    function _noteFailure(reason) {
+    // A failed click of the user's: its reason on the entry's status line (TailscaleRules
+    // .failureText, .failureAfter). Addresses are kept out (the status line may show on a
+    // shared screen); the daemon's error and health are offered for a failure without words.
+    // Only a read begun after the failure settles it: `settleAfter` the reads begun before it
+    // (default: all so far); an operation's own failure counts from the operation's end
+    // (_readsBeforeEnd), whose read is fresh
+    property int _failureAfterRead: 0
+    property int _readsBeforeEnd: 0
+    function _noteFailure(reason, settleAfter) {
         if (!running)
             return;
-        _noticePhase = view.phase;
-        _noticeSettling = true;
-        notice = TailscaleRules.failureNotice(_planView, TailscaleRules.withoutAddresses(reason),
-            { error: TailscaleRules.withoutAddresses(busError), health: (Array.isArray(busHealth) ? busHealth : (status?.health ?? [])).map(item => typeof item === "string" ? TailscaleRules.withoutAddresses(item)
-                : Object.assign({}, item, { title: TailscaleRules.withoutAddresses(item?.title), text: TailscaleRules.withoutAddresses(item?.text) })) });
+        const health = (Array.isArray(busHealth) ? busHealth : []).map(item => Object.assign({}, item, { text: TailscaleRules.withoutAddresses(item?.text),
+                                                                                                      title: TailscaleRules.withoutAddresses(item?.title) }));
+        // The long sentence stays on the card's warnings; the status line gets the short one
+        if (reason === elevationProblem && elevationProblem !== "")
+            reason = timeoutPath === "" ? "Can't ask for the password: timeout is missing." : "Can't ask for the password: pkexec is missing.";
+        const text = TailscaleRules.failureText(TailscaleRules.withoutAddresses(reason), { error: TailscaleRules.withoutAddresses(busError), health: health });
+        failure = TailscaleRules.failureAfter(failure, "failed", view.phase, text);
+        _failureAfterRead = typeof settleAfter === "number" ? settleAfter : reads;
+    }
+
+    function _failureEvent(event) {
+        if (failure !== null)
+            failure = TailscaleRules.failureAfter(failure, event, view.phase);
     }
 
     // A click while the state was unknown: what it asked for ("connect" | "disconnect"), done
@@ -850,7 +899,7 @@ QtObject {
                 : TailscaleRules.planConnect(_planView, canChange, "user");
             // Still unknown after a read that answered: said, never a blind `up`
             if (plan.kind === "read") {
-                _noteFailure("Tailscale's state could not be read.");
+                _noteFailure("Couldn't read Tailscale's state.");
                 return;
             }
             _execute(plan, "user", intent);
@@ -870,6 +919,8 @@ QtObject {
 
     // The provider's three (origin as the contract's request.origin; attend is the user's)
     function connect(origin) {
+        // A new try, from anyone: the last one's failure is no longer the news
+        _failureEvent("connecting");
         return _execute(TailscaleRules.planConnect(_planView, canChange, _origin(origin)), _origin(origin), "connect");
     }
 
@@ -885,16 +936,16 @@ QtObject {
 
     function attend() {
         // Locked out by tailnet lock: the admin console, where a trusted device signs this one
-        if (notice === null && view.attention === null && pendingAttention === null && view.phase === "running" && tailnetLock.attention !== null) {
+        if (_shownAttention?.lockedOut === true) {
             const url = TailscaleRules.adminMachineUrl(status, prefs);
             return openUrl(url !== "" ? url : TailscaleRules.adminMachinesUrl);
         }
-        const shown = _attendView.attention;
-        // A failed click's notice acts as the attention under it, or as the click again
-        const kind = shown?.kind === "failed" ? (shown.under?.kind ?? "") : (shown?.kind ?? "");
+        // Exactly the attention the entry shows (_planView's: the state's, else an action's)
+        const kind = _planView.attention?.kind ?? "";
+        const action = _planView.attention?.action ?? "";
         const operationName = kind === "service-not-running" ? "start" : kind === "exit-node-offline" ? "exit-node"
-            : (kind === "login" || kind === "key-expired") ? "login" : (view.phase === "running" || view.phase === "starting" ? "disconnect" : "connect");
-        return _execute(TailscaleRules.planAttend(_attendView, canChange, "user"), "user", operationName);
+            : (kind === "login" || kind === "key-expired") ? "login" : action === "Disconnect" ? "disconnect" : "connect";
+        return _execute(TailscaleRules.planAttend(_planView, canChange, "user"), "user", operationName);
     }
 
     // `plan`: TailscaleRules' → true when something was started (or looked at again)
@@ -903,7 +954,7 @@ QtObject {
             return false;
         if (origin === "user") {
             pendingAttention = null;
-            notice = null;
+            _failureEvent("acted");
         }
         if (plan.kind === "recheck")
             return recheck();
@@ -1403,6 +1454,7 @@ QtObject {
         operation = "";
         authUrl = "";
         _opText = "";
+        _readsBeforeEnd = reads;
         _scheduleRead(true);
     }
 
@@ -1427,7 +1479,7 @@ QtObject {
                 failed(description, message);
             // The user's connect or disconnect: also on the entry, where the click was
             if (origin === "user" && (operationName === "connect" || operationName === "disconnect"))
-                _noteFailure(message);
+                _noteFailure(message, _readsBeforeEnd);
         };
         // One change at a time: a second caller never replaces the running one (its process
         // and its result would be lost)
@@ -1464,8 +1516,10 @@ QtObject {
                 if (!_alive(generation) || token !== _opToken)
                     return;
                 _finish();
-                if (answer.ok)
+                if (answer.ok) {
+                    _failureEvent("succeeded");
                     onSuccess?.((answer.lines ?? []).join("\n"), current);
+                }
                 if (answer.ok || answer.dismissed) {
                     onEnd?.({ ok: answer.ok === true, dismissed: answer.dismissed === true, elevated: true, code: answer.code ?? 0, message: "", error: "" });
                     return;
@@ -1489,6 +1543,7 @@ QtObject {
                 _opProcess = null;
                 if (result.ok) {
                     _finish();
+                    _failureEvent("succeeded");
                     onSuccess?.(result.out, current);
                     onEnd?.({ ok: true, dismissed: false, elevated: false, code: 0, message: "", error: "" });
                     return;
@@ -1556,6 +1611,7 @@ QtObject {
         operation = "";
         _changeSerial++;
         authUrl = "";
+        _readsBeforeEnd = reads;
         _scheduleRead(true);
     }
 
@@ -1577,10 +1633,13 @@ QtObject {
                 const reason = _timedOut(result) ? TailscaleRules.timeoutMessage("startService", seconds)
                     : ((result.err.split("\n")[0] ?? "").trim() || ("systemctl exited with status " + result.code + "."));
                 failed(command.description, reason);
-                _noteFailure(reason);
+                // A refused start and a cancelled password prompt look alike ("Access denied"):
+                // the entry says it neutrally, the notification keeps systemd's words
+                _noteFailure(_timedOut(result) ? reason : "Not started.");
                 return;
             }
             daemon = "unknown";
+            _failureEvent("succeeded");
             _startedAt = Date.now();
             _streamFailures = 0;
             _streamRestart.stop();
@@ -1769,6 +1828,7 @@ QtObject {
         const code = result.code;
         if (code === 0 || TailscaleRules.parseLoginOutput(_loginText).success) {
             _loginFrom = null;
+            _failureEvent("succeeded");
             loginInterrupted = null;
             // A new account (or a renewed key) changes the list: read again when that asks
             // for no password; otherwise the page offers to
@@ -1820,7 +1880,7 @@ QtObject {
     function _loginFailed(description, reason) {
         failed(description, reason);
         if (_loginCommand === "login")
-            _noteFailure(reason);
+            _noteFailure(reason, _readsBeforeEnd);
     }
 
     function _loginDone() {
@@ -1828,6 +1888,7 @@ QtObject {
         operation = "";
         _changeSerial++;
         authUrl = "";
+        _readsBeforeEnd = reads;
         _scheduleRead(true);
     }
 

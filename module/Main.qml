@@ -86,12 +86,11 @@ QtObject {
                 status = status.split(exitNode.name).join("<exit node>");
             return JSON.stringify({
                 phase: client.view.phase, state: client.entry.state,
-                attention: client.notice?.kind ?? client.view.attention?.kind ?? (client.pendingAttention?.kind ?? ""),
+                attention: client.attentionKind,
                 attentionAction: client.entry.attention?.action ?? "", status: status, busy: client.busy, operation: client.operation,
-                // What a failed click left on the entry (no addresses: TailscaleRules.failureNotice's
-                // input is cleaned of them), the daemon's own words for its state, and which
-                // programs were found — enough to tell why a click did nothing
-                notice: client.notice?.reason ?? "", backendState: client.status?.backendState ?? "",
+                // What a failed click left on the status line (no addresses), the daemon's own words
+                // for its state, and which programs were found — enough to tell why a click did nothing
+                failure: client.failureText, backendState: client.status?.backendState ?? "",
                 haveNodeKey: client.status?.haveNodeKey ?? false, wantRunning: client.prefs?.wantRunning ?? false,
                 loggedOut: client.prefs?.loggedOut ?? false,
                 tools: { tailscale: client.tailscalePath, timeout: client.timeoutPath, pkexec: client.pkexecPath, curl: client.curlPath },

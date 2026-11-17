@@ -530,14 +530,14 @@ Singleton {
         // Both may change without the shell knowing (installed, replaced): the action looks again
         if (_get(facts, "cli") === "missing") {
             view.phase = "missing";
-            view.attention = _attention("not-installed", "Tailscale is not installed on this computer", "Check again");
+            view.attention = _attention("not-installed", "Tailscale isn't installed", "Check again");
             view.status = "Not installed";
             return finish();
         }
         if (_get(facts, "cli") === "untrusted") {
             view.phase = "untrusted";
             view.attention = _attention("untrusted", _string(_get(facts, "untrustedReason"), 300)
-                || "The tailscale program found is not trusted (this user could change it): nothing is run", "Check again");
+                || "Tailscale isn't trusted: this user could change it.", "Check again");
             view.status = "Not trusted";
             return finish();
         }
@@ -635,7 +635,7 @@ Singleton {
             }
         } else {
             view.phase = "unknown";
-            warnings.push({ kind: "unknown-state", text: "Tailscale reports a state this module does not know: " + (backend || "none") });
+            warnings.push({ kind: "unknown-state", text: "Tailscale reports a state this module does not know: " + (plainText(backend, 32) || "none") });
         }
 
         // A key about to expire: a warning, never attention — nothing renews it without harm (a
@@ -650,7 +650,7 @@ Singleton {
                 view.status += " · key " + key.text;
         }
         for (const text of _strings(status.health, 64))
-            warnings.push({ kind: "health", text: text });
+            warnings.push({ kind: "health", text: plainText(text, 500) });
         if (_isObject(status.clientVersion) && status.clientVersion.runningLatest === false && _string(status.clientVersion.latestVersion, 64) !== "") {
             const managed = _get(facts, "updateManagedBySystem") === true;
             warnings.push({
@@ -819,62 +819,102 @@ Singleton {
             return _plan("run", { command: commandFor("startService", {}) });
         if (kind === "exit-node-offline")
             return _privilegedRun("exitNodeNone", changeAllowed, origin, {}, null);
+        // The action its button says, whatever the phase reads now (label and effect are one)
         if (kind === "needs-privilege")
-            return view.phase === "running" || view.phase === "starting"
-                ? planDisconnect(view, changeAllowed, origin) : planConnect(view, changeAllowed, origin);
+            return view.attention.action === "Disconnect" ? planDisconnect(view, changeAllowed, origin, { connecting: true })
+                : planConnect(view, changeAllowed, origin);
         if (kind === "not-installed" || kind === "untrusted")
             return _plan("recheck");
-        // A failure shown on the entry (failureNotice): its action is the one under it, or
-        // the click that failed, again
-        if (kind === "failed") {
-            const under = _isObject(view.attention.under) ? view.attention.under : null;
-            const beneath = Object.assign({}, view, { attention: under });
-            if (under !== null)
-                return planAttend(beneath, changeAllowed, origin);
-            return view.phase === "running" || view.phase === "starting"
-                ? planDisconnect(beneath, changeAllowed, origin) : planConnect(beneath, changeAllowed, origin);
-        }
         return _plan("nothing");
     }
 
-    // What a failed click leaves on the entry until the user acts again or the phase changes:
-    // the entry's attention { kind "failed", reason (the failure, one sentence), action, under }.
-    // The action is that of the attention it covers (`under`: Log in, Start…), else the click
-    // again: Disconnect while up, Connect otherwise. `view` stateOf's (its attention the one
-    // covered), `reason` the failure's sentence. `daemonSays` (optional): what the daemon itself
-    // reported meanwhile — the bus's ErrMessage, then its health warnings (healthList's
-    // { title, text }) — used when the failure has no words of its own (a time limit, a bare
-    // exit status): a daemon that cannot make its network device (a kernel updated without a
-    // reboot) lets `up` wait or fail while only its health says why.
-    function failureNotice(view, reason, daemonSays) {
-        const under = _isObject(view?.attention) && view.attention.kind !== "failed" ? view.attention
-            : (_isObject(view?.attention?.under) ? view.attention.under : null);
-        const phase = _string(view?.phase, 32);
-        const action = _string(under?.action, 40) || (phase === "running" || phase === "starting" ? "Disconnect" : "Connect");
-        const oneLine = value => _string(value, 600).split("\n").map(line => line.trim()).filter(line => line !== "").join(" ");
-        let text = oneLine(reason);
-        const generic = text === "" || /did not (connect|answer) within|exited with status|^Tailscale did not answer in time/.test(text);
+    // ---- A failed click: its reason on the entry's status line ----
+    //
+    // A connect, disconnect, login or start the user asked for that failed leaves its reason
+    // as the entry's status text — never as attention: the remedy is the same button again (or
+    // the attention the STATE has: Log in, Start), and attention would stop the shell's "VPN
+    // with a network" from connecting. Its life (failureAfter), `failure` null or
+    // { text, phase, settling }:
+    //   "failed"     a new one: { text, phase (the view's now), settling true }
+    //   "read"       a read answered: settling → up after all (running): gone; else it keeps
+    //                the phase it left Tailscale in; settled → gone when the phase changed
+    //   "view"       the view changed: gone when settled and the phase changed
+    //   "acted"      the user acted again, "succeeded" a change went through, "connecting"
+    //                a connect started (any origin), "stopped" the client stopped: gone
+    function failureAfter(failure, event, phase, text) {
+        const now = _string(phase, 32);
+        if (event === "failed")
+            return { text: _string(text, 200) || "That didn't work.", phase: now, settling: true };
+        if (!_isObject(failure))
+            return null;
+        if (event === "read") {
+            if (failure.settling === true)
+                return now === "running" ? null : { text: failure.text, phase: now, settling: false };
+            return now !== failure.phase ? null : failure;
+        }
+        if (event === "view")
+            return failure.settling !== true && now !== failure.phase ? null : failure;
+        return null;
+    }
+
+    // Text from Tailscale (the CLI's stderr, the daemon's errors and health) as plain text:
+    // one line, no control characters, and nothing a Text could take for markup — angle
+    // brackets and ampersands become look-alikes
+    function plainText(value, maxLength) {
+        const text = _string(value, 4000).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim()
+            .replace(/</g, "‹").replace(/>/g, "›").replace(/&/g, "＆");
+        return _clip(text, maxLength ?? 200);
+    }
+
+    // The status text of a failure: `reason` (the failure's sentence). `daemonSays`
+    // (optional): what the daemon reported meanwhile — the bus's ErrMessage, then its health
+    // warnings (notifyDigest's { severity, text, impactsConnectivity }) — used only when the
+    // failure has no words of its own (a time limit, a bare exit status), and of the health
+    // only warnings that cut the connection or are severe: a daemon that cannot make its
+    // network device (a kernel updated without a reboot) lets `up` wait while only its
+    // health says why; an update notice says nothing about it. ≤ 80 characters (the entry's
+    // status line).
+    function failureText(reason, daemonSays) {
+        let text = plainText(reason, 600);
+        const generic = text === "" || /^Still connecting after|did not answer within|exited with status|^Tailscale did not answer in time/.test(text);
         if (generic) {
-            const error = oneLine(_get(daemonSays, "error"));
-            // Those that cut the connection first, then the serious ones; an update notice last
-            const rank = item => !_isObject(item) ? 2 : item.impactsConnectivity === true ? 0 : item.severity === "high" ? 1 : item.severity === "low" ? 3 : 2;
-            const health = (Array.isArray(_get(daemonSays, "health")) ? _get(daemonSays, "health").slice(0, 64) : [])
-                .map((item, index) => ({ item: item, index: index })).sort((a, b) => rank(a.item) - rank(b.item) || a.index - b.index)
-                .map(entry => oneLine(_isObject(entry.item) ? (entry.item.text || entry.item.title) : entry.item)).find(line => line !== "") ?? "";
+            const error = plainText(_get(daemonSays, "error"), 600);
+            const serious = item => _isObject(item) && (item.impactsConnectivity === true || item.severity === "high");
+            const list = Array.isArray(_get(daemonSays, "health")) ? _get(daemonSays, "health").slice(0, 64) : [];
+            const health = list.filter(serious).sort((a, b) => (a.impactsConnectivity === true ? 0 : 1) - (b.impactsConnectivity === true ? 0 : 1))
+                .map(item => plainText(item.text || item.title, 600)).find(line => line !== "") ?? "";
             const own = error !== "" ? "Tailscale said: " + error : health;
             if (own !== "")
                 text = own;
         }
-        return { kind: "failed", reason: _clip(text, 200) || "It did not work.", action: action, under: under };
+        return _clip(text, 80) || "That didn't work.";
+    }
+
+    // ---- Logging: once per change of outcome, not once per attempt ----
+
+    // `lastKey` what was logged last for `what` ("" = it was answering), `ok` this attempt's
+    // outcome, `reason` its failure → { key (to keep), line ("" = log nothing) }: the first
+    // failure with its reason, a change of reason, and the recovery
+    function logChange(lastKey, what, ok, reason) {
+        const last = _string(lastKey, 300);
+        const key = ok === true ? "" : (plainText(reason, 300) || "failed");
+        if (key === last)
+            return { key: key, line: "" };
+        const name = plainText(what, 80);
+        if (key === "")
+            return { key: key, line: "[tailscale] " + name + " answers again" };
+        return { key: key, line: "[tailscale] " + name + (last === "" ? " failed: " : " still failing, now: ") + key };
     }
 
     // ---- Looking again: Tailscale installed, started or fixed while the shell runs ----
 
-    // facts { cli ("unknown" | "present" | "missing" | "untrusted"), daemon, phase }, `asked`
+    // facts { cli ("unknown" | "present" | "missing" | "untrusted"), daemon, phase, readFailing
+    // (the last status read failed: not answering, an answer that could not be read) }, `asked`
     // true for the user's own "Check again" (else a view coming on screen, the timer) →
     //   "probe"  look for the programs again (not found, not trusted, or not looked for yet)
     //   "read"   read the state again and restart the event stream (the service was not
-    //            running, the state is unknown; or asked while all is well)
+    //            running or its reads fail — these reads follow the backoff, not a faster loop;
+    //            or asked while all is well)
     //   "none"   nothing is missing: the stream and the slow poll keep it current
     function recheckPlan(facts, asked) {
         const cli = _string(_get(facts, "cli"), 16);
@@ -882,7 +922,7 @@ Singleton {
             return "probe";
         const daemon = _string(_get(facts, "daemon"), 16);
         const phase = _string(_get(facts, "phase"), 32);
-        if (daemon === "not-running" || phase === "not-running" || phase === "denied" || asked === true)
+        if (daemon === "not-running" || phase === "not-running" || phase === "denied" || _get(facts, "readFailing") === true || asked === true)
             return "read";
         return "none";
     }
@@ -1709,8 +1749,8 @@ Singleton {
     function healthList(busHealth, status) {
         if (Array.isArray(busHealth))
             return busHealth.filter(warning => _isObject(warning) && (warning.title || warning.text))
-                .map(warning => ({ title: _string(warning.title, 200), text: _string(warning.text, 500), severity: _string(warning.severity, 16) }));
-        return _strings(_isObject(status) ? status.health : [], 64).map(text => ({ title: "", text: text, severity: "" }));
+                .map(warning => ({ title: plainText(warning.title, 200), text: plainText(warning.text, 500), severity: _string(warning.severity, 16) }));
+        return _strings(_isObject(status) ? status.health : [], 64).map(text => ({ title: "", text: plainText(text, 500), severity: "" }));
     }
 
     // The text "Copy diagnostics" puts on the clipboard: versions, state, the netcheck and DNS
@@ -2054,9 +2094,13 @@ Singleton {
         // it answers no (cli/risks.go errAborted)
         if (/aborted, no changes made/.test(text))
             return { kind: "aborted", message: "Tailscale asked for a confirmation (it runs inside an SSH session over Tailscale) and nothing was changed: run the command in a terminal there." };
-        // The CLI's own "Warning: …" lines (a version mismatch, IP forwarding) are not the error
-        const firstLine = text.split("\n").map(line => line.trim()).find(line => line !== "" && !/^Warning:/.test(line))
-            ?? text.split("\n").map(line => line.trim()).find(line => line !== "") ?? "";
+        // The CLI's own "Warning: …" lines (a version mismatch, IP forwarding) are not the error,
+        // nor what a waiting `login` / `up` printed before it failed ("To authenticate, visit:"
+        // and the link: a login link is never a reason)
+        const waitingLine = line => /^To (authenticate|approve your machine)\b/i.test(line) || /^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(line);
+        const candidates = text.split("\n").map(line => line.trim().replace(/\bhttps?:\/\/\S*\/a\/\S*/gi, "").trim())
+            .filter(line => line !== "" && !waitingLine(line));
+        const firstLine = candidates.find(line => !/^Warning:/.test(line)) ?? candidates[0] ?? "";
         return { kind: "other", message: firstLine !== "" ? firstLine.slice(0, 300) : ("Tailscale exited with status " + (isFinite(code) ? code : "?") + ".") };
     }
 
@@ -2076,7 +2120,7 @@ Singleton {
             return { outcome: "no-agent", failure: true, message: "No authentication agent answered." };
         // No exit status at all: pkexec itself could not be started (gone since the probe)
         if (typeof exitCode === "number" && exitCode < 0)
-            return { outcome: "not-started", failure: true, message: "pkexec could not be started." };
+            return { outcome: "not-started", failure: true, message: "Couldn't run pkexec." };
         return { outcome: "failed", failure: true, message: "" };
     }
 
@@ -2086,7 +2130,7 @@ Singleton {
         const value = _number(seconds, 0);
         const limit = value >= 120 ? Math.round(value / 60) + " minutes" : Math.round(value) + " s";
         if (name === "connect")
-            return "Tailscale did not connect within " + limit + ". It keeps trying by itself; Disconnect stops it.";
+            return "Still connecting after " + limit + ". Disconnect to stop.";
         if (name === "login" || name === "addAccount")
             return "The login was not finished within " + limit + "; nothing was changed.";
         if (name === "status" || name === "prefs" || name === "exitNodeSuggest")
@@ -2095,11 +2139,11 @@ Singleton {
     }
 
     // A failure's text without addresses (a notification may show on a shared screen): IPv4
-    // and IPv6 addresses (and prefixes) → "<address>"
+    // and IPv6 addresses (and prefixes) → "[address]" (no angle brackets: shown as plain text, never markup)
     function withoutAddresses(text) {
         return String(text ?? "").slice(0, 2000).replace(/[0-9A-Fa-f:.]{3,}(?:\/\d{1,3})?/g, match => {
             const address = match.replace(/\/\d{1,3}$/, "").replace(/[.:]+$/, "");
-            return _parseIpv4(address) !== null || (address.indexOf(":") >= 0 && _parseIpv6(address) !== null) ? "<address>" : match;
+            return _parseIpv4(address) !== null || (address.indexOf(":") >= 0 && _parseIpv6(address) !== null) ? "[address]" : match;
         });
     }
 
@@ -2157,12 +2201,12 @@ Singleton {
             if (checkTrust !== true || name === "curl") {
                 entry.trusted = true;
             } else if (entry.real === "" || entry.stats.length < 3) {
-                entry.reason = "The " + name + " found on PATH could not be checked: nothing is run";
+                entry.reason = (name === "tailscale" ? "Tailscale" : name) + " couldn't be checked: nothing runs.";
             } else {
                 const bad = entry.stats.find(stat => !_statTrusted(stat.uid, stat.mode, stat.path));
                 entry.trusted = bad === undefined;
                 if (bad)
-                    entry.reason = "The " + name + " found on PATH is not trusted (this user could replace it: not root's, not in the Nix store): nothing is run";
+                    entry.reason = (name === "tailscale" ? "Tailscale" : name) + " isn't trusted: this user could change it.";
             }
             if (!entry.trusted)
                 untrusted.push(name);
