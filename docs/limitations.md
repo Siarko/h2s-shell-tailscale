@@ -30,3 +30,6 @@ Also not offered: Funnel over TCP, `--relay-server-static-endpoints`, `--remote-
 - Nothing of the module is on the lock screen.
 - A login started through pkexec cannot be stopped from the shell. It ends at its time limit. The page asks you to close the login page in the browser.
 - A login from a logged-in account that does not finish leaves Tailscale on a new, empty profile. The page offers "Switch back".
+- Serve changes go through `tailscale serve`, which reads and writes the config itself. Something added on a port between the module's plan and that write goes public with a Funnel until the check after Funnel turns it off. Writing the config through the local API with `If-Match` would close the gap, but needs root or the operator for every change.
+- A failed exit node by network change is not retried for the same networks and choice while the shell runs. A restart tries it once more.
+- Without a notification daemon, failures of serve, Funnel and the exit node by network show only on the page.

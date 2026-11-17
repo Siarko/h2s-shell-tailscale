@@ -71,6 +71,17 @@ Checks the stand-ins. It runs each one by absolute path, so the real tools never
 They are configured with `TS_FAKE_*` variables. Each script's header lists them.
 State lives in `TS_FAKE_STATE_DIR`, one directory per test.
 
+Some cases of the stand-in `tailscale`.
+A scenario comes from `TS_FAKE_STATE`, else from the file `scenario` in the state dir.
+
+| Setting | Case |
+|---|---|
+| scenario `fresh` | a daemon fresh from the package: no profile, no node key, WantRunning off, NoState |
+| scenario `fresh-needs-login` | the same in NeedsLogin |
+| `TS_FAKE_DAEMON=down`, or a file `daemon-down` in the state dir | the daemon is not running |
+| file `serve-next.json` in the state dir | another client's serve change, landing when the next `funnel` runs as root |
+| file `serve-fail-after-write` in the state dir | that `funnel` run fails after it wrote the config |
+
 ## Fixtures
 
 `fixtures/` holds CLI and local API output, real and synthetic.

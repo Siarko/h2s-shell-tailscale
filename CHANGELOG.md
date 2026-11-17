@@ -36,7 +36,18 @@ Needs h2s-shell with module API 1.3.
 - Live updates from tailscaled's event bus, with a 60 s poll and a re-read after sleep.
 - Facts `tailscale.connected` and `tailscale.exitNodeInUse`.
 - IPC target `tailscale`.
+- Tailscale installed or started later is found without a restart. "Check again" and IPC `recheck`.
+- A failed Connect, Disconnect, Log in or Start shows its reason on the entry's status line.
+- A daemon fresh from the package offers Log in.
+- Funnel turned off again when something else landed on its port. A notification says so.
+- Exit node by network: an open choice is applied once its node is back or you become the operator.
+- Exit node by network: one notification per change. A pick by hand while a choice is open stays.
+- IPC `state` fields `failure`, `backendState`, `haveNodeKey`, `wantRunning`, `loggedOut`, `tools`.
+- Parsing rules, fixtures and stand-in tools for the tests.
 
-## 0.1.0
+### Changed
 
-Internal: parsing rules, fixtures and stand-in tools. No user-visible features.
+- Text from Tailscale shows as plain text. Addresses on the status line and in notifications show as `[address]`.
+- Read failures are logged once per change, not on every try.
+- Reads while Tailscale is missing or stopped follow a backoff from 5 s to 60 s.
+- Funnel is refused on ports of terminal sessions and Tailscale Services.

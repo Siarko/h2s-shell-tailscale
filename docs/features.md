@@ -25,14 +25,47 @@ When something needs you, the entry says so and offers one button:
 | Situation | Button |
 |---|---|
 | logged out | Log in |
+| a daemon fresh from the package (no node key) | Log in |
 | key expired | Log in |
 | waiting for an admin's approval | opens the admin console |
 | `tailscaled` not running | Start |
+| `tailscale` not installed | Check again |
+| not trusted | Check again |
 | exit node offline for over a minute | Use none |
 | locked out by tailnet lock (while connected) | Open admin console |
 
-The entry also covers "not installed", "not trusted" and "Not answering — state unknown".
+The entry also covers "Not answering — state unknown".
 "Not trusted" means a `tailscale`, `timeout` or `pkexec` on PATH that your user could replace. Then nothing runs.
+
+### Looking again
+
+Tailscale may be installed, fixed or started while the shell runs.
+The module finds it without a restart of the shell.
+
+- While Tailscale is not installed, not trusted or its service is not running, the module looks again by itself.
+- The first look comes after 5 s. The wait doubles up to 60 s.
+- Opening the page, the bar popup, the network popup or the VPN card looks again at once, at most every 2 s. It also starts the wait over.
+- "Check again" looks at once. It is the entry's button while Tailscale is not found.
+- The page also shows "Check again" while the service is down, the state is not readable, or Tailscale does not answer.
+- The IPC call `recheck` does the same.
+
+### When a click fails
+
+A failed Connect, Disconnect, Log in or Start puts its reason on the entry's status line.
+The entry's button stays the one its state needs.
+A notification says it too, if a notification daemon runs.
+
+- The reason goes when the state changes, a change succeeds, a connect starts, or you press the entry's button again.
+- The first read after the failure checks it. If Tailscale is connected by then, the reason goes.
+- A time limit or a bare exit status has no words of its own. Then the line shows the daemon's own error, or a health warning that cuts the connection.
+- A refused or cancelled Start says "Not started."
+- A service that stops within 30 s of Start says "Tailscale stopped right after starting."
+- Connect or Disconnect while the state is unknown reads first and then acts. If the state stays unknown, the line says "Couldn't read Tailscale's state."
+- Only clicks do this. A connect or disconnect from the shell or the IPC gives a notification only. If it needs a password, the entry shows a button.
+- Failures of the exit node by network and of serve changes never use the entry's status line.
+
+Text from Tailscale is shown as plain text: one line, `<`, `>` and `&` as look-alikes.
+On the status line and in notifications, IP addresses show as `[address]`.
 
 ## Connection
 
@@ -40,6 +73,7 @@ The entry also covers "not installed", "not trusted" and "Not answering — stat
 - Log in runs a bare `tailscale login`. The login page opens in the browser. The link can also be copied.
 - A login can be cancelled. It gives up after 10 minutes.
 - Log out asks for confirmation first.
+- A daemon in NoState with a node key and WantRunning off counts as off. Connect runs `tailscale up`.
 
 ## Exit node
 
@@ -57,8 +91,23 @@ Mark saved Wi-Fi and Ethernet networks with "none", "automatic" or one of the ta
 - When the set of marked networks that are up changes, the module sets the exit node once.
 - A choice made by hand afterwards stays until the networks change.
 - A drop to no marked network shorter than 30 s does not count.
-- Two marked networks up with different choices: nothing happens.
 - While Tailscale is off or starting, the module waits. It never turns Tailscale on.
+- It runs as an automatic change: never a password prompt. It waits while another change runs or Serve checks a Funnel.
+
+A choice that cannot be applied stays open. It is applied once the reason goes:
+
+| Reason | Shown on the page |
+|---|---|
+| the chosen node is offline or gone | The chosen exit node is not available |
+| your user is not the operator | Needs the operator |
+| this computer offers itself as an exit node | why using one is refused |
+| two marked networks up want different nodes | Two networks want different exit nodes |
+| the change failed | Tailscale's error |
+
+- Each open choice gives one notification, "Exit node for this network". The same networks and choice never notify twice.
+- A failed change is not tried again for the same networks and choice. It is tried again when the networks change, and once after a restart of the shell.
+- An exit node picked by hand while a choice is open ends it. The pick stays until the networks change, also across a restart.
+- The open choice is kept in the store under `exitByNetwork.held`.
 
 ## Network switches
 
@@ -154,7 +203,31 @@ Needs your user to be Tailscale's operator.
 Funnel applies to a whole port.
 "Funnel on" asks first and names the other shares on that port.
 A port that holds anything the module does not create itself is never made public by the module.
-Files, folders, sockets and redirects are such things. The page says "Change this one in a terminal".
+Files, folders, sockets and redirects are such things.
+So are the ports of terminal sessions (`serve` without `--bg`) and of Tailscale Services.
+The page says "Change this one in a terminal".
+
+- A new share on a terminal session's port is refused: "Port N is in use".
+- A Funnel turned on in a terminal session counts as public.
+
+### The check after Funnel
+
+`tailscale serve` reads and writes the config itself, after the module planned the change.
+Through pkexec, that happens after the password dialog.
+So after Funnel goes on, the module reads the config again.
+If the port then holds something the module would not make public, it turns Funnel off at once.
+
+| Outcome | Message |
+|---|---|
+| turned off | Funnel off. Something else is on port N. |
+| turning off failed | Couldn't turn Funnel off on port N. |
+| the config could not be read | Couldn't check port N. Funnel may still be on. |
+| nothing the module can send turns it off | Port N is public. Turn Funnel off in a terminal. |
+
+- The message shows on the page and as a notification titled "Funnel".
+- Turning Funnel off uses the click's origin. A click may ask for the password again.
+- No other serve change starts during the check.
+- If another change holds the lock, the check waits for it and tries again. After 5 tries it gives up with "Couldn't turn Funnel off".
 
 ## Certificates
 

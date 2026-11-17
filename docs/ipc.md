@@ -10,7 +10,8 @@ h2s-shell ipc call tailscale advertiseRoute 192.168.1.0/24
 
 ## Rules
 
-- Read functions return JSON. They hold counts and states only. No names, addresses, paths or URLs.
+- Read functions return JSON. They hold counts and states only. No names, addresses or URLs.
+- The one exception for paths: `state`'s `tools` holds the absolute paths of the programs found.
 - No call ever opens a password prompt or a browser.
 - `connect` and `disconnect` act like the shell starting a VPN with a network. If they need you, the entry says so.
 - Functions marked "operator" do nothing unless your user needs no password.
@@ -23,10 +24,42 @@ This lets tests drive the stand-in pkexec. See [architecture.md](architecture.md
 
 | Function | Effect |
 |---|---|
-| `state` | JSON: phase, state, attention, status line, busy, exit node in use and online, tools, stream, counts |
+| `state` | JSON, fields below |
 | `connect` | connect; never prompts |
 | `disconnect` | disconnect; never prompts |
 | `refresh` | read Tailscale's state again |
+| `recheck` | look for Tailscale or its service again at once, as the page's "Check again" |
+
+### Fields of `state`
+
+| Field | Content |
+|---|---|
+| `phase` | the module's phase, for example `running`, `stopped`, `logged-out`, `not-running`, `missing`, `unknown` |
+| `state` | the entry's VPN state, for example `activated`, `activating`, empty for off |
+| `attention` | kind of the attention the entry shows; empty for none |
+| `attentionAction` | that attention's button label |
+| `status` | the entry's status line; the exit node's name replaced by `<exit node>` |
+| `busy`, `operation` | whether a change runs, and which |
+| `failure` | the reason a failed click left on the status line; empty for none |
+| `backendState` | the daemon's `BackendState` |
+| `haveNodeKey` | from `status --json` |
+| `wantRunning`, `loggedOut` | from `debug prefs` |
+| `tools` | `{ tailscale, timeout, pkexec, curl }`: absolute paths; empty when not found |
+| `toolsMode` | `owner`, `seam`, `test-stand-ins` or `path` |
+| `cli` | `present`, `missing`, `untrusted` or `unknown` |
+| `daemon` | `running`, `not-running` or `unknown` |
+| `exitNode`, `exitNodeOnline` | an exit node is in use; it is online |
+| `streamUp`, `streamStarts`, `events` | the event stream is up; how often it started; messages received |
+| `canChange` | changes need no password |
+| `ready` | the client has a first answer: state read, read timed out, Tailscale not found, or the service down |
+| `stale` | the last read timed out |
+| `curlMissing` | `curl` was not found |
+| `elevation` | pkexec changes are possible |
+| `loginPending` | a login link is waiting |
+| `devices`, `exitNodes`, `warnings` | counts |
+| `reads` | `status --json` reads so far |
+| `opened` | links opened |
+| `registered` | the VPN provider is registered with the shell |
 
 ## Accounts and this device
 
@@ -61,10 +94,12 @@ This lets tests drive the stand-in pkexec. See [architecture.md](architecture.md
 
 | Function | Effect |
 |---|---|
-| `serve` | JSON: entries with type, target kind, port and Funnel; link count; what is missing |
+| `serve` | JSON: entries with type, target kind, port and Funnel; link count; what is missing; `message` (the page shows a message) |
 | `readServe` | read the serve config again |
 | `sharePort <port> <local port>` | serve `http://127.0.0.1:<local port>` over HTTPS on `<port>` (operator) |
 | `setFunnel <port> <true\|false>` | Funnel for the HTTPS share at `/` on `<port>` (operator) |
+
+The check after Funnel runs for these calls too. Turning Funnel off again then never prompts.
 
 ## Tailnet lock and exit node by network
 
@@ -76,6 +111,18 @@ This lets tests drive the stand-in pkexec. See [architecture.md](architecture.md
 | `setNetworkExit <network id> <choice>` | mark a network: `none`, `auto` or an exit node's stable id; empty removes the mark |
 
 Marking a network needs no privileges. Applying it needs the operator.
+
+`networkExit`'s `decision` is one of:
+
+| Value | Meaning |
+|---|---|
+| empty | nothing decided yet |
+| `applied` | the exit node was set |
+| `already` | it was already as wanted |
+| `manual` | an exit node picked by hand ended an open choice |
+| `none-marked` | no marked network is up |
+| `unavailable`, `needs-operator`, `refused`, `conflict` | the choice is open, for that reason |
+| `failed` | the change failed; the choice is open |
 
 ## Diagnostics and widget
 

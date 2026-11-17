@@ -37,8 +37,16 @@ The shell's module host owns that file.
 | `taildrop.autoSave` | bool | `TaildropClient.qml` |
 | `exitByNetwork` | `{ <network id>: { choice, label, name } }` | `NetworkExitClient.qml` |
 | `exitByNetwork.lastKey` | the set of marked networks last acted on | `NetworkExitClient.qml` |
+| `exitByNetwork.held` | the open choice: `{ key, choice, kind, seen }`; absent when none | `NetworkExitClient.qml` |
 
 `choice` is `none`, `auto` or an exit node's stable id. A network id is NetworkManager's profile UUID.
+
+In `exitByNetwork.held`:
+
+- `key` is the set of marked networks up.
+- `kind` is why the choice is open: `unavailable`, `needs-operator`, `refused`, `conflict` or `failed`.
+- `seen` is the exit node in use when it opened, as `<id>|<address>`. Another one in use later means a pick by hand.
+- A `failed` choice is tried once more after a restart of the shell.
 
 Certificates are written to `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/tailscale/certs`.
 

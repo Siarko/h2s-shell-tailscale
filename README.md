@@ -20,6 +20,7 @@ It works through the `tailscale` CLI and the daemon's local API.
 - See tailnet lock status.
 - List the tailnet's devices and ping them.
 - Run network diagnostics.
+- Find Tailscale when it is installed or started later, without a restart.
 
 ## Requirements
 
@@ -40,7 +41,7 @@ On NixOS, `services.tailscale.enable = true;` provides `tailscale` and `tailscal
 Clone the repository and link its `module` directory into the shell's module directory:
 
 ```bash
-git clone <repository-url> h2s-shell-tailscale
+git clone https://github.com/Siarko/h2s-shell-tailscale.git h2s-shell-tailscale
 mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/h2s-shell/modules"
 ln -s "$PWD/h2s-shell-tailscale/module" \
     "${XDG_DATA_HOME:-$HOME/.local/share}/h2s-shell/modules/tailscale"

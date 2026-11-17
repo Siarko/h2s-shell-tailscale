@@ -63,13 +63,40 @@ The feature clients (`TaildropClient`, `ServeClient`, …) hang off the main cli
 - State, login URL, errors and prefs are taken from each message at once.
 - Each message also triggers a re-read of `status --json` and `debug prefs`.
   Re-reads are debounced and never overlap.
-- When the stream ends, the client reads once and restarts the stream with a backoff from 1 s to 30 s.
-- A 60 s poll runs at all times.
+- When the stream ends, it restarts with a backoff from 1 s to 30 s.
+  The client reads once only if the stream had been up: a message came, or it lived 10 s.
+- A 60 s poll runs at all times, except while the look-again backoff runs.
 - After the computer wakes (`module.resumed()`), the client reads again and restarts the stream.
 - Device traffic is read every 3 s, only while the page shows the devices.
 - A read that times out marks the state stale. It is retried with a backoff from 2 s to 60 s.
 
 Without `curl` there is no stream, only the poll.
+
+### Looking again
+
+`TailscaleRules.recheckPlan` says what to do while something is missing:
+
+| Situation | Plan |
+|---|---|
+| `tailscale` not found or not trusted | `probe`: resolve the programs again |
+| service not running, state not readable, or `status --json` failing | `read`: read again and start the stream |
+| anything else | `none` |
+
+- `TailscaleClient` runs the plan on a backoff: `recheckMinMs` (5 s) doubling up to `pollMs` (60 s).
+- `wake()` runs it at once and starts the backoff over. The page, the popup, the VPN row and the VPN card call it when they appear.
+- `recheck()` runs it at once whatever the state. It backs "Check again" and the IPC call `recheck`.
+- When the programs are found, the reads, the stream and every feature client start as at the start.
+
+### Logging
+
+The client logs reads only when their outcome changes (`TailscaleRules.logChange`):
+
+- "`<what>` failed: `<reason>`" on the first failure
+- "`<what>` still failing, now: `<reason>`" when the reason changes
+- "`<what>` answers again" on recovery
+
+`<what>` is `status --json`, `debug prefs`, `the event stream` or `looking for tailscale`.
+Addresses in the reason show as `[address]`.
 
 ## Actions
 
@@ -81,6 +108,8 @@ Without `curl` there is no stream, only the poll.
 - A route edit is built from prefs read again just before it runs.
   If the account changed meanwhile, it is aborted.
 - Serve changes are built from the serve config read just before they run.
+- After Funnel goes on, `ServeClient` reads the config again and checks it with `ServeRules.publicCheck`. Meanwhile `serve.checking` holds back other serve changes and the exit node by network.
+- A failed click on Connect, Disconnect, Log in or Start sets `failure` (`TailscaleRules.failureText`, `failureAfter`). Changes run by other clients (operation `serve`, `exit-node`) never set it.
 
 ## Tools seam
 
