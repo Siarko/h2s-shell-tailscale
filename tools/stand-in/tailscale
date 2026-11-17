@@ -41,6 +41,8 @@
 #                        when the key expired), then waits
 #   TS_FAKE_STATUS_HANG  seconds `status --json` hangs before it answers (a stuck daemon);
 #                        also a file "status-hang" in the state dir holding the seconds
+#                        A file "status-hold" in the state dir: `status` waits until the
+#                        file is gone (a test lets the read go when it is ready for it)
 #   TS_FAKE_LOG          a file each call's arguments are appended to (one line per call)
 #   TS_FAKE_SSH_CAP      0: the tailnet does not allow Tailscale SSH (`set --ssh` refused as the
 #                        daemon does); also a file "no-ssh-cap" in the state dir
@@ -1392,6 +1394,7 @@ case $command in
         need_daemon
         hang=${TS_FAKE_STATUS_HANG:-$(cat "$STATE_DIR/status-hang" 2> /dev/null || echo 0)}
         [ "$hang" != 0 ] && pause "$hang"
+        while [ -e "$STATE_DIR/status-hold" ]; do pause 0.1; done
         case " $* " in
             *" --json "* | *" --json=true "*) print_status ;;
             *) echo "# stand-in: only status --json is replayed" ;;

@@ -484,6 +484,15 @@ run "$work/out" "$work/err" "$TIMEOUT" -k 1 1 "$TS" status --json
 check "hung status by the state file: stopped too" test "$status" = 124 -a $((SECONDS - start)) -le 4
 rm -f "$work/state/status-hang"
 check "… answering again without it" cmp -s <("$TS" status --json) "$FIXTURES/status-running.json"
+: > "$work/state/status-hold"
+"$TS" status --json > "$work/held" &
+held=$!
+start=$SECONDS
+until grep -qx "status --json" "$work/log" || [ $((SECONDS - start)) -ge 10 ]; do sleep 0.1; done
+check "held status: called, no answer while the state dir holds status-hold" test ! -s "$work/held" -a -e "/proc/$held"
+rm -f "$work/state/status-hold"
+wait "$held"
+check "… answering once the file is gone" cmp -s "$work/held" "$FIXTURES/status-running.json"
 export TS_FAKE_OPERATOR=1
 "$TS" down > /dev/null 2>&1
 start=$SECONDS
