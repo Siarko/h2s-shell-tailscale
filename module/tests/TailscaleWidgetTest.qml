@@ -1,4 +1,5 @@
 import QtQuick
+import qs.api
 import qs.tests
 import ".."
 
@@ -425,6 +426,15 @@ TestCase {
         const pane = _settings.createObject(null, { presetName: "Tailscale" });
         assert(pane !== null && pane.implicitHeight > 0, "the widget settings pane builds");
         same([pane._text, pane._badge, pane._devices], ["none", true, 5], "… the defaults without a handle");
+        // Its pills: the public Pill (module API 1.32), the body text, the medium height
+        for (const name of ["tailscaleWidgetText-none", "tailscaleWidgetDevices-5"]) {
+            const pill = find(pane, name);
+            const label = shownTexts(pill, name.endsWith("none") ? "None" : "5")[0];
+            same([pill !== null, pill?.fontSize === undefined, pill?.size, pill?.textSize], [true, true, "m", "body"],
+                 name + ": the public pill (no fontSize of the shell's own), medium, body text");
+            same([label?.font.pixelSize, pill?.implicitHeight], [Api.theme.fontSizeBody, Math.max(Api.theme.pill.mediumHeight, 26)],
+                 "… its label at the theme's body size, as tall as before (the medium pill, 26 by default)");
+        }
         pane.destroy();
     }
 }

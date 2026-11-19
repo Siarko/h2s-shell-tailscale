@@ -4,7 +4,7 @@ Current version: 0.6.0 (`module/module.json`).
 
 ## Unreleased
 
-Needs h2s-shell with module API 1.31.
+Needs h2s-shell with module API 1.32.
 
 ### Added
 
@@ -15,6 +15,7 @@ Needs h2s-shell with module API 1.31.
 - Exit node chooser in the network popup and on the page, with Mullvad locations and a filter.
 - "Allow the local network", accepted routes, Tailscale DNS and shields up.
 - Exit node per Wi-Fi or Ethernet network.
+- The exit-node mark also on the network popup's Wi-Fi rows and wired line, for a saved network that has an exit node set.
 - VPN card: tailnet, account, this device, exit node, key expiry, warnings.
 - Settings page under Settings → System → Network → Tailscale.
 - Accounts: show, switch, add, remove, nickname.
@@ -74,7 +75,7 @@ Needs h2s-shell with module API 1.31.
 - The exit node per network is set on the network's own card (Settings → System → Network, a saved Wi-Fi or Ethernet network, opened): "Tailscale exit node". While the network routes through an exit node (a node or "Automatic", not "No exit node"), the card's name line shows the exit-node mark, with the choice in the shell's tooltip. The table on the Tailscale page is gone. Choices made before are kept.
 - A choice in the exit node chooser is for now, once Tailscale made the change (not when it failed or the password prompt was dismissed): it wins over the networks' choices until "Default", a wake from sleep or a restart, and the network's choice then applies again; with no network's choice up, no exit node is used. The chooser shows "Default" while a choice is for now, with what it brings back, and its header says "for now" or "for <network>" (only while that network's exit node is still the one in use).
 - Exit node names from other devices show on one line: line breaks and invisible direction marks are dropped.
-- The views use the shell's public elements instead of its internal ones, except the bar widget's preset pane.
+- The views use the shell's public elements instead of its internal ones; the shell lists no deprecations for the module.
 - The lock beside an account's "Switch" no longer shows for the operator, who switches without a password.
 
 ### Removed

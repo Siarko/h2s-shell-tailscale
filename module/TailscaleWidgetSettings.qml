@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // The bar widget's preset (the bar section editor's settings pane): the text beside the
 // icon, the Taildrop badge, how many devices the popup lists. Read and written through the
@@ -62,8 +61,8 @@ Item {
                         label: modelData.label
                         picked: modelData.value === root._text
                         enabled: root._presets
-                        fontSize: Api.theme.fontSizeBody
-                        minimumHeight: 26
+                        size: "m"
+                        textSize: "body"
                         onClicked: root._set("text", modelData.value)
                     }
                 }
@@ -102,11 +101,12 @@ Item {
                     }
                     Pill {
                         required property var modelData
+                        objectName: "tailscaleWidgetDevices-" + modelData
                         label: String(modelData)
                         picked: modelData === root._devices
                         enabled: root._presets
-                        fontSize: Api.theme.fontSizeBody
-                        minimumHeight: 26
+                        size: "m"
+                        textSize: "body"
                         onClicked: root._set("devices", modelData)
                     }
                 }

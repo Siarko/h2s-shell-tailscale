@@ -9,6 +9,7 @@ Who may do what is in [privileges.md](privileges.md).
 |---|---|
 | Network popup, VPN section | the Tailscale entry, its exit node chooser, the login link |
 | VPN card (Settings → System → Network → VPN) | tailnet, account, this device, exit node, key expiry, warnings |
+| Network popup, Wi-Fi rows and the wired line | the exit-node mark on the name line of a saved network that has one set |
 | Saved Wi-Fi and Ethernet cards (Settings → System → Network) | the exit node for that network; a mark on the name line when one is set |
 | Settings → System → Network → Tailscale | the module's page with everything below |
 | Bar widget "Tailscale" | icon, optional text, badge, popup |
@@ -90,6 +91,7 @@ On the status line and in notifications, IP addresses show as `[address]`.
 Each saved Wi-Fi and Ethernet network's card has "Tailscale exit node" when opened: "Not set",
 "No exit node", "Automatic" or one of the tailnet's exit nodes.
 While the network routes through an exit node (a node or "Automatic"), the card's name line shows the exit-node mark, open or closed.
+The network popup shows the same mark on that network's name line: its Wi-Fi row, or the wired line while its profile is up. A Wi-Fi network that is not saved has no mark.
 Its tooltip names the choice, for example "Tailscale: Exit node: home-server".
 "No exit node" shows no mark.
 Node names are shown on one line: line breaks, control characters and invisible direction marks are dropped.

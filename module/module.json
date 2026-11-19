@@ -2,7 +2,7 @@
     "id": "tailscale",
     "name": "Tailscale",
     "version": "0.6.0",
-    "api": "1.31",
+    "api": "1.32",
     "description": "Tailscale among the shell's VPNs: connect, log in and out, accounts, this device's name and key, exit nodes, the main switches, sharing this computer (exit node, routes, SSH server, web interface), Taildrop (send files, save received ones), serve and Funnel, certificates, tailnet lock status, an exit node per network, the devices, diagnostics.",
     "main": "Main.qml",
     "widgets": [
@@ -15,7 +15,9 @@
         { "at": "settings.network_wifi.saved.card.settings", "place": "append", "component": "NetworkExitCard.qml" },
         { "at": "settings.network_ethernet.profiles.card.settings", "place": "append", "component": "NetworkExitCard.qml" },
         { "at": "settings.network_wifi.saved.card.title", "place": "append", "component": "NetworkExitMark.qml" },
-        { "at": "settings.network_ethernet.profiles.card.title", "place": "append", "component": "NetworkExitMark.qml" }
+        { "at": "settings.network_ethernet.profiles.card.title", "place": "append", "component": "NetworkExitMark.qml" },
+        { "at": "popup.network.wifi.row.title", "place": "append", "component": "NetworkExitMark.qml" },
+        { "at": "popup.network.connections.wired.row.title", "place": "append", "component": "NetworkExitMark.qml" }
     ],
     "settingsPages": [
         { "id": "tailscale", "label": "Tailscale", "component": "TailscalePage.qml", "tab": "system", "parent": "network" }

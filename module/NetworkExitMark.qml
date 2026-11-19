@@ -1,12 +1,16 @@
 import QtQuick
 import qs.api
 
-// On a saved network's name line, closed and open (the anchors
+// On a network's name line: a saved network's card, closed and open (the anchors
 // settings.network_wifi.saved.card.title and settings.network_ethernet.profiles.card.title,
-// module API 1.28): the exit-node glyph while the network routes through an exit node (a
-// node, or automatic; not "No exit node"), its choice in the shell's tooltip ("Exit node:
-// home-server", HoverTip, module API 1.31). It takes no click: a click opens or closes the
-// card, as on the name. The detail and the choice are in the opened card (NetworkExitCard).
+// module API 1.28), and the network popup's rows — each Wi-Fi network in range and the wired
+// line (popup.network.wifi.row.title, popup.network.connections.wired.row.title, 1.32). The
+// exit-node glyph while the network routes through an exit node (a node, or automatic; not
+// "No exit node"), its choice in the shell's tooltip ("Exit node: home-server", HoverTip,
+// module API 1.31). A network not saved (networkId "", as the popup's unsaved Wi-Fi rows and
+// the wired line with no profile up) has no choice: nothing shows. It takes no click: a click
+// opens or closes the card or the row, as on the name. The detail and the choice are in the
+// opened card (NetworkExitCard).
 Text {
     id: root
     objectName: "tailscaleNetworkExitMark"

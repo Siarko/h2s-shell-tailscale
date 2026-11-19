@@ -6,7 +6,7 @@ import ".."
 // card (NetworkExitCard) sets and clears that network's choice in the table the live side
 // follows (NetworkExitClient); the mark on the card's name line (NetworkExitMark) shows while
 // the network routes through an exit node, with the choice as its tooltip (the shell's
-// HoverTip). The exit-node chooser says which choice is in effect ("for now", "for Café") and
+// HoverTip), the same on the network popup's rows. The exit-node chooser says which choice is in effect ("for now", "for Café") and
 // offers "Default" while one made by hand lasts.
 // Against a stand-in client (it runs nothing) and a store in memory.
 TestCase {
@@ -269,9 +269,35 @@ TestCase {
         exit.destroy();
     }
 
+    // The network popup's rows (module API 1.32): the same mark on a Wi-Fi network in range
+    // and on the wired line, with the context the shell gives there. A saved network: its
+    // profile's id; a Wi-Fi network not saved, or the wired line with no profile up: id ""
+    function popupRows() {
+        const setup = make();
+        const online = nodes.own.find(option => option.online);
+        const popupMark = (networkId, name, kind) => _markComponent.createObject(_holder, {
+            module: setup.module, context: { networkId: networkId, name: name, kind: kind, active: true } });
+        const wifi = popupMark("cafe-uuid", "Café", "wifi");
+        const wired = popupMark("wired-uuid", "Wired connection 1", "ethernet");
+        const unsaved = popupMark("", "Café", "wifi");
+        const noProfile = popupMark("", "", "ethernet");
+        setup.exit.setChoice("cafe-uuid", online.id, online.name, "Café");
+        setup.exit.setChoice("wired-uuid", "auto", "", "Wired connection 1");
+        same([wifi.visible, wifi.label, wired.visible, wired.label], [true, "Exit node: " + online.name, true, "Exit node: automatic"],
+             "popup: a saved Wi-Fi row and the wired line, each with an exit node set, marked");
+        same([unsaved.visible, unsaved.label, noProfile.visible], [false, "", false],
+             "… a Wi-Fi network in range that is not saved (networkId \"\"), and the wired line with no profile up: no mark");
+        setup.exit.setChoice("cafe-uuid", "none", "", "Café");
+        setup.exit.setChoice("wired-uuid", "none", "", "Wired connection 1");
+        same([wifi.visible, wired.visible], [false, false], "… \"No exit node\" on both: no mark");
+        for (const item of [wifi, wired, unsaved, noProfile])
+            item.destroy();
+    }
+
     function run() {
         rules();
         cardSetsAndClears();
+        popupRows();
         withoutClient();
         chooserDefault();
     }

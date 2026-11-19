@@ -160,18 +160,15 @@ TestCase {
     function runAsync() {
         assert(module !== null && module.active, "the module is loaded and active");
         assertEqual(module.status?.state, "loaded", "… state loaded");
-        assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, qs.components, Quickshell)");
-        assertEqual(module.manifest.api, "1.31", "written for module API 1.31 (the helpers, the system's and the networks' facts, its data directory, the VPN places and the network cards' places as anchors, the public ProgressBar and HoverTip)");
+        assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, Quickshell)");
+        assertEqual(module.manifest.api, "1.32", "written for module API 1.32 (the helpers, the system's and the networks' facts, its data directory, the VPN places, the network cards' and the network popup rows' places as anchors, the public ProgressBar and HoverTip, the public Pill's body text)");
         assert(Api.testMode, "the module test runner: module test mode");
         const deprecations = JSON.stringify(module.status?.deprecations ?? []);
         assert(!/pkexec|PrivilegedAction|elevate|stand-in/i.test(deprecations),
                "… not in the transitional test-mode gate any more (no stand-in pkexec outside testPrograms): " + deprecations);
-        // Its row and card through anchors (module API 1.23): no slot among its deprecations;
-        // what is left is the shell's internal elements in the one file whose pills want the
-        // body text size, which the public Pill does not offer yet
-        assert(!/slots|network\.vpn\.(row|card)/.test(deprecations), "… no slot deprecation: its row and card are anchors: " + deprecations);
-        same((module.status?.deprecations ?? []).map(text => text.split(":")[0]), ["import qs.components (in TailscaleWidgetSettings.qml)"],
-             "… its deprecations: only qs.components, in the widget's settings alone");
+        // Its row and card through anchors (module API 1.23), its views on the public elements
+        // alone (module API 1.32: the preset pane's pills take the body text): no deprecation
+        same(module.status?.deprecations ?? [], [], "… no deprecation: no slot, no qs.components, nothing of the shell's internals");
         same(module.status?.errors ?? [], [], "… no error (its anchors are offered and take its placements)");
         // Its programs: the stand-ins of its testPrograms, handed over by the shell, trusted
         const standIns = module.directory + "/tests/stand-in";
@@ -188,8 +185,10 @@ TestCase {
               ["settings.network_wifi.saved.card.settings", "append", "NetworkExitCard.qml"],
               ["settings.network_ethernet.profiles.card.settings", "append", "NetworkExitCard.qml"],
               ["settings.network_wifi.saved.card.title", "append", "NetworkExitMark.qml"],
-              ["settings.network_ethernet.profiles.card.title", "append", "NetworkExitMark.qml"]],
-             "its row and card as anchors: under its row in the network popup, first in its opened card; the exit node per network in the saved networks' opened cards, its mark on their name lines");
+              ["settings.network_ethernet.profiles.card.title", "append", "NetworkExitMark.qml"],
+              ["popup.network.wifi.row.title", "append", "NetworkExitMark.qml"],
+              ["popup.network.connections.wired.row.title", "append", "NetworkExitMark.qml"]],
+             "its row and card as anchors: under its row in the network popup, first in its opened card; the exit node per network in the saved networks' opened cards, its mark on their name lines and on the network popup's Wi-Fi rows and wired line");
         for (const entry of module.manifest.anchors ?? []) {
             const offered = (Api.anchors ?? []).find(anchor => anchor.path === entry.at);
             const ownProvider = entry.at.startsWith("popup.network.connections.vpn.") || entry.at.startsWith("settings.network_vpn.");
@@ -264,6 +263,11 @@ TestCase {
             const holder = Qt.createQmlObject("import QtQuick\nItem {}", suite, "holder");
             const exitCard = cardComponent.createObject(holder, { module: module, context: networkContext("settings.network_wifi.saved.card.settings") });
             const exitMark = markComponent.createObject(holder, { module: module, context: networkContext("settings.network_wifi.saved.card.title") });
+            // The same mark on the network popup's rows, as the shell builds it there: a saved
+            // Wi-Fi network in range, the same network's profile; one not saved, networkId ""
+            const popupMark = markComponent.createObject(holder, { module: module, context: networkContext("popup.network.wifi.row.title") });
+            const unsavedMark = markComponent.createObject(holder, { module: module,
+                context: { anchor: "popup.network.wifi.row.title", placement: "append", networkId: "", name: "Café", kind: "wifi", active: false } });
             assert(exitCard !== null && exitCard.exit === module.main.client.networkExit && exitMark?.exit === module.main.client.networkExit,
                    "the network card's element and mark: the main's client (" + cardComponent.errorString() + markComponent.errorString() + ")");
             const choice = _findNamed(exitCard, "tailscaleNetworkExitChoice");
@@ -271,14 +275,19 @@ TestCase {
             choice?.picked("none");
             same([exitMark?.visible, exitMark?.label, module.main.client.networkExit.rows.map(row => row.id)], [false, "", ["cafe-uuid"]],
                  "… \"No exit node\" set in the card: kept, no mark on the name line");
+            assertEqual(popupMark?.visible, false, "… nor on its popup row");
             choice?.picked("auto");
             same([exitMark?.visible, exitMark?.label], [true, "Exit node: automatic"], "… an exit node set: marked on the name line");
+            same([popupMark?.visible, popupMark?.label, unsavedMark?.visible], [true, "Exit node: automatic", false],
+                 "… and on its row in the network popup; not on a network in range that is not saved");
             choice?.picked("");
             same([exitMark?.visible, module.main.client.networkExit.rows.length], [false, 0], "… cleared: the mark gone");
             // Each before its parent: the shell's dropdown, torn down with its parent, reads
             // a parent already gone
             exitCard?.destroy();
             exitMark?.destroy();
+            popupMark?.destroy();
+            unsavedMark?.destroy();
             Qt.callLater(() => holder.destroy());
             assert(!("client" in module.main.provider), "the provider carries no client of its own");
         });

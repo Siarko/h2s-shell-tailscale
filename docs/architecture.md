@@ -15,7 +15,7 @@ The rules hold every decision, so the suites test them with plain objects.
 ## Views
 
 The views are built from the shell's public elements (`qs.api`: `SmallButton`, `InputField`,
-`Dropdown`, `Pill`, `Checkbox`, `PrivilegedMark`, the settings blocks, the bar's base types).
+`Dropdown`, `Pill`, `Checkbox`, `ToggleSwitch`, `PrivilegedMark`, the settings blocks, the bar's base types).
 On them the module picks a meaning (`kind`, `size`), never a colour or a size in pixels. A
 button that asks first ("Remove", "Log out", "Stop all", "Funnel on") is a `danger` button
 with `confirm`. `PrivilegedMark` decides by itself whether it shows: a view that wants no
@@ -25,15 +25,15 @@ What no public element fits is the module's own, from QtQuick items on `Api.them
 the copy chips (`CopyChips.qml`), the device rows, the exit node list's rows, the bar
 widget's glyph, mark and badge.
 
-The widget's preset pane (`TailscaleWidgetSettings.qml`) still imports `qs.components`: its
-pills show their text in the body size, which the public `Pill` does not offer. The
-module's status lists that import among its deprecations.
+No view imports the shell's own elements (`qs.components`), so the module's status lists no
+deprecations. The preset pane's pills (`TailscaleWidgetSettings.qml`) are public pills with
+`textSize: "body"`.
 
 ## File map
 
 ```
 module/
-  module.json                  manifest: main, widget, two VPN anchors, four network card anchors, page, setting, facts, programs, tests
+  module.json                  manifest: main, widget, two VPN anchors, four network card anchors, two network popup row anchors, page, setting, facts, programs, tests
   qmldir                       types and singletons
   Main.qml                     created by the shell's module host: client, VPN provider, IPC, facts
   TailscaleRules.qml           state, entry, devices, exit nodes, event bus, errors, commands
@@ -53,7 +53,8 @@ module/
   Lock{Rules,Client,Section}.qml         tailnet lock status
   NetworkExit{Rules,Client}.qml          exit node by network
   NetworkExitCard.qml          at the saved networks' card.settings: the network's exit node
-  NetworkExitMark.qml          at their card.title: the mark while one routes through an exit node
+  NetworkExitMark.qml          at their card.title and the network popup's row.title (Wi-Fi rows,
+                               the wired line): the mark while one routes through an exit node
   TailscaleWidget.qml          bar widget "tailscale"
   TailscalePopup.qml           its popup
   TailscaleWidgetSettings.qml  its preset pane
