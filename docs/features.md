@@ -239,7 +239,6 @@ Needs the operator.
 
 - "Get certificate" for this device's MagicDNS name.
 - Files go to `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/module-data/tailscale/certs`, in the module's data folder.
-- Certificates in the folder used before (`…/h2s-shell/tailscale/certs`) are moved there once. A newer file already there is never overwritten; the old one then stays where it was.
 - The folder is 700. The key is 600, the certificate 644.
 - The page shows the paths and, with `openssl`, the end date.
 - Certificates are not renewed automatically.

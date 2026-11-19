@@ -93,8 +93,6 @@ TestCase {
         // Its data folder: the shell's module.dataDirectory, the certificates in it
         assert(module.dataDirectory !== "" && client.cert.dir === module.dataDirectory + "/certs",
                "certificates: in the module's data directory (" + client.cert.dir + ")");
-        assertEqual(client.cert.oldDir, Api.system.dataHome + "/h2s-shell/tailscale/certs", "… the folder used before, under the system's data home");
-        assert(client.cert.moved?.done === true && client.cert.moveLogs === 0, "… nothing there to move at the start: done, nothing logged");
         // The local networks: Api.localNetworks (no `ip addr` of its own); the stand-in's tailnet
         // has a subnet router for 192.168.99.0/24, its routes accepted
         assertEqual(ModuleTestKit.setNetworks({ localNetworks: [{ device: "wlan0", kind: "wifi", address: "192.168.99.5/24" },

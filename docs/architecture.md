@@ -166,7 +166,7 @@ See [privileges.md](privileges.md).
 The system's facts come from `Api.system` (module API 1.13): the user's name and uid (who may
 change Tailscale without a password), the host name (this device's name when none is set in
 Tailscale), the home and download folders (Taildrop's dialogs and default folder), IP
-forwarding (`readIpForwarding()`) and the data home. The networks this computer is on are
+forwarding (`readIpForwarding()`). The networks this computer is on are
 `Api.localNetworks` (module API 1.16: "an accepted route covers the local network"); the
 saved networks `Api.networks`, and `Api.networksReady` says they are read whole (the exit
 node per network waits until then); the VPNs up `Api.vpnsUp`, with what each does with the
@@ -174,12 +174,7 @@ traffic (`fullTunnel`, `setsDns`, `routes`: "another VPN is also on" only beside
 may take all traffic). The module's own VPN reports the same on its entry
 (`TailscaleRules.traffic`). Sizes, "ago" and addresses use `Api.format` and `Api.address`.
 
-Certificates are kept in `<module.dataDirectory>/certs` (module API 1.13). At the client's
-start, those in the folder used before (`<data home>/h2s-shell/tailscale/certs`) are moved
-there once (`CertRules.moveScript`, as the user): only `<domain>.crt` and `<domain>.key`,
-regular files of the user's, never a link; a domain's pair together, modes kept; a newer file
-already there is never overwritten (that pair stays). The old folder goes once empty; the
-outcome is logged once.
+Certificates are kept in `<module.dataDirectory>/certs` (module API 1.13).
 
 ### Module test mode
 
@@ -192,4 +187,4 @@ the stand-ins as its programs (or a scenario's: one missing, an untrusted one, o
 later), and the runs as administrator recorded and handed to the module's real handle; the
 client gives them its scenario's environment (module API 1.14, module test mode only).
 
-Small helpers (`sh`, `find`, `stat`, `cat`, `mv`, `grep`) are found through PATH.
+Small helpers (`sh`, `find`, `stat`, `cat`, `mv`) are found through PATH.

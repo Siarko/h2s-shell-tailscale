@@ -331,22 +331,6 @@ TestCase {
                     "the folder: in the module's data directory (module.dataDirectory)");
         assertEqual(CertRules.certDir(""), "", "no data directory (the shell could not make it): none");
         assertEqual(CertRules.certDir("relative"), "", "… nor a relative one");
-        assertEqual(CertRules.oldCertDir("/home/user1/.local/share"), "/home/user1/.local/share/h2s-shell/tailscale/certs", "the folder used before");
-        assertEqual(CertRules.oldCertDir(""), "", "… none without a data home");
-        // The move from the old folder (CertRules.moveScript, run by the live cases in CertMoveTest)
-        same(CertRules.moveArgv("/a/old", "/b/new").slice(3), ["sh", "/a/old", "/b/new"], "move: the two folders as arguments, never in the script");
-        same([CertRules.moveArgv("", "/b"), CertRules.moveArgv("/a", ""), CertRules.moveArgv("/a/", "/a"), CertRules.moveArgv("rel", "/b")], [[], [], [], []],
-             "move: a folder not known, or the same one twice — nothing to run");
-        const outcome = text => CertRules.moveOutcome({ ok: true, stdout: text });
-        same([outcome("none\n").done, outcome("none\n").log], [true, null], "move outcome: no old folder — done, nothing logged");
-        same([outcome("moved a.example.ts.net.crt\nmoved a.example.ts.net.key\nremoved\n").log, outcome("moved a.b.crt\nremoved\n").done],
-             [{ level: "info", text: "certificates: 2 files moved to the data folder" }, true], "move outcome: moved — one info line, counts only, no name");
-        const kept = outcome("kept a.example.ts.net.crt\nkept a.example.ts.net.key\nother notes.txt\n");
-        same([kept.done, kept.log.level, kept.log.text.includes("example")], [false, "warn", false], "move outcome: a newer pair kept — not done, a warning without the name");
-        assert(outcome("refused a.b.crt\n").log.text.includes("a link, not yours"), "move outcome: a link refused — said");
-        assert(outcome("refused folder-link\n").log.text.includes("the old folder is a link"), "move outcome: the old folder a link — nothing moved, said");
-        assert(outcome("failed unreadable\n").log.text.includes("cannot be read"), "move outcome: an unreadable old folder — said");
-        same(CertRules.moveOutcome({ ok: false, stdout: "" }).log?.level, "warn", "move outcome: the script failed — a warning, not done");
         const argv = CertRules.argv("/d", "self.example-tailnet.ts.net", "/bin/timeout", 180, "/bin/tailscale", "/usr/bin/openssl");
         same(argv.slice(3), ["sh", "/d", "self.example-tailnet.ts.net", "/bin/timeout", "180", "/bin/tailscale", "/usr/bin/openssl"],
              "the script's arguments: timeout and openssl by the paths found, the limit");

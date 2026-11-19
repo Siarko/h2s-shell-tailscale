@@ -52,8 +52,7 @@ only), so each scenario's runs as root see its own stand-in state. The handle's 
 through the shell (recorded: `ModuleTestKit.notified`); `dataDirectory` is the scenario's own
 folder. The system's and the networks' facts are the test kit's (`ModuleTestKit.setSystem`,
 `setNetworks`, `setNow`); `TailscaleModuleTest` sets them only once the live suites are done,
-since they are the whole runner's. `CertMoveTest` moves certificates on data homes of its own
-under the test kit's temporary home. `TailscaleModuleTest` uses
+since they are the whole runner's. `TailscaleModuleTest` uses
 the module's real handle directly; it turns the module off and on again only once the other
 suites are done, since that ends every run of the module in the shell's queue.
 

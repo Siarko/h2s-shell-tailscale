@@ -49,8 +49,7 @@ In `exitByNetwork.held`:
 - A `failed` choice is tried once more after a restart of the shell.
 
 Certificates are written to `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/module-data/tailscale/certs`,
-the module's data folder the shell makes. Certificates in the folder used before,
-`${XDG_DATA_HOME:-~/.local/share}/h2s-shell/tailscale/certs`, are moved there once.
+the module's data folder the shell makes.
 
 The account list holds e-mail addresses. It is kept in memory only.
 

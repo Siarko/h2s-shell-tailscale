@@ -43,7 +43,6 @@
         "tests/TaildropLiveTest.qml",
         "tests/ServeTest.qml",
         "tests/ServeLiveTest.qml",
-        "tests/CertMoveTest.qml",
         "tests/NetworkExitTest.qml",
         "tests/TailscaleWidgetTest.qml"
     ]
