@@ -2104,6 +2104,14 @@ Singleton {
     //              authorised, or no authentication agent answered), which the shell itself
     //              tells once, and true for the rest (the provider's failed())
     // `name` and `seconds`: the command's, for the time limit's sentence.
+    // The shell's refusals before pkexec (module API 1.11 `blocked`) in plain words; one it
+    // may add later is said without a reason, never as its code word
+    readonly property var blockedReasons: ({
+        "unprintable": "the command holds characters that can't be shown",
+        "no-purpose": "it doesn't say what it is for",
+        "locked": "the screen is locked"
+    })
+
     function privilegedOutcome(result, name, seconds) {
         const field = key => _get(result, key);
         const failed = (message, notify) => ({ kind: "failed", notify: notify !== false, message: message });
@@ -2121,7 +2129,8 @@ Singleton {
             return failed("It could not be run as administrator: tailscale was not found.");
         const blocked = _string(field("blocked"), 40);
         if (blocked !== "")
-            return failed("It was not run as administrator (" + blocked + ").");
+            return failed("It was not run as administrator"
+                          + (Object.prototype.hasOwnProperty.call(blockedReasons, blocked) ? ": " + blockedReasons[blocked] : "") + ".");
         const error = _string(field("error"), 300);
         if (error !== "")
             return failed("It could not be run as administrator: " + error);

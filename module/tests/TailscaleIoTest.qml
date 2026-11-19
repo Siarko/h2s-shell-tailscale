@@ -160,7 +160,16 @@ TestCase {
             same(rules.privilegedOutcome(result({ notFound: true }), "connect", 60),
                  { kind: "failed", notify: true, message: "It could not be run as administrator: tailscale was not found." }, "privileged: not found");
             same(rules.privilegedOutcome(result({ blocked: "unprintable" }), "connect", 60),
-                 { kind: "failed", notify: true, message: "It was not run as administrator (unprintable)." }, "privileged: blocked by the shell");
+                 { kind: "failed", notify: true, message: "It was not run as administrator: the command holds characters that can't be shown." },
+                 "privileged: blocked by the shell, in plain words — never its code word");
+            assertEqual(rules.privilegedOutcome(result({ blocked: "no-purpose" }), "connect", 60).message,
+                        "It was not run as administrator: it doesn't say what it is for.", "privileged: blocked, no purpose: plain words");
+            assertEqual(rules.privilegedOutcome(result({ blocked: "locked" }), "connect", 60).message,
+                        "It was not run as administrator: the screen is locked.", "privileged: blocked, locked (without dismissed): plain words");
+            assertEqual(rules.privilegedOutcome(result({ blocked: "something-new" }), "connect", 60).message,
+                        "It was not run as administrator.", "privileged: a refusal it does not know: no code word shown");
+            assertEqual(rules.privilegedOutcome(result({ blocked: "constructor" }), "connect", 60).message,
+                        "It was not run as administrator.", "privileged: a refusal named like an object's own property: no code word either");
             same(rules.privilegedOutcome(result({ error: "not available: no pkexec found" }), "connect", 60),
                  { kind: "failed", notify: true, message: "It could not be run as administrator: not available: no pkexec found" }, "privileged: the shell's error");
             same(rules.privilegedOutcome(result({ code: 1, stderr: fixture("stderr-access-denied-set.txt") }), "shieldsUp", 60),
