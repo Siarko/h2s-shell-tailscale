@@ -54,11 +54,12 @@ TestCase {
             _shell.run(["sh", "-c", lines.join(" && "), "sh", dir], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
-                s.module = _moduleComponent.createObject(suite);
+                s.module = _moduleComponent.createObject(suite, { environment: s.env });
                 s.client = _clientComponent.createObject(suite, {
                     module: s.module, environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 5000,
                     readRetryMinMs: 300, readRetryMaxMs: 1200
                 });
+                s.module.environment = Qt.binding(() => s.client.environment);
                 s.client.cert.certDir = dir + "/certs";
                 s.client.tailnetLock.lockSettleMs = 1500;
                 s.client.failed.connect((what, reason) => s.failures.push({ what: what, reason: reason }));
@@ -196,6 +197,8 @@ TestCase {
             assert(count(share.logLines, /^serve status --json$/) >= 3, "the config read again under the lock before each change");
             assertEqual(count(share.logLines, /^cert /), 0, "no certificate for someone else");
             assertEqual(share.failures.length, 0, "no failure notified");
+            same(share.module.privileged.calls.map(call => call.what), ["Share a port", "Turn on Funnel"], "each run as administrator said what for");
+            same(share.module.privileged.calls.map(call => call.argv[0]), [standIns + "/tailscale", standIns + "/tailscale"], "… tailscale by its trusted path");
         });
 
         // One scenario after another (not side by side): the shell's other live suites run at the
@@ -291,6 +294,7 @@ TestCase {
             assertEqual(count(race.pkexecLines, /\tfunnel\t--bg\t--yes\t--https=443\thttp:\/\/127\.0\.0\.1:3000$/), 1, "Funnel on, as root");
             assertEqual(count(race.pkexecLines, /\tserve\t--bg\t--yes\t--https=443\thttp:\/\/127\.0\.0\.1:3000$/), 1, "then off again with serve");
             assertEqual(race.pkexecLines.length, 2, "nothing else as root");
+            same(race.module.privileged.calls.map(call => call.what), ["Turn on Funnel", "Turn off Funnel"], "… said: Funnel on, then off");
         });
 
         then(race, "next", () => true, () => lockScenario());

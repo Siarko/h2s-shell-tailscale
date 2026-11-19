@@ -1,8 +1,8 @@
 #!/bin/sh
 # h2s-stand-in: a stand-in `pkexec` for the module's end-to-end tests: it asks nobody and
-# runs nothing as root. In module test mode the module's runs as administrator go through it
-# (the manifest's testPrograms), never through a real pkexec. It logs what it was asked to
-# run, then answers as pkexec does:
+# runs nothing as root. In module test mode the shell runs the module's privileged runs
+# through it (module.privileged: `pkexec <the shell's timeout> -k 3 <limit> <argv…>`) and
+# never through a real pkexec. It logs what it was asked to run, then answers as pkexec does:
 #
 #   TS_FAKE_PKEXEC      ok (default): runs the program, with TS_FAKE_ROOT=1 so the stand-in
 #                       tailscale behaves as for root | dismiss: exit 126 (the prompt was

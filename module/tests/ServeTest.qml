@@ -130,6 +130,15 @@ TestCase {
         assertEqual(ServeRules.funnelPlan(funnel, funnel.entries[0].key, true, serveStatus, prefs).kind, "nothing", "already on");
         assertEqual(ServeRules.funnelPlan(paths, paths.entries[0].key, true, serveStatus, prefs).error, "Change this one in a terminal", "a path is never sent again");
         same(ServeRules.resetPlan().argv, ["tailscale", "serve", "reset"], "stop all");
+        // The words each change says on the shell's password prompt (a run as administrator)
+        same([ServeRules.addPlan(empty, { kind: "proxy", port: 443, localPort: "3000", path: "" }, serveStatus, prefs).what,
+              ServeRules.addPlan(empty, { kind: "proxy", port: 8443, localPort: 8080, path: "app", funnel: true }, serveStatus, prefs).what,
+              ServeRules.addPlan(empty, { kind: "tcp", port: 2222, localPort: 22 }, serveStatus, prefs).what,
+              ServeRules.removePlan(funnel, funnel.entries[0].key, serveStatus).what, ServeRules.removePlan(tcp, tcp.entries[1].key, serveStatus).what,
+              ServeRules.funnelPlan(funnel, funnel.entries[0].key, false, serveStatus, prefs).what,
+              ServeRules.funnelPlan(funnel, funnel.entries[1].key, true, serveStatus, prefs).what, ServeRules.resetPlan().what],
+             ["Share a port", "Share a port on the internet", "Share a port", "Stop a share", "Stop a share", "Turn off Funnel", "Turn on Funnel", "Stop every share"],
+             "what: each plan's words for the prompt");
         // Planned against what is there now, for the profile clicked in
         assertEqual(ServeRules.planIntent({ action: "remove", key: "x" }, funnel, serveStatus, prefs, "a|b|c", "d|e|f").kind, "changed", "another profile: changed meanwhile");
         assertEqual(ServeRules.planIntent({ action: "funnel", key: funnel.entries[0].key, on: true }, ServeRules.parseConfig("{}"), serveStatus, prefs, "", "").error,
@@ -271,6 +280,7 @@ TestCase {
         assertEqual(check(config({ "/": ours, "/files": { Path: "/srv/share" } }, false)).kind, "nothing", "not public (any more): nothing");
         same(check(config({ "/": ours, "/files": { Path: "/srv/share" } }, true)).argv, ["tailscale", "serve", "--bg", "--yes", "--https=443", "http://127.0.0.1:3000"],
              "a path appeared on the public port: Funnel off at once");
+        assertEqual(check(config({ "/": ours, "/files": { Path: "/srv/share" } }, true)).what, "Turn off Funnel", "… its words for the prompt");
         same(check(config({ "/app": ours, "/x": { Redirect: "https://example.com/" } }, true)).argv,
              ["tailscale", "serve", "--bg", "--yes", "--https=443", "--set-path=/app", "http://127.0.0.1:3000"], "… with the entry's own path");
         const terminalNow = ServeRules.parseConfig({ TCP: { "443": { HTTPS: true } }, Web: { [self]: { Handlers: { "/": ours } } }, AllowFunnel: { [self]: true },

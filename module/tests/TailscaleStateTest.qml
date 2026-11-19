@@ -560,8 +560,6 @@ TestCase {
                 const ms = rules.recheckDelayMs(args[0], args[1], args[2]);
                 return typeof ms === "number" && ms >= 100 && isFinite(ms);
             }), "recheck: hostile arguments give a sane wait");
-            assertEqual(rules.pkexecOutcome(-2).outcome, "not-started", "pkexec: no exit status at all: it could not be started");
-            assertEqual(rules.pkexecOutcome(-2).message, "Couldn't run pkexec.", "… said so");
         }
     }
 }

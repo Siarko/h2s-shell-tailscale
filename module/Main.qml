@@ -94,7 +94,7 @@ QtObject {
                 failure: client.failureText, backendState: client.status?.backendState ?? "",
                 haveNodeKey: client.status?.haveNodeKey ?? false, wantRunning: client.prefs?.wantRunning ?? false,
                 loggedOut: client.prefs?.loggedOut ?? false,
-                tools: { tailscale: client.tailscalePath, timeout: client.timeoutPath, pkexec: client.pkexecPath, curl: client.curlPath, systemctl: client.systemctlPath },
+                tools: { tailscale: client.tailscalePath, timeout: client.timeoutPath, curl: client.curlPath, systemctl: client.systemctlPath },
                 exitNode: exitNode !== null, exitNodeOnline: exitNode?.online ?? false, cli: client.cli, daemon: client.daemon,
                 streamUp: client.streamUp, canChange: client.canChange, ready: client.ready, testMode: Api.testMode,
                 stale: client.stale, curlMissing: client.curlMissing, elevation: client.elevationProblem === "",

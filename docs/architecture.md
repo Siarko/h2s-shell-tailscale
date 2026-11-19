@@ -119,17 +119,20 @@ The manifest names the programs the module runs (`optionalPrograms`: `tailscale`
 the module takes them from its handle, `module.programs` (module API 1.9), and runs each by
 that absolute path (`TailscaleRules.programsFound`).
 
-- `tailscale`, `timeout` and `pkexec` must be trusted: owned by root and writable by root
-  alone, or in the Nix store. A run as administrator is `pkexec <timeout> … <tailscale> …`.
-  Otherwise the module counts as "not trusted" and runs nothing.
-- `curl`, `systemctl` and `openssl` run as you only and are not judged. Without `curl` there
-  is no event stream; without `openssl` a certificate's end date is not shown.
+- `tailscale` must be trusted: owned by root and writable by root alone, or in the Nix store.
+  It is the one program handed to pkexec. Otherwise the module counts as "not trusted" and
+  runs nothing.
+- `timeout`, `curl`, `systemctl` and `openssl` run as you only and are not judged. Without
+  `timeout` commands run without a time limit (said on the card); without `curl` there is no
+  event stream; without `openssl` a certificate's end date is not shown.
+- `pkexec` is named only for module test mode. Outside it the shell uses its own.
 - "Check again", a view coming on screen and the backoff ask the shell to look again
   (`module.recheckPrograms()`); the shell also does after the machine wakes.
 
-Links open through `Api.openUrl`. Runs as administrator go through the API's
-`PrivilegedAction`, its `elevate` the `pkexec` of `module.programs`. See
-[privileges.md](privileges.md).
+Links open through `Api.openUrl`. Runs as administrator go through the handle's
+`module.privileged.start`, with the command's `what` and its time limit
+(`TailscaleRules.privilegedRun`); the result is read by `TailscaleRules.privilegedOutcome`.
+See [privileges.md](privileges.md).
 
 The system's facts come from `Api.system` (module API 1.13): IP forwarding
 (`readIpForwarding()`), the download folder (Taildrop's default folder) and the data home
@@ -143,6 +146,6 @@ Under the shell's module test runner and in the lock bed the shell is in module 
 records the link, and `Api.system` gives made-up facts. IPC calls count as a click there
 (the stand-in pkexec asks nobody). A suite's own client gets a `StandInModule` as its handle:
 the stand-ins as its programs (or a scenario's: one missing, an untrusted one, one found
-later).
+later), and runs as administrator recorded and run with the scenario's environment.
 
 Small helpers (`sh`, `find`, `stat`, `cat`, `id`, `ip`) are found through PATH.

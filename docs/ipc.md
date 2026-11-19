@@ -45,7 +45,7 @@ stand-ins and nothing reaches a real pkexec. This lets tests drive the stand-in 
 | `backendState` | the daemon's `BackendState` |
 | `haveNodeKey` | from `status --json` |
 | `wantRunning`, `loggedOut` | from `debug prefs` |
-| `tools` | `{ tailscale, timeout, pkexec, curl, systemctl }`: absolute paths; empty when not found |
+| `tools` | `{ tailscale, timeout, curl, systemctl }`: absolute paths; empty when not found |
 | `testMode` | the shell is in module test mode |
 | `cli` | `present`, `missing`, `untrusted` or `unknown` |
 | `daemon` | `running`, `not-running` or `unknown` |

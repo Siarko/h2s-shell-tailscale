@@ -104,7 +104,8 @@ QtObject {
     }
 
     function _command(plan) {
-        return { ok: true, error: "", name: "serve", argv: plan.argv, changes: true, privileged: true, description: plan.description, timeLimit: "change" };
+        return { ok: true, error: "", name: "serve", argv: plan.argv, changes: true, privileged: true, description: plan.description, what: plan.what,
+                 timeLimit: "change" };
     }
 
     // The page's actions (origin "user" unless the IPC asks)

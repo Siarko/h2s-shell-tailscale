@@ -4,9 +4,10 @@ import ".."
 
 // TailscaleRules, the process side: the IPN bus (one message per line, and the pretty-printed
 // form fed in arbitrary chunks), what an exit code and stderr mean (the real "Access denied"
-// and not-running texts, the `up` trap), pkexec's own exits, the one command builder (argv
-// arrays only; never a flag on `up`), the pkexec form, which programs run, and the CLI's other
-// outputs (login, ping, netcheck).
+// and not-running texts, the `up` trap), how a run as administrator ended (the shell's result),
+// the one command builder (argv arrays only; never a flag on `up`; a `what` for every
+// privileged one), the run as administrator, which programs run, and the CLI's other outputs
+// (login, ping, netcheck).
 TestCase {
     id: suite
     suiteName: "tailscale: bus, errors, commands"
@@ -140,15 +141,32 @@ TestCase {
             assertEqual(rules.errorKind(1, "\n\n   \n").message, "Tailscale exited with status 1.", "error: blank stderr");
         }
 
-        // --- pkexecOutcome: as the shell reads pkexec ---
+        // --- privilegedOutcome: module.privileged's result (module API 1.11) ---
         {
-            same(rules.pkexecOutcome(0), { outcome: "ok", failure: false, message: "" }, "pkexec: 0 ok");
-            const dismissed = rules.pkexecOutcome(126);
-            assert(dismissed.outcome === "dismissed" && dismissed.failure === false, "pkexec: 126 dismissed, not a failure");
-            same(rules.pkexecOutcome(127), { outcome: "no-agent", failure: true, message: "No authentication agent answered." },
-                 "pkexec: 127 no agent, a failure with the contract's sentence");
-            assert(rules.pkexecOutcome(1).outcome === "failed" && rules.pkexecOutcome(1).failure, "pkexec: anything else is the program's failure");
-            assertEqual(rules.pkexecOutcome(null).outcome, "failed", "pkexec: no code");
+            const result = extra => Object.assign({ ok: false, code: -1, stdout: "", stderr: "", dismissed: false, refused: false, notFound: false,
+                                                    timedOut: false, cancelled: false, blocked: "", error: "" }, extra);
+            same(rules.privilegedOutcome(result({ ok: true, code: 0 }), "connect", 60), { kind: "ok", notify: false, message: "" }, "privileged: ok");
+            same(rules.privilegedOutcome(result({ cancelled: true }), "connect", 60), { kind: "cancelled", notify: false, message: "" },
+                 "privileged: cancelled by the module: nothing to say");
+            same(rules.privilegedOutcome(result({ dismissed: true, code: 126 }), "connect", 60), { kind: "dismissed", notify: false, message: "" },
+                 "privileged: dismissed: show nothing, not a failure");
+            same(rules.privilegedOutcome(result({ dismissed: true, blocked: "locked" }), "connect", 60), { kind: "dismissed", notify: false, message: "" },
+                 "privileged: refused for the lock: dismissed, silent (the user clicks again once unlocked)");
+            same(rules.privilegedOutcome(result({ refused: true, code: 127 }), "connect", 60), { kind: "failed", notify: false, message: "Not allowed." },
+                 "privileged: refused (not authorised, no agent): a failure the shell tells itself — not notified again");
+            same(rules.privilegedOutcome(result({ timedOut: true, code: 124 }), "connect", 60),
+                 { kind: "failed", notify: true, message: "Still connecting after 60 s. Disconnect to stop." }, "privileged: timed out: the limit's sentence");
+            same(rules.privilegedOutcome(result({ timedOut: true }), "shieldsUp", 60).message, rules.timeoutMessage("shieldsUp", 60), "privileged: … per command");
+            same(rules.privilegedOutcome(result({ notFound: true }), "connect", 60),
+                 { kind: "failed", notify: true, message: "It could not be run as administrator: tailscale was not found." }, "privileged: not found");
+            same(rules.privilegedOutcome(result({ blocked: "unprintable" }), "connect", 60),
+                 { kind: "failed", notify: true, message: "It was not run as administrator (unprintable)." }, "privileged: blocked by the shell");
+            same(rules.privilegedOutcome(result({ error: "not available: no pkexec found" }), "connect", 60),
+                 { kind: "failed", notify: true, message: "It could not be run as administrator: not available: no pkexec found" }, "privileged: the shell's error");
+            same(rules.privilegedOutcome(result({ code: 1, stderr: fixture("stderr-access-denied-set.txt") }), "shieldsUp", 60),
+                 { kind: "failed", notify: true, message: rules.errorKind(1, fixture("stderr-access-denied-set.txt")).message }, "privileged: the command's own failure: its stderr");
+            for (const hostile of [null, undefined, 5, "ok", [], { ok: "true" }])
+                assertEqual(rules.privilegedOutcome(hostile, "connect", 60).kind, "failed", "privileged: " + JSON.stringify(hostile) + " is a failure, never ok");
         }
 
         // --- commandFor: the table ---
@@ -267,28 +285,73 @@ TestCase {
             assertEqual(rules.commandFor("hostname", null).argv.join(" "), "tailscale set --hostname=", "command: args null is no args");
         }
 
-        // --- privileged: the pkexec form ---
+        // --- privilegedRun: what module.privileged.start is given ---
         {
             const ts = "/run/current-system/sw/bin/tailscale";
-            const to = "/run/current-system/sw/bin/timeout";
-            const limited = { timeout: to, seconds: 60 };
-            same(rules.privileged(["tailscale", "set", "--shields-up=true"], ts, limited).argv,
-                 ["pkexec", to, "-k", "5", "60", ts, "set", "--shields-up=true"], "privileged: pkexec, then timeout around tailscale, both by absolute path");
-            same(rules.privileged(rules.commandFor("connect", {}).argv, "/usr/bin/tailscale", { timeout: "/usr/bin/timeout", seconds: 60 }).argv,
-                 ["pkexec", "/usr/bin/timeout", "-k", "5", "60", "/usr/bin/tailscale", "up"], "privileged: connect stays bare (the limit is timeout's, never a flag)");
-            const login = rules.privileged(rules.commandFor("login", {}).argv, ts, { timeout: to, seconds: 600, description: "Logging in to Tailscale" });
-            same(login.argv, ["pkexec", to, "-k", "5", "600", ts, "login"], "privileged: the elevated login ends by itself (timeout 600 s under pkexec)");
-            assertEqual(login.prompt, "Logging in to Tailscale: runs `tailscale login` as administrator, stopped after 10 minutes", "privileged: the prompt says what runs");
-            const noTimeout = rules.privileged(["tailscale", "login"], ts, { timeout: "", seconds: 600 });
-            assert(!noTimeout.ok && /timeout was not found/.test(noTimeout.error), "privileged: without timeout nothing is run as root: " + noTimeout.error);
-            assertEqual(rules.privileged(["tailscale", "down"], ts).ok, false, "privileged: no options (no timeout): refused");
+            const trusted = { path: ts, trusted: true, reason: "root's, and only root can change it" };
+            const facts = extra => Object.assign({ program: trusted, available: true, unavailableReason: "", seconds: 60 }, extra ?? {});
+            same(rules.privilegedRun(rules.commandFor("shieldsUp", { on: true }), facts()),
+                 { ok: true, error: "", argv: [ts, "set", "--shields-up=true"], what: "Block incoming connections", timeoutMs: 60000 },
+                 "privilegedRun: tailscale by its trusted path, the command's words, its limit in ms (the shell's timeout inside pkexec)");
+            same(rules.privilegedRun(rules.commandFor("connect", {}), facts()).argv, [ts, "up"], "privilegedRun: connect stays bare (the limit is the shell's, never a flag)");
+            same(rules.privilegedRun(rules.commandFor("login", {}), facts({ seconds: 600 })).timeoutMs, 600000, "privilegedRun: the login's 10 minutes");
+            const untrusted = rules.privilegedRun(rules.commandFor("connect", {}), facts({ program: { path: "/home/u/bin/tailscale", trusted: false, reason: "others than root can change /home/u/bin/tailscale" } }));
+            assert(!untrusted.ok && untrusted.argv.length === 0 && /isn't trusted/.test(untrusted.error),
+                   "privilegedRun: an untrusted tailscale is refused by the module (the shell does not judge it): " + untrusted.error);
+            assertEqual(rules.privilegedRun(rules.commandFor("connect", {}), facts({ program: { path: ts } })).ok, false, "privilegedRun: no verdict: refused");
+            assertEqual(rules.privilegedRun(rules.commandFor("connect", {}), facts({ program: { path: ts, trusted: "true" } })).ok, false, "privilegedRun: trusted must be true itself");
+            assertEqual(rules.privilegedRun(rules.commandFor("connect", {}), facts({ program: null })).ok, false, "privilegedRun: no tailscale: refused");
+            const unavailable = rules.privilegedRun(rules.commandFor("connect", {}), facts({ available: false, unavailableReason: "no pkexec found" }));
+            assertEqual(unavailable.error, "Changes that need an administrator are not offered: no pkexec found.", "privilegedRun: the shell cannot: its reason");
             for (const path of ["tailscale", "bin/tailscale", "", null, "/usr/../tmp/tailscale", "/usr/bin/tail scale", "/usr/bin/", "/a\nb"])
-                assertEqual(rules.privileged(["tailscale", "down"], path, limited).ok, false, "privileged: path " + JSON.stringify(path) + " refused");
-            for (const argv of [["sh", "-c", "x"], [], null, "tailscale down", ["tailscale", 5]])
-                assertEqual(rules.privileged(argv, "/usr/bin/tailscale", limited).ok, false, "privileged: argv " + JSON.stringify(argv) + " refused");
-            for (const seconds of [0, -1, 1.5, "60", 90000])
-                assertEqual(rules.privileged(["tailscale", "down"], ts, { timeout: to, seconds: seconds }).ok, false, "privileged: limit " + JSON.stringify(seconds) + " refused");
-            assertEqual(rules.privileged(["tailscale", "down"], ts, { timeout: "timeout", seconds: 60 }).ok, false, "privileged: a relative timeout refused");
+                assertEqual(rules.privilegedRun(rules.commandFor("connect", {}), facts({ program: { path: path, trusted: true } })).ok, false,
+                            "privilegedRun: path " + JSON.stringify(path) + " refused");
+            for (const command of [{ argv: ["sh", "-c", "x"], what: "Run" }, { argv: [], what: "x" }, null, { argv: "tailscale down", what: "x" },
+                                   { argv: ["tailscale", 5], what: "x" }, { argv: ["tailscale", "down"] }, { argv: ["tailscale", "down"], what: "  " }])
+                assertEqual(rules.privilegedRun(command, facts()).ok, false, "privilegedRun: " + JSON.stringify(command) + " refused");
+            for (const seconds of [0, -1, 1.5, "60", 3601, 21600])
+                assertEqual(rules.privilegedRun(rules.commandFor("connect", {}), facts({ seconds: seconds })).ok, false, "privilegedRun: limit " + JSON.stringify(seconds) + " refused");
+            assertEqual(rules.elevationProblem("present", true, ""), "", "elevation: available");
+            assertEqual(rules.elevationProblem("missing", false, "x"), "", "elevation: said only while Tailscale is there");
+            assertEqual(rules.elevationProblem("present", false, "no trusted timeout (coreutils) on PATH: a run as administrator needs it to end at its limit."),
+                        "Changes that need an administrator are not offered: no trusted timeout (coreutils) on PATH: a run as administrator needs it to end at its limit.",
+                        "elevation: the shell's reason, one sentence");
+        }
+
+        // --- what: every privileged command says what it does, in a few words ---
+        {
+            const asked = [["connect", {}, "Connect"], ["disconnect", {}, "Disconnect"], ["login", {}, "Log in"], ["addAccount", {}, "Add an account"],
+                ["logout", {}, "Log out"], ["exitNode", { node: "100.64.0.4" }, "Change the exit node"], ["exitNodeNone", {}, "Change the exit node"],
+                ["exitNodeAuto", {}, "Change the exit node"], ["allowLan", { on: true }, "Allow the local network"], ["allowLan", { on: false }, "Block the local network"],
+                ["acceptRoutes", { on: true }, "Accept routes"], ["acceptRoutes", { on: false }, "Ignore routes"],
+                ["acceptDns", { on: true }, "Use Tailscale DNS"], ["acceptDns", { on: false }, "Ignore Tailscale DNS"],
+                ["shieldsUp", { on: true }, "Block incoming connections"], ["shieldsUp", { on: false }, "Allow incoming connections"],
+                ["ssh", { on: true }, "Start the SSH server"], ["ssh", { on: false }, "Stop the SSH server"],
+                ["webClient", { on: true }, "Start the web interface"], ["webClient", { on: false }, "Stop the web interface"],
+                ["advertiseExitNode", { on: true }, "Offer an exit node"], ["advertiseExitNode", { on: false }, "Stop offering an exit node"],
+                ["autoUpdate", { on: true }, "Turn on automatic updates"], ["autoUpdate", { on: false }, "Turn off automatic updates"],
+                ["snat", { on: true }, "Turn on source NAT"], ["snat", { on: false }, "Turn off source NAT"],
+                ["statefulFiltering", { on: true }, "Turn on stateful filtering"], ["statefulFiltering", { on: false }, "Turn off stateful filtering"],
+                ["connector", { on: true }, "Offer an app connector"], ["connector", { on: false }, "Stop the app connector"],
+                ["posture", { on: true }, "Report device posture"], ["posture", { on: false }, "Stop posture reports"],
+                ["relayServerPort", { port: "40000" }, "Run a peer relay"], ["relayServerPort", { port: 40000 }, "Run a peer relay"], ["relayServerPort", { port: "" }, "Turn off the peer relay"],
+                ["updateCheck", { on: true }, "Check for updates"], ["updateCheck", { on: false }, "Stop update checks"],
+                ["hostname", { name: "box" }, "Rename this device"], ["advertiseRoutes", { routes: ["192.168.7.0/24"] }, "Change offered routes"],
+                ["nickname", { name: "home" }, "Name the account"], ["operator", { user: "tester" }, "Become the operator"], ["operator", { user: "" }, "Give up the operator role"],
+                ["switchAccount", { id: "c3d4" }, "Switch account"], ["switchList", {}, "List accounts"], ["removeAccount", { id: "a1b2" }, "Remove an account"],
+                ["fileCp", { files: ["/tmp/a"], target: "100.64.0.4" }, "Send a file"], ["fileCp", { files: ["/tmp/a", "/tmp/b"], target: "100.64.0.4" }, "Send files"],
+                ["fileGet", { directory: "/tmp/in" }, "Receive files"], ["serveReset", {}, "Stop every share"], ["funnelReset", {}, "Stop Funnel"]];
+            same(asked.filter(row => rules.commandFor(row[0], row[1]).what !== row[2]).map(row => row[0] + " → " + rules.commandFor(row[0], row[1]).what), [],
+                 "what: each privileged command's words for the prompt");
+            const missing = rules.commandNames.filter(name => {
+                const row = asked.find(item => item[0] === name);
+                const command = rules.commandFor(name, row ? row[1] : {});
+                return command.ok && command.privileged && !(command.what.length > 0 && command.what.length <= 40);
+            });
+            same(missing, [], "what: no privileged command without words, none longer than 40 characters (the prompt cuts there)");
+            assertEqual(rules.commandFor("status", {}).what, undefined, "what: only privileged commands have one");
+            assert(rules.commandFor("hostname", { name: "box" }).what.indexOf("box") < 0 && rules.commandFor("operator", { user: "tester" }).what.indexOf("tester") < 0,
+                   "what: never a name the user typed");
         }
 
         // --- timed: every plain command under timeout ---
@@ -320,22 +383,19 @@ TestCase {
         {
             const verdict = (path, trusted, reason) => ({ path: path, trusted: trusted, reason: reason ?? "" });
             const all = { tailscale: verdict("/run/current-system/sw/bin/tailscale", true), timeout: verdict("/usr/bin/timeout", true),
-                          pkexec: verdict("/run/wrappers/bin/pkexec", true), curl: verdict("/home/u/bin/curl", false, "others than root can change /home/u/bin/curl"),
-                          systemctl: verdict("/usr/bin/systemctl", true), openssl: verdict("", false, "not found") };
+                          curl: verdict("/home/u/bin/curl", false, "others than root can change /home/u/bin/curl"), systemctl: verdict("/usr/bin/systemctl", true),
+                          openssl: verdict("", false, "not found"), pkexec: verdict("/run/wrappers/bin/pkexec", true) };
             same(rules.programsFound(all), { known: true, cli: "present", untrustedReason: "", tailscale: "/run/current-system/sw/bin/tailscale",
-                                             timeout: "/usr/bin/timeout", pkexec: "/run/wrappers/bin/pkexec", curl: "/home/u/bin/curl", systemctl: "/usr/bin/systemctl", openssl: "" },
+                                             timeout: "/usr/bin/timeout", curl: "/home/u/bin/curl", systemctl: "/usr/bin/systemctl", openssl: "" },
                  "programs: each by the path the shell found; curl not judged (it runs as this user only); openssl not found");
-            same(rules.programsFound(null), { known: false, cli: "unknown", untrustedReason: "", tailscale: "", timeout: "", pkexec: "", curl: "", systemctl: "", openssl: "" },
+            same(rules.programsFound(null), { known: false, cli: "unknown", untrustedReason: "", tailscale: "", timeout: "", curl: "", systemctl: "", openssl: "" },
                  "programs: not looked up yet: unknown");
             assertEqual(rules.programsFound({}).cli, "missing", "programs: looked up, no tailscale: missing");
             assertEqual(rules.programsFound({ tailscale: verdict("", false, "not found") }).cli, "missing", "programs: tailscale not found: missing");
             const untrusted = rules.programsFound(Object.assign({}, all, { tailscale: verdict("/home/u/bin/tailscale", false, "others than root can change /home/u/bin/tailscale") }));
-            same([untrusted.cli, untrusted.tailscale, untrusted.timeout, untrusted.pkexec], ["untrusted", "", "", ""],
-                 "programs: a tailscale this user could change: untrusted, none of the three handed to pkexec taken");
+            same([untrusted.cli, untrusted.tailscale], ["untrusted", ""], "programs: a tailscale this user could change: untrusted, its path not taken");
             assertEqual(untrusted.untrustedReason, "Tailscale isn't trusted (others than root can change /home/u/bin/tailscale): nothing runs.", "… the shell's reason, said");
-            for (const name of ["timeout", "pkexec"])
-                assertEqual(rules.programsFound(Object.assign({}, all, { [name]: verdict("/home/u/bin/" + name, false, "others than root can change it") })).cli, "untrusted",
-                            "programs: an untrusted " + name + " (run as root): untrusted too");
+            assertEqual(untrusted.timeout, "/usr/bin/timeout", "… the others still found");
             assertEqual(rules.programsFound({ tailscale: { path: "/usr/bin/tailscale" } }).cli, "untrusted", "programs: no verdict: untrusted, never trusted");
             assertEqual(rules.programsFound({ tailscale: verdict("/x/tailscale", false, "") }).untrustedReason, "Tailscale isn't trusted (it could not be checked): nothing runs.",
                         "programs: no reason given");

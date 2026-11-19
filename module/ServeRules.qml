@@ -302,7 +302,7 @@ Singleton {
     }
 
     function _plan(kind, extra) {
-        return Object.assign({ kind: kind, error: "", argv: [], description: "", publicPort: 0 }, extra ?? {});
+        return Object.assign({ kind: kind, error: "", argv: [], description: "", what: "", publicPort: 0 }, extra ?? {});
     }
 
     // This device's current DNS name, lower case ("" unknown): the host the CLI puts every
@@ -406,7 +406,7 @@ Singleton {
             if (entries.some(entry => entry.port === port) || (config.unlisted ?? []).includes(port) || (config.foregroundPorts ?? []).includes(port))
                 return _plan("refused", { error: "Port " + port + " is in use" });
             return _plan("run", { argv: ["tailscale", "serve", "--bg", "--yes", "--tcp=" + port, "tcp://127.0.0.1:" + local],
-                                  description: "Sharing a local port with the tailnet" });
+                                  description: "Sharing a local port with the tailnet", what: "Share a port" });
         }
         if (intent?.kind !== "proxy")
             return _plan("refused", { error: "Nothing to add" });
@@ -430,6 +430,7 @@ Singleton {
             argv: ["tailscale", funnel ? "funnel" : "serve", "--bg", "--yes", "--https=" + port].concat(mount.mount === "/" ? [] : ["--set-path=" + mount.mount],
                 ["http://127.0.0.1:" + local]),
             description: funnel ? "Sharing a local port on the internet" : "Sharing a local port with the tailnet",
+            what: funnel ? "Share a port on the internet" : "Share a port",
             publicPort: funnel ? port : 0
         });
     }
@@ -453,11 +454,12 @@ Singleton {
         if (config?.ok !== true || entry === null)
             return _plan("refused", { error: "Not shared any more" });
         if (entry.what === "tcp")
-            return _plan("run", { argv: ["tailscale", "serve", "--bg", "--yes", "--" + entry.type + "=" + entry.port, "off"], description: "Stopping a share" });
+            return _plan("run", { argv: ["tailscale", "serve", "--bg", "--yes", "--" + entry.type + "=" + entry.port, "off"], description: "Stopping a share",
+                                  what: "Stop a share" });
         if (!_ownHost(entry, status) || entry.mount.length >= 300)
             return _plan("refused", { error: "Change this one in a terminal" });
         return _plan("run", { argv: ["tailscale", "serve", "--bg", "--yes", "--" + entry.type + "=" + entry.port, "--set-path=" + entry.mount, "off"],
-                              description: "Stopping a share" });
+                              description: "Stopping a share", what: "Stop a share" });
     }
 
     // Funnel on or off for an entry's port → plan: the entry's handler set again, with `funnel`
@@ -490,6 +492,7 @@ Singleton {
         return _plan("run", {
             argv: ["tailscale", on === true ? "funnel" : "serve", "--bg", "--yes", "--https=" + entry.port].concat(entry.mount === "/" ? [] : ["--set-path=" + entry.mount], [target]),
             description: on === true ? "Putting a share on the internet" : "Taking a share off the internet",
+            what: on === true ? "Turn on Funnel" : "Turn off Funnel",
             publicPort: on === true ? entry.port : 0
         });
     }
@@ -510,7 +513,7 @@ Singleton {
             return _plan("refused", { error: funnelNotice("public", port) });
         return _plan("run", {
             argv: ["tailscale", "serve", "--bg", "--yes", "--https=" + port].concat(entry.mount === "/" ? [] : ["--set-path=" + entry.mount], [_resendTarget(entry, status)]),
-            description: "Taking a share off the internet"
+            description: "Taking a share off the internet", what: "Turn off Funnel"
         });
     }
 
@@ -535,7 +538,7 @@ Singleton {
 
     // Everything off: `serve reset` (empties the whole config, Funnel included)
     function resetPlan() {
-        return _plan("run", { argv: ["tailscale", "serve", "reset"], description: "Stopping every share" });
+        return _plan("run", { argv: ["tailscale", "serve", "reset"], description: "Stopping every share", what: "Stop every share" });
     }
 
     // An intent ({ action: "add" | "remove" | "funnel" | "reset", … }) planned against a config

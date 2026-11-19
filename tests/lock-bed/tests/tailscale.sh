@@ -3,14 +3,15 @@
 # lib.sh, through LOCKTEST_EXTRA_TESTS — see tests/lock-bed/run.sh): the launcher starts the
 # shell with this repository's module/ (H2S_SHELL_MODULE_PATH). The bed's shell is in module
 # test mode, so every program the module runs is its own stand-in (module/tests/stand-in, the
-# manifest's testPrograms), its runs as administrator through the stand-in pkexec;
-# tools/stand-in (xdg-open, nmcli) is first on the shell's PATH, for the
+# manifest's testPrograms) and its runs as administrator go through the shell's queue to the
+# stand-in pkexec; tools/stand-in (xdg-open, nmcli) is first on the shell's PATH, for the
 # shell's own use. The stand-ins take this test's private state and logs from the TS_FAKE_*
 # variables exported below (the shell's environment, which its commands inherit).
 #
 # Checked: the module loads; the Tailscale entry appears among the VPNs (its IPC state) and in
 # the network popup's VPN section (screenshot); connecting as a user who is not Tailscale's
-# operator runs bare `up`, is denied and runs again through (the stand-in) pkexec; the
+# operator runs bare `up`, is denied and runs again through the shell's queue and (the stand-in)
+# pkexec, with the shell's timeout inside it; the
 # exit-node chooser under the row lists the fixture's nodes; the VPN settings page opens, and
 # its card's "Settings…" goes to the module's settings page (settings currentPage); step 2 on
 # that page: the accounts read (through pkexec) and listed, a switch to the other account that
@@ -124,8 +125,9 @@ shell_ipc tailscale connect > /dev/null
 check_within 15 "connect: the entry is connected" ts_is state activated
 check "… not busy any more" ts_is busy false
 check "bare \`up\`, run plainly, denied, then as root" test "$(grep -cx 'up' "$tools/log")" = 2
-check "… through pkexec: the stand-in timeout (60 s) around the stand-in tailscale, by absolute paths" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tup\$" "$tools/pkexec.log"
+check "… through pkexec: the shell's timeout (60 s) around the stand-in tailscale, by absolute paths" grep -qP "^pkexec\t\S+/timeout\t-k\t3\t60\t$standins/tailscale\tup\$" "$tools/pkexec.log"
 check "no \`up\` with a flag, ever" test "$(grep -c '^up ' "$tools/log")" = 0
+check "… the run as administrator said what for: \"Connect\" (the shell's log)" grep -qF '[Privileged] tailscale runs "Connect"' "$WORK/shell.log"
 
 # The exit-node chooser under Tailscale's row: its header, then the list
 item_rect() { shell_ipc shelltest popupItemRect "$1"; }
@@ -213,14 +215,15 @@ check "the accounts are not read by themselves (the list needs a password)" prof
 shell_ipc tailscale readProfiles > /dev/null
 check_within 10 "Show accounts (IPC, as the button): two accounts, a1b2 in use" profiles_is ids "a1b2,c3d4"
 check "… a1b2 in use" profiles_is selected a1b2
-check "… read through pkexec (switch --list --json under the read limit)" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t15\t$standins/tailscale\tswitch\t--list\t--json\$" "$tools/pkexec.log"
+check "… read through pkexec (switch --list --json under the read limit)" grep -qP "^pkexec\t\S+/timeout\t-k\t3\t15\t$standins/tailscale\tswitch\t--list\t--json\$" "$tools/pkexec.log"
+check "… saying \"List accounts\"" grep -qF '[Privileged] tailscale runs "List accounts"' "$WORK/shell.log"
 check_within 5 "the page lists them (a row per account)" item_on_screen tailscaleAccount-c3d4
 sleep 1
 screenshot settings-tailscale-accounts
 
 shell_ipc tailscale switchProfile c3d4 > /dev/null
 check_within 10 "switch to c3d4: the list marks it" profiles_is selected c3d4
-check "… through pkexec: switch c3d4" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tswitch\tc3d4\$" "$tools/pkexec.log"
+check "… through pkexec: switch c3d4" grep -qP "^pkexec\t\S+/timeout\t-k\t3\t60\t$standins/tailscale\tswitch\tc3d4\$" "$tools/pkexec.log"
 entry_named_org() { shell_ipc tailscale state | grep -q '"status":"Tailnet only"' && ! profiles_is outdated true; }
 check_within 10 "… the state follows (connected, the list matching the account in use)" entry_named_org
 sleep 1
@@ -228,7 +231,7 @@ screenshot settings-tailscale-switched
 
 shell_ipc tailscale setHostname box > /dev/null
 check_within 10 "rename this device to box: prefs say so" profiles_is hostname box
-check "… through pkexec: set --hostname=box" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tset\t--hostname=box\$" "$tools/pkexec.log"
+check "… through pkexec: set --hostname=box" grep -qP "^pkexec\t\S+/timeout\t-k\t3\t60\t$standins/tailscale\tset\t--hostname=box\$" "$tools/pkexec.log"
 
 # The key about to expire (3 days): no attention (nothing renews it without harm) — the status
 # line and the page say it, with the admin console's link
@@ -309,7 +312,7 @@ check "sharing: nothing offered at first" sharing_is routes 0
 check_within 10 "… prefs read since the last change (a route edit is accepted only then)" sharing_is prefsCurrent true
 shell_ipc tailscale advertiseRoute 192.168.7.0/24 > /dev/null
 check_within 10 "offer 192.168.7.0/24: listed, waiting for approval" sharing_is routeStates pending
-check "… through pkexec: set --advertise-routes=192.168.7.0/24" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tset\t--advertise-routes=192\.168\.7\.0/24\$" "$tools/pkexec.log"
+check "… through pkexec: set --advertise-routes=192.168.7.0/24" grep -qP "^pkexec\t\S+/timeout\t-k\t3\t60\t$standins/tailscale\tset\t--advertise-routes=192\.168\.7\.0/24\$" "$tools/pkexec.log"
 check_within 5 "… IP forwarding read from the system's facts (module test mode's: off): IPv4 off" sharing_is ipv4Forwarding false
 check "… the forwarding warning shown" sharing_is forwardingWarning true
 shell_ipc tailscale advertiseExitNode true > /dev/null
@@ -322,7 +325,7 @@ check_within 10 "an admin approved the route: approved" sharing_is routeStates a
 check "… the exit node still waiting" sharing_is exitNodeState pending
 shell_ipc tailscale setSsh true > /dev/null
 check_within 10 "Tailscale SSH on" sharing_is ssh true
-check "… set --ssh=true through pkexec, no --accept-risk" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tset\t--ssh=true\$" "$tools/pkexec.log"
+check "… set --ssh=true through pkexec, no --accept-risk" grep -qP "^pkexec\t\S+/timeout\t-k\t3\t60\t$standins/tailscale\tset\t--ssh=true\$" "$tools/pkexec.log"
 item_on_screen tailscaleForwardingWarning || log "the forwarding warning has no size"
 show_item tailscaleOfferExitNode
 screenshot settings-tailscale-sharing
@@ -500,8 +503,9 @@ check "… the popup built without an error or a warning" test "$(module_errors)
 check "the stand-ins were called (their log)" test "$(grep -c . "$tools/log")" -gt 3
 outside_calls() { grep -cv "^$standins/[a-z-]*\$" "$tools/calls"; }
 check "every program the module ran was one of its stand-ins: each call's path under $standins" test "$(grep -c . "$tools/calls")" -gt 3 -a "$(outside_calls)" = 0
-outside_pkexec() { awk -F '\t' -v dir="$standins/" '{ for (i = 2; i <= NF; i++) if ($i ~ /^\// && index($i, dir) != 1) bad++ } END { print bad + 0 }' "$tools/pkexec.log"; }
-check "… and every path handed to pkexec too" test "$(grep -c . "$tools/pkexec.log")" -gt 0 -a "$(outside_pkexec)" = 0
+# pkexec's words: the shell's own timeout (any trusted one), then only the stand-ins' paths
+outside_pkexec() { awk -F '\t' -v dir="$standins/" '$2 !~ /\/timeout$/ { bad++ } { for (i = 3; i <= NF; i++) if ($i ~ /^\// && index($i, dir) != 1) bad++ } END { print bad + 0 }' "$tools/pkexec.log"; }
+check "… and every path handed to pkexec too (the shell's timeout first)" test "$(grep -c . "$tools/pkexec.log")" -gt 0 -a "$(outside_pkexec)" = 0
 check "… and as many calls of the stand-in tailscale as its log has lines (none bypassed it)" \
     test "$(grep -cx "$standins/tailscale" "$tools/calls")" -ge "$(grep -cvE '^(curl|xdg-open|systemctl|nmcli|openssl) |^$' "$tools/log")"
 

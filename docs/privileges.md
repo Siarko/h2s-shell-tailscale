@@ -6,8 +6,12 @@ Changes need root or the operator, a user that Tailscale lets change its setting
 ## How a change runs
 
 1. The command runs as you.
-2. If Tailscale answers "Access denied" and you clicked, it runs again through pkexec.
-3. The shell's polkit agent asks for an administrator's password.
+2. If Tailscale answers "Access denied" and you clicked, the module asks the shell to run it
+   again as administrator (the shell's `module.privileged`).
+3. The shell runs it through pkexec, one password question at a time. Its polkit prompt
+   says who asks and what for: "Module: Tailscale" and the action in a few words
+   ("Authorization: Connect"); the exact command is one click away. With another polkit
+   agent the shell sends a notification with the same two lines just before.
 
 A change that did not come from a click never asks for a password and never opens a browser.
 This covers the shell starting a VPN with a network, and IPC calls.
@@ -17,16 +21,50 @@ Buttons show a lock while changes need a password.
 
 ## The pkexec command
 
+The shell builds it:
+
 ```
-pkexec <timeout> -k 5 <seconds> <tailscale> <arguments>
+pkexec <timeout> -k 3 <seconds> <tailscale> <arguments>
 ```
 
-- `pkexec`, `timeout` and `tailscale` are the absolute paths the shell found for the module
-  (`module.programs`).
+- `pkexec` and `timeout` are the shell's own, found and checked by the shell.
+  NixOS: the setuid wrapper `/run/wrappers/bin/pkexec`. Arch: `/usr/bin/pkexec`.
+- `tailscale` is the absolute path the shell found for the module (`module.programs`).
+  The module passes it only when the shell judged it trusted: owned by root and writable
+  by root alone, or in the Nix store. Otherwise nothing runs at all.
 - The time limit ends a root process the shell cannot signal.
-- Without coreutils `timeout`, nothing runs as administrator. The page says why.
-- `tailscale`, `timeout` and `pkexec` must be judged trusted by the shell: owned by root and
-  writable by root alone, or in the Nix store. Otherwise nothing runs.
+- When the shell has no trusted pkexec or `timeout`, nothing runs as administrator. The
+  page says why.
+- A dismissed prompt shows nothing. A run that was not allowed is told once, by the shell.
+- While the screen is locked nothing asks for a password; click again after unlocking.
+
+The words the prompt shows for each action:
+
+| Action | Prompt says |
+|---|---|
+| connect, disconnect | Connect, Disconnect |
+| log in, add an account, log out | Log in, Add an account, Log out |
+| exit node (choose, none, automatic) | Change the exit node |
+| local network beside the exit node | Allow the local network, Block the local network |
+| accepted routes | Accept routes, Ignore routes |
+| Tailscale DNS | Use Tailscale DNS, Ignore Tailscale DNS |
+| shields up | Block incoming connections, Allow incoming connections |
+| SSH server | Start the SSH server, Stop the SSH server |
+| web interface | Start the web interface, Stop the web interface |
+| exit node offer | Offer an exit node, Stop offering an exit node |
+| offered routes | Change offered routes |
+| app connector | Offer an app connector, Stop the app connector |
+| source NAT | Turn on source NAT, Turn off source NAT |
+| stateful filtering | Turn on stateful filtering, Turn off stateful filtering |
+| posture reports | Report device posture, Stop posture reports |
+| peer relay | Run a peer relay, Turn off the peer relay |
+| automatic updates | Turn on automatic updates, Turn off automatic updates |
+| update checks | Check for updates, Stop update checks |
+| this device's name | Rename this device |
+| the account's nickname | Name the account |
+| operator | Become the operator, Give up the operator role |
+| accounts | List accounts, Switch account, Remove an account |
+| serve and Funnel | Share a port, Share a port on the internet, Stop a share, Turn on Funnel, Turn off Funnel, Stop every share |
 
 ## What may run through pkexec
 
@@ -64,7 +102,10 @@ The module writes no sysctl and changes no system file.
 
 ## Time limits
 
-Every command runs under coreutils `timeout -k 5`:
+Every command runs under coreutils `timeout`: the module's own, `-k 5`, for what runs as
+you; the shell's, `-k 3`, inside pkexec for what runs as administrator. Without a `timeout`
+of its own the module runs its commands without one and says so; its own watchdog still stops
+waiting.
 
 | Kind | Limit |
 |---|---|

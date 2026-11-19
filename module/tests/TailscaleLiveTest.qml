@@ -8,8 +8,9 @@ import ".."
 // stand-in tailscale supports, each with a client, a state directory and logs of its own, side
 // by side. Asserts on what the client shows AND on what was run (the stand-ins log argv): `up`
 // never has a flag, every change is a `set`, nothing privileged and no browser on origin
-// "network". Nothing here reaches a real tailscale: each client's handle is a StandInModule —
-// the stand-ins as its programs, as the shell hands them over in module test mode.
+// "network"; every run as administrator with its `what` for the prompt. Nothing here reaches
+// a real tailscale: each client's handle is a StandInModule — the stand-ins as its programs,
+// as the shell hands them over in module test mode.
 TestCase {
     id: suite
     suiteName: "tailscale: the live side against the stand-ins"
@@ -85,7 +86,7 @@ TestCase {
             _shell.run(["sh", "-c", lines.join(" && "), "sh", dir, s.options.state ?? ""], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
-                s.module = _moduleComponent.createObject(suite);
+                s.module = _moduleComponent.createObject(suite, { environment: s.env });
                 s.module.programs = s.module.programsIn({ missing: s.options.emptyTools === true || s.options.lateTools === true,
                                                           without: s.options.without, untrusted: s.options.untrusted });
                 // IP forwarding as the system's facts read it: "<ipv4> <ipv6>"
@@ -96,6 +97,8 @@ TestCase {
                     loginTimeoutMs: s.options.loginTimeoutMs ?? 60000, fixedNow: s.options.fixedNow ?? 0,
                     timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, recheckMinMs: s.options.recheckMinMs ?? 5000
                 });
+                // The runs as administrator take the client's environment as it is then
+                s.module.environment = Qt.binding(() => s.client.environment);
                 s.client.failed.connect((what, reason) => s.failures.push({ what: what, reason: reason }));
                 s.client.running = true;
                 s.ready = true;
@@ -150,12 +153,22 @@ TestCase {
     // tailscale, then `rest` (tab-separated)
     function elevatedLine(seconds, rest) {
         const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        return new RegExp("^pkexec\\t" + escape(standIns) + "/timeout\\t-k\\t5\\t" + seconds + "\\t" + escape(standIns) + "/tailscale\\t" + rest + "$");
+        return new RegExp("^pkexec\\t" + escape(standIns) + "/timeout\\t-k\\t3\\t" + seconds + "\\t" + escape(standIns) + "/tailscale\\t" + rest + "$");
     }
 
     // Api.openUrl was asked to open `url` (in module test mode it records; any scenario's)
     function opened(url) {
         return (ModuleTestKit.opened ?? []).some(entry => entry.url === url);
+    }
+
+    // The runs as administrator the scenario's client asked for: [{ argv, what, timeoutMs }]
+    function elevatedCalls(s) {
+        return s.module?.privileged.calls ?? [];
+    }
+
+    // The `what` words of those runs, in order
+    function whats(s) {
+        return elevatedCalls(s).map(call => call.what);
     }
 
     // A step that runs `script` (sh -c, $1 = the scenario's directory) and stores its output's
@@ -306,6 +319,8 @@ TestCase {
             assertEqual(count(stopped.pkexecLines, elevatedLine(60, "up")), 1, "… through pkexec: timeout 60 s around tailscale up, both by absolute path");
             assertEqual(stopped.pkexecLines.length, 1, "… and nothing else as root");
             assertEqual(stopped.failures.length, 0, "… no failure");
+            same(elevatedCalls(stopped), [{ argv: [standIns + "/tailscale", "up"], what: "Connect", timeoutMs: 60000 }],
+                 "… asked of the shell as one run: tailscale by its trusted path, \"Connect\" for the prompt, the 60 s limit");
         });
 
         // ---- starting ----
@@ -342,6 +357,8 @@ TestCase {
             assertEqual(count(login.pkexecLines, elevatedLine(60, "login")), 1, "… through pkexec, under timeout (the login's limit: it ends by itself)");
             assertEqual(login.client.opened, 1, "the browser opened ONCE");
             assert(opened("https://login.tailscale.com/a/REDACTED"), "… with the login link, through Api.openUrl (recorded in module test mode)");
+            same(whats(login), ["Log in"], "… the run as administrator says \"Log in\"");
+            assertEqual(elevatedCalls(login)[0]?.timeoutMs, 60000, "… under the login's limit");
         });
 
         // ---- a login that is never finished: the module ends it ----
@@ -463,20 +480,21 @@ TestCase {
             assertEqual(dismissed.client.prefs.shieldsUp, dismissed.shieldsBefore, "… nothing changed");
             assertEqual(_entry(dismissed).state, "activated", "… the state as it was");
             assertEqual(count(dismissed.pkexecLines, /\tset\t--shields-up=true$/), 1, "… pkexec was asked (by absolute path)");
+            same(whats(dismissed), ["Block incoming connections"], "… the run said what for: \"Block incoming connections\"");
         });
         const noAgent = scenario("pkexec-no-agent", { state: "stopped", env: { TS_FAKE_PKEXEC: "no-agent" } });
         then(noAgent, "read", () => noAgent.client.status !== null, () => noAgent.client.connect("user"));
-        then(noAgent, "failed", () => noAgent.failures.length > 0 && !noAgent.client.busy, () => {
-            assertEqual(noAgent.failures[0].reason, "No authentication agent answered.", "no agent: failed with the contract's sentence");
-            assertEqual(noAgent.failures[0].what, "Connecting Tailscale", "… what: the command table's description");
+        then(noAgent, "failed", () => noAgent.client.failureText !== "" && !noAgent.client.busy, () => {
+            // pkexec's 127 is the shell's `refused`, which the shell tells itself, once
+            assertEqual(noAgent.failures.length, 0, "refused (no agent): not notified again by the module");
             assertEqual(_entry(noAgent).state, "", "… the state back to off");
-            // The notification may never show (no notify-send): the entry's status line keeps it
-            assertEqual(_entry(noAgent).status, "No authentication agent answered.", "… and the entry's status line says it, where the click was");
+            assertEqual(_entry(noAgent).status, "Not allowed.", "… and the entry's status line says it, where the click was");
             assertEqual(_entry(noAgent).attention, null, "… not as attention: Connect stays the button (and the shell may still connect it)");
+            noAgent.firstFailure = noAgent.client.failure;
             assert(noAgent.client.connect("user"), "… Connect tries again");
         });
-        then(noAgent, "tried again", () => noAgent.failures.length > 1 && !noAgent.client.busy, () => {
-            assertEqual(_entry(noAgent).status, "No authentication agent answered.", "the second failure said again");
+        then(noAgent, "tried again", () => elevatedCalls(noAgent).length === 2 && noAgent.client.failureText !== "" && !noAgent.client.busy, () => {
+            assertEqual(_entry(noAgent).status, "Not allowed.", "the second failure said again");
         });
         thenLogs(noAgent, "both tries asked pkexec", () => assertEqual(count(noAgent.pkexecLines, elevatedLine(60, "up")), 2, "pkexec asked for `up` twice"));
         // A failed Connect leaves no attention: the shell's "VPN with a network" still connects
@@ -492,7 +510,7 @@ TestCase {
         thenShell(thenNetwork, "made the operator elsewhere", "printf 'OperatorUser=%s\\n' \"$(id -un)\" >> \"$1/state/prefs\" && echo ok", "operatorSet",
                   () => thenNetwork.client.refresh());
         then(thenNetwork, "the operator", () => thenNetwork.client.canChange && !thenNetwork.client._reading, () => {
-            assertEqual(thenNetwork.client.failureText, "No authentication agent answered.", "the failure text still there (same phase)");
+            assertEqual(thenNetwork.client.failureText, "Not allowed.", "the failure text still there (same phase)");
             assert(thenNetwork.client.connect("network"), "a network's connect goes ahead");
             assertEqual(thenNetwork.client.failureText, "", "… and the failure text is gone once it starts");
         });
@@ -508,6 +526,8 @@ TestCase {
         thenLogs(elevated, "pkexec ok", () => {
             assertEqual(count(elevated.pkexecLines, /\tset\t--accept-routes=false$/), 1, "a denied change by the user: through pkexec");
             assertEqual(elevated.failures.length, 0, "… no failure");
+            same(elevatedCalls(elevated), [{ argv: [standIns + "/tailscale", "set", "--accept-routes=false"], what: "Ignore routes", timeoutMs: 60000 }],
+                 "… the run: the change by tailscale's trusted path, \"Ignore routes\", the change's limit");
         });
 
         // ---- not operator, origin network: no prompt — attention ----
@@ -536,6 +556,7 @@ TestCase {
         thenLogs(become, "after becoming the operator", () => {
             assertEqual(count(become.pkexecLines, new RegExp("\\tset\\t--operator=" + become.client.userName + "$")), 1, "become operator: pkexec set --operator=<this user>");
             assertEqual(become.pkexecLines.length, 1, "… and then no pkexec for a change");
+            same(whats(become), ["Become the operator"], "… the run said \"Become the operator\"");
         });
 
         // ---- the stream dying and coming back ----
@@ -700,6 +721,7 @@ TestCase {
         thenLogs(untrusted, "nothing ran", () => {
             assertEqual(untrusted.logLines.length, 0, "not trusted: nothing run at all");
             assertEqual(untrusted.pkexecLines.length, 0, "… nothing through pkexec");
+            assertEqual(elevatedCalls(untrusted).length, 0, "… nothing asked of the shell as administrator");
             assert(untrusted.module.rechecks >= 1, "… Connect asked the shell to look the programs up again");
         });
 
@@ -745,6 +767,7 @@ TestCase {
         thenLogs(checkAgain, "after the login", () => {
             assertEqual(count(checkAgain.logLines, /^login$/), 2, "bare `login`, denied, then as root");
             assertEqual(count(checkAgain.pkexecLines, elevatedLine(60, "login")), 1, "… through pkexec, the newly found tailscale by absolute path");
+            same(elevatedCalls(checkAgain).map(call => call.argv), [[standIns + "/tailscale", "login"]], "… asked of the shell with that path");
             assertEqual(checkAgain.client.opened, 1, "the login page opened once");
         });
         // Nothing asked: the backoff finds it
@@ -764,8 +787,9 @@ TestCase {
             assertEqual(_entry(freshNoAgent).attention?.action, "Log in", "… \"Log in\" in place of Connect");
             assert(freshNoAgent.client.connect("user"), "Connect (user): the login starts");
         });
-        then(freshNoAgent, "failed", () => freshNoAgent.failures.length > 0 && !freshNoAgent.client.busy, () => {
-            assertEqual(_entry(freshNoAgent).status, "No authentication agent answered.", "no agent: said on the status line");
+        then(freshNoAgent, "failed", () => freshNoAgent.client.failureText !== "" && !freshNoAgent.client.busy, () => {
+            assertEqual(_entry(freshNoAgent).status, "Not allowed.", "refused (no agent): said on the status line");
+            assertEqual(freshNoAgent.failures.length, 0, "… not notified by the module (the shell tells it)");
             assertEqual(_entry(freshNoAgent).attention?.action, "Log in", "… \"Log in\" again as its action");
             assertEqual(_entry(freshNoAgent).state, "", "… off");
         });
@@ -780,14 +804,35 @@ TestCase {
             assertEqual(_entry(freshDismissed).attention?.action, "Log in", "… \"Log in\" as before");
             assertEqual(count(freshDismissed.pkexecLines, elevatedLine(60, "login")), 1, "… pkexec was asked");
         });
-        // Not the operator, no timeout(1): nothing may run as root — said on the entry
-        const noTimeout = scenario("connect-without-timeout", { state: "stopped", without: "timeout" });
-        then(noTimeout, "read", () => noTimeout.client.status !== null, () => assert(noTimeout.client.connect("user"), "Connect: the plain `up` runs"));
-        then(noTimeout, "refused", () => noTimeout.client.failureText !== "" && !noTimeout.client.busy, () => {
-            assertEqual(_entry(noTimeout).status, "Can't ask for the password: timeout is missing.", "no timeout: why, on the status line");
-            assertEqual(_entry(noTimeout).attention, null, "… no attention: Connect stays");
+        // Not the operator, and the shell cannot run anything as administrator (no trusted
+        // pkexec or timeout): said on the entry, nothing asked
+        const noPrivileges = scenario("connect-no-privileges", { state: "stopped" });
+        then(noPrivileges, "read", () => noPrivileges.client.status !== null, () => {
+            noPrivileges.module.privileged.available = false;
+            noPrivileges.module.privileged.unavailableReason = "no pkexec found";
+            assert(noPrivileges.client.warnings.some(warning => warning.kind === "no-elevation"
+                                                     && warning.text === "Changes that need an administrator are not offered: no pkexec found."),
+                   "the card says changes as administrator are not offered, and why");
+            assert(noPrivileges.client.connect("user"), "Connect: the plain `up` runs");
         });
-        thenLogs(noTimeout, "nothing as root", () => assertEqual(noTimeout.pkexecLines.length, 0, "no timeout: nothing through pkexec"));
+        then(noPrivileges, "refused", () => noPrivileges.client.failureText !== "" && !noPrivileges.client.busy, () => {
+            assertEqual(_entry(noPrivileges).status, "Can't ask for the password.", "no way to run as administrator: why, on the status line");
+            assertEqual(_entry(noPrivileges).attention, null, "… no attention: Connect stays");
+            assertEqual(elevatedCalls(noPrivileges).length, 0, "… nothing asked of the shell");
+        });
+        thenLogs(noPrivileges, "nothing as root", () => assertEqual(noPrivileges.pkexecLines.length, 0, "nothing through pkexec"));
+        // No timeout(1) of the module's own: its plain commands run without one (said), a run
+        // as administrator still has the shell's
+        const noTimeout = scenario("connect-without-timeout", { state: "stopped", without: "timeout" });
+        then(noTimeout, "read", () => noTimeout.client.status !== null, () => {
+            assert(noTimeout.client.warnings.some(warning => warning.kind === "no-timeout"), "the card says commands run without a time limit");
+            assert(noTimeout.client.connect("user"), "Connect: the plain `up` runs");
+        });
+        then(noTimeout, "connected", () => _entry(noTimeout).state === "activated" && !noTimeout.client.busy, () => {});
+        thenLogs(noTimeout, "as root with the shell's limit", () => {
+            assertEqual(count(noTimeout.logLines, /^up$/), 2, "bare `up` plainly (no timeout around it), then as root");
+            same(whats(noTimeout), ["Connect"], "… the run as administrator asked of the shell all the same");
+        });
         // The service cannot be started (systemd refuses): said on the entry, "Start" again
         const startFails = scenario("start-refused", { state: "running", daemonDown: true, env: { TS_FAKE_SYSTEMCTL: "fail" } });
         then(startFails, "read", () => startFails.client.daemon === "not-running", () => {
@@ -888,6 +933,8 @@ TestCase {
             assertEqual(count(accounts.pkexecLines, elevatedLine(60, "switch\\tremove\\ta1b2")), 1, "remove through pkexec");
             assertEqual(count(accounts.logLines, /^switch remove c3d4$/), 0, "the account in use never removed");
             assertEqual(count(accounts.pkexecLines, elevatedLine(60, "login")), 1, "add: a bare login through pkexec");
+            same(whats(accounts), ["List accounts", "Switch account", "Remove an account", "Add an account"], "… each run said what for");
+            same(elevatedCalls(accounts).map(call => call.timeoutMs), [15000, 60000, 60000, 60000], "… each under its own limit");
         });
 
         // ---- the operator: the list re-read by itself after a change (no prompt) ----
@@ -962,6 +1009,7 @@ TestCase {
             assertEqual(count(hostname.pkexecLines, elevatedLine(60, "set\\t--hostname=box")), 1, "rename: `set --hostname=box` through pkexec");
             assertEqual(count(hostname.pkexecLines, elevatedLine(60, "set\\t--nickname=home")), 1, "nickname: `set --nickname=home` through pkexec");
             assertEqual(count(hostname.logLines, /bad\.name/), 0, "the refused name never ran");
+            same(whats(hostname), ["Rename this device", "Name the account"], "… the runs said what for, never the names");
         });
 
         // ---- diagnostics: on demand only; ping a device ----
@@ -1094,6 +1142,7 @@ TestCase {
             assertEqual(count(sharing.pkexecLines, elevatedLine(60, "set\\t--advertise-exit-node=true")), 1, "`set --advertise-exit-node=true` alone");
             assertEqual(count(sharing.logLines, /advertise-routes.*advertise-exit-node|advertise-exit-node.*advertise-routes/), 0, "never both flags in one command");
             assertEqual(count(sharing.logLines, /192\.168\.7\.5|exit-node=peer4/), 0, "the refused ones never ran");
+            same(whats(sharing), ["Change offered routes", "Offer an exit node"], "… the runs said what for, never the routes");
         });
 
         // Approval and removal on the sharing fixtures (an exit node and three routes offered);

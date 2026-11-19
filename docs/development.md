@@ -43,8 +43,9 @@ The shell runs them in module test mode: every program the module names comes fr
 the stand-in `pkexec`, links are recorded (`ModuleTestKit.opened`), and `Api.system` gives
 made-up facts. The live suites run many scenarios at once, each with a client of its own: its
 handle is a `StandInModule` (`module/tests/StandInModule.qml`), which gives the stand-ins as its
-programs (or a scenario's: one missing, an untrusted one, one installed later).
-`TailscaleModuleTest` uses the module's real handle.
+programs (or a scenario's: one missing, an untrusted one, one installed later) and records each
+run as administrator (`what`, argv, limit) before running it with the scenario's `TS_FAKE_*`
+environment. `TailscaleModuleTest` uses the module's real handle and the shell's own queue.
 
 #### NixOS
 
@@ -58,8 +59,8 @@ Without `nix`, labwc has to be installed; Quickshell is `qs` on `PATH`, else
 ### `tests/lock-bed/run.sh`
 
 Starts the real shell in the shell's lock test bed, with this module, in module test mode:
-the module's programs are its stand-ins, its runs as administrator go through the stand-in
-`pkexec`. The stand-ins take the test's state from the `TS_FAKE_*`
+the module's programs are its stand-ins, its runs as administrator go through the shell's
+queue to the stand-in `pkexec`. The stand-ins take the test's state from the `TS_FAKE_*`
 variables the test exports.
 The tests are in `tests/lock-bed/tests/`.
 The shell's `tests/lock/run.sh` must support `LOCKTEST_EXTRA_TESTS`.

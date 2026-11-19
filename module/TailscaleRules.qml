@@ -7,7 +7,8 @@ import QtQuick
 // daemon: what `tailscale status --json`, `tailscale debug prefs` and the IPN bus say,
 // mapped onto the shell's VPN provider contract (components/VpnProvider.qml in the shell;
 // docs/plans/tailscale.md §3), the devices and exit nodes for the views, the accounts, what
-// an error or a pkexec exit means, and the argv of every command the module runs.
+// an error or a run as administrator's result means, and the argv of every command the module
+// runs.
 //
 // No I/O, no timers, no other singleton: time is passed in (`now`, milliseconds since
 // 1970). Nothing here throws, whatever it is given — the status format is officially
@@ -99,8 +100,9 @@ Singleton {
     // Where tailscaled's LocalAPI socket may be, in this order (the live side takes the first
     // that exists; localApiSocket when none does)
     readonly property var localApiSockets: ["/var/run/tailscale/tailscaled.sock", "/run/tailscale/tailscaled.sock"]
-    // Time limits, in seconds: every command runs under coreutils' timeout (timed(), and
-    // privileged() under pkexec), so nothing it runs can wait for ever — not a `status --json`
+    // Time limits, in seconds: every command runs under coreutils' timeout (timed(); a run as
+    // administrator under the shell's own, privilegedRun()'s timeoutMs), so nothing it runs
+    // can wait for ever — not a `status --json`
     // that hangs, not a bare `up` that waits for Running offline, behind a captive portal or
     // with an expired key, and not a root process the shell cannot signal.
     //   read      status --json, debug prefs, exit-node suggest: answered at once by a healthy
@@ -2091,24 +2093,39 @@ Singleton {
         return { kind: "other", message: firstLine !== "" ? firstLine.slice(0, 300) : ("Tailscale exited with status " + (isFinite(code) ? code : "?") + ".") };
     }
 
-    // pkexec's own exit codes, as the provider contract (tailscale.md §3, "Cancelled is not
-    // failed") and the shell (singletons/network/VpnLockdown.qml, Authentication.qml) read
-    // them: 126 the prompt was dismissed or the password refused, 127 no authentication agent
-    // answered. → { outcome, failure, message } — outcome "ok" | "dismissed" | "no-agent" |
-    // "failed" (the program's own non-zero exit: read its stderr with errorKind).
-    //   dismissed  failure false: show nothing, emit nothing, state back to "", busy cleared
-    //   no-agent   failure true: failed(entryId, what, message) with the contract's sentence
-    function pkexecOutcome(exitCode) {
-        if (exitCode === 0)
-            return { outcome: "ok", failure: false, message: "" };
-        if (exitCode === 126)
-            return { outcome: "dismissed", failure: false, message: "Not done: the password was not given." };
-        if (exitCode === 127)
-            return { outcome: "no-agent", failure: true, message: "No authentication agent answered." };
-        // No exit status at all: pkexec itself could not be started (gone since the probe)
-        if (typeof exitCode === "number" && exitCode < 0)
-            return { outcome: "not-started", failure: true, message: "Couldn't run pkexec." };
-        return { outcome: "failed", failure: true, message: "" };
+    // How a run as administrator ended — module.privileged's result (module API 1.11) →
+    // { kind: "ok" | "dismissed" | "cancelled" | "failed", notify, message }:
+    //   ok         exit 0
+    //   cancelled  the module cancelled it itself: nothing to say
+    //   dismissed  the prompt was dismissed or the password not accepted, or the run was
+    //              refused because the session is locked (blocked "locked"): show nothing,
+    //              emit nothing (the provider contract: "Cancelled is not failed")
+    //   failed     `message` for the entry and the page; `notify` false for `refused` (not
+    //              authorised, or no authentication agent answered), which the shell itself
+    //              tells once, and true for the rest (the provider's failed())
+    // `name` and `seconds`: the command's, for the time limit's sentence.
+    function privilegedOutcome(result, name, seconds) {
+        const field = key => _get(result, key);
+        const failed = (message, notify) => ({ kind: "failed", notify: notify !== false, message: message });
+        if (field("ok") === true)
+            return { kind: "ok", notify: false, message: "" };
+        if (field("cancelled") === true)
+            return { kind: "cancelled", notify: false, message: "" };
+        if (field("dismissed") === true)
+            return { kind: "dismissed", notify: false, message: "" };
+        if (field("refused") === true)
+            return failed("Not allowed.", false);
+        if (field("timedOut") === true)
+            return failed(timeoutMessage(name, seconds));
+        if (field("notFound") === true)
+            return failed("It could not be run as administrator: tailscale was not found.");
+        const blocked = _string(field("blocked"), 40);
+        if (blocked !== "")
+            return failed("It was not run as administrator (" + blocked + ").");
+        const error = _string(field("error"), 300);
+        if (error !== "")
+            return failed("It could not be run as administrator: " + error);
+        return failed(errorKind(field("code"), _string(field("stderr"), 65536)).message);
     }
 
     // A command stopped by its time limit (`seconds`, timeLimits) → one sentence for the
@@ -2139,16 +2156,17 @@ Singleton {
     // The shell looks the module's programs up (the manifest's optionalPrograms) and judges
     // them: module.programs (module API 1.9) — { <name>: { path, trusted, reason } }, or, in
     // module test mode, the stand-ins of the manifest's testPrograms. The module runs each by
-    // that absolute path. tailscale, timeout and pkexec must be trusted (only root can change
-    // them): a run as administrator is `pkexec <timeout> … <tailscale> …` (privileged()).
-    // curl, systemctl and openssl run as this user only and are not judged.
-    readonly property var programNames: ["tailscale", "timeout", "pkexec", "curl", "systemctl", "openssl"]
-    readonly property var _judgedPrograms: ["tailscale", "timeout", "pkexec"]
+    // that absolute path. Only tailscale has to be trusted (only root can change it): it is
+    // the one program handed to pkexec. timeout, curl, systemctl and openssl run as this user
+    // only — one the user could change gives nothing the user could not do anyway. pkexec is
+    // named in the manifest only for module test mode, where the shell takes its stand-in
+    // from there; outside it the shell uses its own.
+    readonly property var programNames: ["tailscale", "timeout", "curl", "systemctl", "openssl"]
 
     // programsFound(programs) → { known, cli ("unknown" while not looked up | "present" |
     // "missing" | "untrusted": nothing runs), untrustedReason, and each of programNames: its
     // absolute path or "" }. A path that is not absolute, or holds white space, counts as not
-    // found. With an untrusted tailscale, timeout or pkexec, the three paths are not given.
+    // found; an untrusted tailscale's path is not given.
     function programsFound(programs) {
         const result = { known: false, cli: "unknown", untrustedReason: "" };
         for (const name of programNames)
@@ -2160,18 +2178,28 @@ Singleton {
             const path = _get(_get(programs, name), "path");
             result[name] = _validPath(path) && !/\s/.test(path) && !path.endsWith("/") ? path : "";
         }
-        const untrusted = _judgedPrograms.find(name => result[name] !== "" && _get(_get(programs, name), "trusted") !== true);
-        if (untrusted !== undefined) {
-            const reason = plainText(_string(_get(_get(programs, untrusted), "reason"), 300), 200).replace(/[.\s]+$/, "");
-            result.cli = "untrusted";
-            result.untrustedReason = (untrusted === "tailscale" ? "Tailscale" : untrusted) + " isn't trusted ("
-                + (reason !== "" ? reason : "it could not be checked") + "): nothing runs.";
-            for (const name of _judgedPrograms)
-                result[name] = "";
+        if (result.tailscale === "") {
+            result.cli = "missing";
             return result;
         }
-        result.cli = result.tailscale === "" ? "missing" : "present";
+        if (_get(_get(programs, "tailscale"), "trusted") !== true) {
+            const reason = plainText(_string(_get(_get(programs, "tailscale"), "reason"), 300), 200).replace(/[.\s]+$/, "");
+            result.cli = "untrusted";
+            result.untrustedReason = "Tailscale isn't trusted (" + (reason !== "" ? reason : "it could not be checked") + "): nothing runs.";
+            result.tailscale = "";
+            return result;
+        }
+        result.cli = "present";
         return result;
+    }
+
+    // Why nothing can be run as administrator ("" it can): only while Tailscale is there.
+    // `available` and `reason`: module.privileged's (the shell's trusted pkexec and timeout)
+    function elevationProblem(cli, available, reason) {
+        if (cli !== "present" || available === true)
+            return "";
+        const why = plainText(_string(reason, 300), 200).replace(/[.\s]+$/, "");
+        return "Changes that need an administrator are not offered" + (why !== "" ? ": " + why : "") + ".";
     }
 
     // The plain form of a command with its time limit: timed(argv, timeoutPath, seconds) →
@@ -2248,15 +2276,97 @@ Singleton {
         "exitNodeSuggest", "exitNodeList", "dnsStatus", "version", "watch", "startService"]
 
     // THE command builder: commandFor(name, args) → { ok, error, name, argv, changes,
-    // privileged, description, writesAsRoot, longRunning }. `argv` is an array for Process
-    // (never a shell line), starting with "tailscale" — privileged(argv, path) puts pkexec
-    // and the absolute path in front. `changes`: it changes Tailscale's state. `privileged`:
-    // it needs root or the operator (try it plainly; on errorKind "denied" retry through
-    // pkexec — only for a user's click). `description`: for the polkit prompt's log and the
-    // failure notification ("<description> failed"). `writesAsRoot`: through pkexec it would
-    // leave files owned by root (file get): offer "become operator" instead.
-    // Never `tailscale up` with a flag: every setting goes through `tailscale set`.
+    // privileged, description, what, writesAsRoot, longRunning }. `argv` is an array for
+    // Process (never a shell line), starting with "tailscale" — the live side puts the
+    // absolute path in front (privilegedRun for a run as administrator). `changes`: it
+    // changes Tailscale's state. `privileged`: it needs root or the operator (try it plainly;
+    // on errorKind "denied" retry as administrator — only for a user's click).
+    // `description`: for the failure notification ("<description> failed"). `what` (a
+    // privileged command's only): a few words saying what it does, for the shell's password
+    // prompt ("Authorization: Connect") — never a name, an address or a path. `writesAsRoot`:
+    // as administrator it would leave files owned by root (file get): offer "become operator"
+    // instead. Never `tailscale up` with a flag: every setting goes through `tailscale set`.
     function commandFor(name, args) {
+        const command = _commandFor(name, args);
+        if (command.ok && command.privileged)
+            command.what = _what(name, _isObject(args) ? args : {});
+        return command;
+    }
+
+    // The prompt's words for a privileged command (commandFor's `what`)
+    function _what(name, options) {
+        const on = _get(options, "on") === true;
+        switch (name) {
+        case "connect":
+            return "Connect";
+        case "disconnect":
+            return "Disconnect";
+        case "login":
+            return "Log in";
+        case "addAccount":
+            return "Add an account";
+        case "logout":
+            return "Log out";
+        case "exitNode":
+        case "exitNodeAuto":
+        case "exitNodeNone":
+            return "Change the exit node";
+        case "allowLan":
+            return on ? "Allow the local network" : "Block the local network";
+        case "acceptRoutes":
+            return on ? "Accept routes" : "Ignore routes";
+        case "acceptDns":
+            return on ? "Use Tailscale DNS" : "Ignore Tailscale DNS";
+        case "shieldsUp":
+            return on ? "Block incoming connections" : "Allow incoming connections";
+        case "ssh":
+            return on ? "Start the SSH server" : "Stop the SSH server";
+        case "webClient":
+            return on ? "Start the web interface" : "Stop the web interface";
+        case "advertiseExitNode":
+            return on ? "Offer an exit node" : "Stop offering an exit node";
+        case "autoUpdate":
+            return on ? "Turn on automatic updates" : "Turn off automatic updates";
+        case "snat":
+            return on ? "Turn on source NAT" : "Turn off source NAT";
+        case "statefulFiltering":
+            return on ? "Turn on stateful filtering" : "Turn off stateful filtering";
+        case "connector":
+            return on ? "Offer an app connector" : "Stop the app connector";
+        case "posture":
+            return on ? "Report device posture" : "Stop posture reports";
+        case "relayServerPort":
+            return String(_get(options, "port") ?? "") === "" ? "Turn off the peer relay" : "Run a peer relay";
+        case "updateCheck":
+            return on ? "Check for updates" : "Stop update checks";
+        case "hostname":
+            return "Rename this device";
+        case "advertiseRoutes":
+            return "Change offered routes";
+        case "nickname":
+            return "Name the account";
+        case "operator":
+            return _get(options, "user") === "" ? "Give up the operator role" : "Become the operator";
+        case "switchAccount":
+            return "Switch account";
+        case "switchList":
+            return "List accounts";
+        case "removeAccount":
+            return "Remove an account";
+        case "fileCp":
+            return (_get(options, "files") ?? []).length === 1 ? "Send a file" : "Send files";
+        case "fileGet":
+            return "Receive files";
+        case "serveReset":
+            return "Stop every share";
+        case "funnelReset":
+            return "Stop Funnel";
+        default:
+            return "";
+        }
+    }
+
+    function _commandFor(name, args) {
         const options = _isObject(args) ? args : {};
         const value = key => _get(options, key);
         const set = (flag, description) => _command(name, ["tailscale", "set", flag], true, true, description);
@@ -2455,34 +2565,37 @@ Singleton {
         }
     }
 
-    // The pkexec form of a command: privileged(argv, tailscalePath, { timeout, seconds,
-    // description }) → { ok, error, argv, prompt }:
-    //   ["pkexec", <timeout>, "-k", killAfter, <seconds>, <tailscale>, args…]
-    // A process run as root cannot be signalled by the shell — cancelling only stops waiting
-    // for it — so it must END BY ITSELF: coreutils' timeout around it, under pkexec. Without a
-    // timeout (not found) nothing is run as root: { ok: false } with the reason, for the page.
-    // pkexec does not search the user's PATH, so both go by absolute path — the live side
-    // resolves them once (kept as found: on NixOS /run/current-system/sw/bin/…, links that
-    // survive updates, unlike the store paths they point to). `prompt`: what runs, in words,
-    // the label of the authentication.
-    function privileged(argv, tailscalePath, options) {
+    // A command as administrator, for module.privileged.start (module API 1.11):
+    // privilegedRun(command, facts) → { ok, error, argv, what, timeoutMs }. facts: { program
+    // (module.programs.tailscale), available (module.privileged.available), unavailableReason,
+    // seconds (the command's time limit) }.
+    //   argv       [<tailscale by its absolute path>, args…] — only a TRUSTED tailscale: the
+    //              shell does not judge what it is given to run as root, and a program this
+    //              user could change would let any of the user's processes become root
+    //   what       the command's few words for the prompt ("Connect"): commandFor's `what`
+    //   timeoutMs  the limit, 1 s to 1 h: the shell's own `timeout` inside pkexec ends the
+    //              command there, as root, even when the shell is gone (a root process cannot
+    //              be signalled from here)
+    function privilegedRun(command, facts) {
+        const refuse = error => ({ ok: false, error: error, argv: [], what: "", timeoutMs: 0 });
+        const argv = _get(command, "argv");
         if (!Array.isArray(argv) || argv.length === 0 || argv[0] !== "tailscale" || !argv.every(item => typeof item === "string"))
-            return { ok: false, error: "not a tailscale command", argv: [], prompt: "" };
-        if (typeof tailscalePath !== "string" || !_validPath(tailscalePath) || /\s/.test(tailscalePath) || tailscalePath.endsWith("/"))
-            return { ok: false, error: "the path to tailscale is not absolute", argv: [], prompt: "" };
-        const timeoutPath = _get(options, "timeout");
-        if (typeof timeoutPath !== "string" || timeoutPath === "")
-            return { ok: false, error: "coreutils' timeout was not found: nothing is run as administrator without a time limit", argv: [], prompt: "" };
-        const seconds = _get(options, "seconds") ?? timeLimits.change;
-        const limited = timed([tailscalePath].concat(argv.slice(1)), timeoutPath, seconds);
-        if (!limited.ok)
-            return { ok: false, error: limited.error, argv: [], prompt: "" };
-        const limit = seconds >= 120 ? Math.round(seconds / 60) + " minutes" : seconds + " s";
-        const description = _string(_get(options, "description"), 120);
-        return {
-            ok: true, error: "", argv: ["pkexec"].concat(limited.argv),
-            prompt: (description !== "" ? description + ": " : "") + "runs `tailscale " + argv.slice(1).join(" ") + "` as administrator, stopped after " + limit
-        };
+            return refuse("not a tailscale command");
+        const what = _string(_get(command, "what"), 60).trim();
+        if (what === "")
+            return refuse("nothing says what it does");
+        if (_get(facts, "available") !== true)
+            return refuse(elevationProblem("present", false, _get(facts, "unavailableReason")));
+        const program = _get(facts, "program");
+        const path = _get(program, "path");
+        if (!_validPath(path) || /\s/.test(path) || path.endsWith("/"))
+            return refuse("Tailscale was not found: nothing is run as administrator.");
+        if (_get(program, "trusted") !== true)
+            return refuse("Tailscale isn't trusted: it is not run as administrator.");
+        const seconds = _get(facts, "seconds");
+        if (!_validSeconds(seconds) || seconds > 3600)
+            return refuse("not a time limit for a run as administrator");
+        return { ok: true, error: "", argv: [path].concat(argv.slice(1)), what: what, timeoutMs: seconds * 1000 };
     }
 
     // ---- Warnings ----

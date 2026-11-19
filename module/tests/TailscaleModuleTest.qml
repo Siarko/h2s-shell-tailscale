@@ -6,8 +6,9 @@ import ".."
 
 // The module as the shell's host loaded it (tests/run-modules.sh, module test mode): its main
 // made the live client and the VPN provider; its programs are the stand-ins of its manifest's
-// testPrograms (never a real tailscale), handed over by the shell; the facts are declared and
-// pushed; the slot contributions are the manifest's. Then the lifetime rule: the
+// testPrograms (never a real tailscale), handed over by the shell; a run as administrator goes
+// through the shell's own queue and its stand-in pkexec, saying who and what for; the facts are
+// declared and pushed; the slot contributions are the manifest's. Then the lifetime rule: the
 // module turned off (ModuleTestKit), its client stops (stream and timers) and its provider
 // leaves; on again, a new main.
 TestCase {
@@ -20,6 +21,12 @@ TestCase {
     property var _firstClient: null
     property CommandAction _shell: CommandAction {}
     property var _envReads: null
+    // The notifications recorded before its own (the records are the whole runner's: the
+    // other suites run beside this one, so they are never cleared here)
+    property int _notifiedBefore: 0
+    function _ownNotices() {
+        return (ModuleTestKit.notified ?? []).slice(_notifiedBefore).filter(notice => notice.summary === "Module: Tailscale");
+    }
 
     function _then(description, condition, action) {
         _steps.push({ description: description, condition: condition, action: action });
@@ -76,6 +83,7 @@ TestCase {
         const fromStandIns = ["tailscale", "timeout", "curl", "systemctl", "openssl", "pkexec"]
             .filter(name => programs[name]?.path !== standIns + "/" + name || programs[name]?.trusted !== true || programs[name]?.reason !== "test stand-in");
         assertEqual(fromStandIns.join(","), "", "every program it names is its stand-in (trusted, \"test stand-in\"), never one on PATH");
+        assert(module.privileged.available, "… and the shell can run as administrator through the stand-in pkexec (" + module.privileged.unavailableReason + ")");
         const slots = (module.manifest.slots ?? []).map(entry => entry.slot).sort().join(",");
         assertEqual(slots, "network.vpn.card,network.vpn.row", "the row's and the card's VPN slots in its manifest — no network.vpn.page: its page is a settings page");
         assertEqual((module.manifest.settingsPages ?? []).map(page => page.id + ":" + page.parent).join(","), "tailscale:network",
@@ -90,7 +98,7 @@ TestCase {
             assertEqual(client.tailscalePath, standIns + "/tailscale", "the client runs tailscale by the path module.programs gives: the stand-in");
             same([client.timeoutPath, client.curlPath, client.systemctlPath, client.opensslPath],
                  [standIns + "/timeout", standIns + "/curl", standIns + "/systemctl", standIns + "/openssl"], "… and so timeout, curl, systemctl, openssl");
-            assertEqual(client.elevationProblem, "", "… changes as administrator offered (its pkexec: the stand-in)");
+            assertEqual(client.elevationProblem, "", "… changes as administrator offered");
             assert(client.running, "the client runs while the module is active");
         });
         _then("the client read the stand-in's state", () => Tailscale.client?.status !== null && Tailscale.client?.entry.state === "activated", () => {
@@ -114,6 +122,27 @@ TestCase {
             if (typeof module.presetValue === "function")
                 assertEqual(module.presetValue("tailscale", "", "devices"), 5, "… its preset read through the handle (module API 1.3)");
             widget?.destroy();
+            // A change only root may make, asked by the user: through the shell's queue and
+            // its stand-in pkexec. With another polkit agent the shell sends a notification
+            // saying who and what for just before pkexec starts — the run's `what`, recorded
+            suite._notifiedBefore = (ModuleTestKit.notified ?? []).length;
+            ModuleTestKit.setPolkitAgent("other");
+            assert(!Tailscale.client.canChange, "not the operator: a change needs an administrator");
+            assert(Tailscale.client.setShieldsUp(true), "Block incoming connections: starts");
+        });
+        _then("run as administrator through the shell", () => Tailscale.client.prefs?.shieldsUp === true && !Tailscale.client.busy && ModuleTestKit.privilegedIdle, () => {
+            const notices = suite._ownNotices();
+            same(notices.map(notice => notice.body), ["Authorization: Block incoming connections"],
+                 "the shell said who and what for: \"Module: Tailscale\", \"Authorization: Block incoming connections\"");
+            assertEqual(notices[0]?.format, "plain", "… as plain text");
+            assert(!(ModuleTestKit.notified ?? []).slice(suite._notifiedBefore).some(notice => /^(Block|Allow) incoming connections/.test(notice.summary)),
+                   "… and nothing failed");
+            assert(Tailscale.client.setShieldsUp(false), "and back: starts");
+        });
+        _then("back", () => Tailscale.client.prefs?.shieldsUp === false && !Tailscale.client.busy && ModuleTestKit.privilegedIdle, () => {
+            same(suite._ownNotices().map(notice => notice.body),
+                 ["Authorization: Block incoming connections", "Authorization: Allow incoming connections"], "… each run with its own words");
+            ModuleTestKit.setPolkitAgent("active");
             // The environment variables it once read for its stand-ins and folders: gone
             _shell.run(["sh", "-c", "grep -rlE 'H2S_TEST_MODULES|H2S_TAILSCALE_' --include='*.qml' --exclude-dir=tests -- \"$1\"; echo end", "sh", module.directory],
                        result => suite._envReads = result.lines);

@@ -56,11 +56,12 @@ TestCase {
             _shell.run(["sh", "-c", lines.join(" && "), "sh", dir], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
-                s.module = _moduleComponent.createObject(suite);
+                s.module = _moduleComponent.createObject(suite, { environment: s.env });
                 s.client = _clientComponent.createObject(suite, {
                     module: s.module, environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 5000,
                     readRetryMinMs: 300, readRetryMaxMs: 1200
                 });
+                s.module.environment = Qt.binding(() => s.client.environment);
                 s.client.taildrop.defaultFolder = dir + "/downloads";
                 if (s.options.idleLimitMs)
                     s.client.taildrop.idleLimitMs = s.options.idleLimitMs;

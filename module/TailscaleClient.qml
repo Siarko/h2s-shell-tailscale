@@ -40,10 +40,10 @@ import qs.api
 // A read that times out marks the state stale (the entry: "Not answering — state unknown")
 // and is retried with a backoff (readRetryMinMs, doubling to readRetryMaxMs).
 //
-// PROGRAMS — which tailscale, timeout, pkexec, curl, systemctl and openssl run: the shell's
-// lookup, the module handle's `programs` (module API 1.9: each by its absolute path, judged
-// trusted or not; TailscaleRules.programsFound). A tailscale, timeout or pkexec this user
-// could change is not trusted, and then nothing runs. In module test mode the shell hands over the stand-ins of the manifest's
+// PROGRAMS — which tailscale, timeout, curl, systemctl and openssl run: the shell's lookup,
+// the module handle's `programs` (module API 1.9: each by its absolute path, judged trusted or
+// not; TailscaleRules.programsFound). A tailscale this user could change is not trusted, and
+// then nothing runs. In module test mode the shell hands over the stand-ins of the manifest's
 // testPrograms instead (tests/stand-in) — a module test never reaches the real tailscale. A
 // suite's own client is given a stand-in handle (tests/StandInModule.qml). Looking again
 // (recheck(), wake(), the backoff) asks the shell to look the programs up again
@@ -52,12 +52,13 @@ import qs.api
 //
 // ACTIONS run one at a time (`busy`, `operation`): planned by TailscaleRules (planConnect,
 // planDisconnect, planAttend, commandFor), run plainly by absolute path; when Tailscale
-// answers "Access denied" and ONLY when the user asked (origin "user"), run again through
-// the API's PrivilegedAction (its `elevate`: the pkexec of module.programs;
-// TailscaleRules.privileged: under timeout, so a root process ends by itself). Origin
-// "network" never prompts and never opens a browser: it sets `attention` instead. pkexec 126
-// (dismissed) shows nothing; 127 is `failed` with the contract's sentence; any other failure
-// is `failed(what, reason)` with the rules' sentence.
+// answers "Access denied" and ONLY when the user asked (origin "user"), run again as
+// administrator: the handle's `privileged.start` (module API 1.11; TailscaleRules
+// .privilegedRun: only a trusted tailscale, with the command's `what` for the shell's prompt
+// and its time limit, which the shell's own timeout keeps inside pkexec). Origin "network"
+// never prompts and never opens a browser: it sets `attention` instead. A dismissed prompt
+// shows nothing; a refused run is told by the shell; any other failure is `failed(what,
+// reason)` with the rules' sentence (TailscaleRules.privilegedOutcome).
 // A failed connect, disconnect, login or start the user asked for also leaves its reason on
 // the entry's status line (`failure`, TailscaleRules.failureText / failureAfter) — never as
 // attention, so the shell's "VPN with a network" may still connect it — until the phase
@@ -66,10 +67,11 @@ import qs.api
 // reads first and then tries once more, or says that Tailscale does not answer.
 // A pending connect (a bare `up` waits for Running) shows a login URL from its output or the
 // bus at once, and Disconnect ends it (stops waiting, ends the plain process, runs `down`).
-// `tailscale login` runs as a process of its own (its URL is read while it waits); cancelled
-// (cancelLogin) or after loginTimeoutMs the module STOPS WAITING at once — a login token: a
-// late exit of the old process is ignored — and ends the plain process; one run through
-// pkexec (root: it cannot be signalled) ends by itself, at its timeout.
+// `tailscale login` runs as a process of its own (its URL is read while it waits; as
+// administrator through privileged.start, its output streamed); cancelled (cancelLogin) or
+// after loginTimeoutMs the module STOPS WAITING at once — a login token: a late exit of the old
+// process is ignored — and ends the plain process or cancels the run as administrator (which
+// ends pkexec while it asks; once it runs as root it ends at its time limit).
 QtObject {
     id: root
 
@@ -77,8 +79,8 @@ QtObject {
 
     // Acts only while true (Main binds it to module.active); false ends everything
     property bool running: false
-    // The module's handle (its store, its settings, resumed(), its programs), or a suite's
-    // stand-in handle (tests/StandInModule.qml), or null
+    // The module's handle (its store, its settings, resumed(), its programs, running as
+    // administrator), or a suite's stand-in handle (tests/StandInModule.qml), or null
     property var module: null
     // The system's facts (module API 1.13; a suite may give its own): the data and download
     // folders, IP forwarding
@@ -120,7 +122,6 @@ QtObject {
     // Absolute paths, as last applied ("" unknown or missing)
     property string tailscalePath: ""
     property string timeoutPath: ""
-    property string pkexecPath: ""
     property string curlPath: ""
     property string systemctlPath: ""
     property string opensslPath: ""
@@ -130,10 +131,11 @@ QtObject {
     property string untrustedReason: ""
     // curl was looked for and is not there: no stream, the slow poll only
     readonly property bool curlMissing: cli === "present" && curlPath === ""
+    // Running as administrator: the handle's (module API 1.11), null without one
+    readonly property var privileged: module?.privileged ?? null
     // Why nothing can be run as administrator here ("" it can)
-    readonly property string elevationProblem: cli !== "present" ? ""
-        : timeoutPath === "" ? "Changes that need an administrator are not offered: coreutils' timeout was not found, and a command run as administrator could not be stopped once started."
-        : pkexecPath === "" ? "Changes that need an administrator are not offered: pkexec was not found." : ""
+    readonly property string elevationProblem: TailscaleRules.elevationProblem(cli, privileged?.available === true,
+        privileged ? String(privileged.unavailableReason ?? "") : "no way to run as administrator")
 
     function _limit(name) {
         const value = (timeLimits ?? {})[name];
@@ -322,6 +324,10 @@ QtObject {
             process.abandon();
         _processes = [];
         _opProcess = null;
+        for (const run of _privilegedRuns)
+            run.cancel();
+        _privilegedRuns = [];
+        _opPrivileged = null;
         streamUp = false;
         operation = "";
         authUrl = "";
@@ -384,9 +390,6 @@ QtObject {
         const found = TailscaleRules.programsFound(programs);
         curlPath = found.curl;
         timeoutPath = found.timeout;
-        pkexecPath = found.pkexec;
-        _admin.elevate = [pkexecPath !== "" ? pkexecPath : "pkexec"];
-        _adminSpare.elevate = _admin.elevate;
         systemctlPath = found.systemctl;
         opensslPath = found.openssl;
         untrustedReason = found.untrustedReason;
@@ -862,7 +865,7 @@ QtObject {
                                                                                                       title: TailscaleRules.withoutAddresses(item?.title) }));
         // The long sentence stays on the card's warnings; the status line gets the short one
         if (reason === elevationProblem && elevationProblem !== "")
-            reason = timeoutPath === "" ? "Can't ask for the password: timeout is missing." : "Can't ask for the password: pkexec is missing.";
+            reason = "Can't ask for the password.";
         const text = TailscaleRules.failureText(TailscaleRules.withoutAddresses(reason), { error: TailscaleRules.withoutAddresses(busError), health: health });
         failure = TailscaleRules.failureAfter(failure, "failed", view.phase, text);
         _failureAfterRead = typeof settleAfter === "number" ? settleAfter : reads;
@@ -1426,13 +1429,17 @@ QtObject {
     }
 
     // Stops waiting for the operation in flight: its token bumped (its late answer ignored),
-    // its plain process ended (a root one cannot be: it ends at its timeout), busy cleared
+    // its plain process ended, its run as administrator cancelled (pkexec ends while it asks;
+    // a command already running as root ends at its time limit), busy cleared
     function _abandonOperation() {
         _opToken++;
         _loginTimer.stop();
         if (_opProcess !== null)
             _opProcess.abandon();
         _opProcess = null;
+        if (_opPrivileged !== null)
+            _opPrivileged.cancel();
+        _opPrivileged = null;
         operation = "";
         authUrl = "";
         _opText = "";
@@ -1440,9 +1447,57 @@ QtObject {
         _scheduleRead(true);
     }
 
-    // The free PrivilegedAction (one may still wait for an abandoned root process: it queues)
-    function _freeAdmin() {
-        return _admin.busy && !_adminSpare.busy ? _adminSpare : _admin;
+    // ---- Running as administrator (module API 1.11: the handle's privileged.start) ----
+
+    // The runs started and not answered yet (cancelled when the client stops), and the
+    // operation's own
+    property var _privilegedRuns: []
+    property var _opPrivileged: null
+
+    // `command` (commandFor's) as administrator, under the time limit `seconds`:
+    // TailscaleRules.privilegedRun decides (a trusted tailscale only, the command's `what`),
+    // the shell runs it — one password question at a time, its own timeout inside pkexec.
+    // `handlers`: { onStdout(text), onStderr(text), done(result) } — done once, with the
+    // shell's result (privilegedOutcome reads it), never after the client stopped.
+    // → { ok, error }: not ok when nothing was started (error: why)
+    function _runPrivileged(command, seconds, handlers) {
+        const plan = TailscaleRules.privilegedRun(command, {
+            program: programs?.tailscale ?? null, available: privileged?.available === true,
+            unavailableReason: privileged ? String(privileged.unavailableReason ?? "") : "no way to run as administrator", seconds: seconds
+        });
+        if (!plan.ok)
+            return { ok: false, error: plan.error };
+        const generation = _generation;
+        let run = null;
+        const forget = () => {
+            _privilegedRuns = _privilegedRuns.filter(item => item !== run);
+            if (_opPrivileged === run)
+                _opPrivileged = null;
+        };
+        try {
+            run = privileged.start(plan.argv, {
+                what: plan.what, timeoutMs: plan.timeoutMs, notifyFailures: false,
+                onStdout: text => {
+                    if (_alive(generation))
+                        handlers?.onStdout?.(text);
+                },
+                onStderr: text => {
+                    if (_alive(generation))
+                        handlers?.onStderr?.(text);
+                },
+                done: result => {
+                    forget();
+                    if (_alive(generation))
+                        handlers?.done?.(result);
+                }
+            });
+        } catch (error) {
+            return { ok: false, error: "It could not be run as administrator: " + String(error).slice(0, 200) };
+        }
+        if (run !== null && typeof run?.cancel === "function" && run.running !== false)
+            _privilegedRuns = _privilegedRuns.concat([run]);
+        _opPrivileged = run;
+        return { ok: true, error: "" };
     }
 
     // Runs `command` (a tailscale command from the table) plainly, by absolute path, under its
@@ -1454,10 +1509,11 @@ QtObject {
     // end, whatever it was — and failures are then NOT notified (the caller shows them: Taildrop's
     // per-file results); `error` is the raw stderr
     function _runChange(command, origin, operationName, onSuccess, prepare, onEnd) {
-        const fail = (description, message, extra) => {
+        // `notify` false: the shell told it already (a refused run as administrator)
+        const fail = (description, message, extra, notify) => {
             if (onEnd)
                 onEnd(Object.assign({ ok: false, dismissed: false, elevated: false, code: -1, message: message, error: "" }, extra ?? {}));
-            else
+            else if (notify !== false)
                 failed(description, message);
             // The user's connect or disconnect: also on the entry, where the click was
             if (origin === "user" && (operationName === "connect" || operationName === "disconnect"))
@@ -1488,35 +1544,32 @@ QtObject {
         // the operation itself (_finish) when there is nothing to do or it changed meanwhile
         const stage = (current, next) => prepare ? prepare(token, next) : next(current);
         const elevate = current => {
-            const elevated = TailscaleRules.privileged(current.argv, tailscalePath, { timeout: timeoutPath, seconds: seconds, description: current.description });
-            if (!elevated.ok || elevationProblem !== "") {
+            let output = "";
+            const started = _runPrivileged(current, seconds, {
+                onStdout: text => output = (output + text).slice(-1048576),
+                done: answer => {
+                    if (token !== _opToken)
+                        return;
+                    _finish();
+                    const outcome = TailscaleRules.privilegedOutcome(answer, current.name, seconds);
+                    if (outcome.kind === "cancelled")
+                        return;
+                    if (outcome.kind === "ok") {
+                        _failureEvent("succeeded");
+                        onSuccess?.(output.replace(/\n$/, ""), current);
+                    }
+                    if (outcome.kind === "ok" || outcome.kind === "dismissed") {
+                        onEnd?.({ ok: outcome.kind === "ok", dismissed: outcome.kind === "dismissed", elevated: true, code: answer.code ?? 0, message: "", error: "" });
+                        return;
+                    }
+                    fail(current.description, outcome.message, { elevated: true, code: answer.code ?? -1, error: String(answer.stderr ?? "") },
+                         outcome.notify);
+                }
+            });
+            if (!started.ok) {
                 _finish();
-                fail(current.description, elevationProblem !== "" ? elevationProblem : elevated.error);
-                return;
+                fail(current.description, elevationProblem !== "" ? elevationProblem : started.error);
             }
-            _freeAdmin().run(elevated.argv.slice(1), elevated.prompt, answer => {
-                if (!_alive(generation) || token !== _opToken)
-                    return;
-                _finish();
-                if (answer.ok) {
-                    _failureEvent("succeeded");
-                    onSuccess?.((answer.lines ?? []).join("\n"), current);
-                }
-                if (answer.ok || answer.dismissed) {
-                    onEnd?.({ ok: answer.ok === true, dismissed: answer.dismissed === true, elevated: true, code: answer.code ?? 0, message: "", error: "" });
-                    return;
-                }
-                const extra = { elevated: true, code: answer.code ?? -1, error: answer.error ?? "" };
-                if (answer.refused)
-                    fail(current.description, TailscaleRules.pkexecOutcome(127).message, extra);
-                else if (answer.notFound === true || answer.code < 0 || /\bnot found\b|No such file/i.test(answer.error ?? ""))
-                    // PrivilegedAction could not run it at all (no pkexec, a path that is gone)
-                    fail(current.description, "It could not be run as administrator: pkexec, timeout or tailscale was not found.", extra);
-                else if (answer.code === 124 || answer.code === 137)
-                    fail(current.description, TailscaleRules.timeoutMessage(current.name, seconds), extra);
-                else
-                    fail(current.description, TailscaleRules.errorKind(answer.code, answer.error).message, extra);
-            }, _environment());
         };
         const plain = current => {
             _opProcess = _spawn(_timedArgv(current, seconds), _watchdogMs(seconds), result => {
@@ -1748,7 +1801,8 @@ QtObject {
         }
         if (operation !== "login")
             return;
-        // One run through pkexec cannot be stopped from here: its browser page still works
+        // A login already running as root ends only at its time limit: its browser page still
+        // works
         if (_loginElevated)
             loginNote = "Close the login page in the browser: the login runs on as administrator until its time limit.";
         _loginGaveUp();
@@ -1823,42 +1877,62 @@ QtObject {
             _loginFailed(description, TailscaleRules.timeoutMessage(_loginCommand, _loginSeconds));
             return;
         }
-        if (!_loginElevated) {
-            const error = TailscaleRules.errorKind(code, _loginText);
-            if (error.kind === "denied") {
-                const elevated = TailscaleRules.privileged(TailscaleRules.commandFor(_loginCommand, {}).argv, tailscalePath,
-                    { timeout: timeoutPath, seconds: _loginSeconds, description: description });
-                if (!elevated.ok || elevationProblem !== "") {
-                    _loginGaveUp();
-                    _loginDone();
-                    _loginFailed(description, elevationProblem !== "" ? elevationProblem : elevated.error);
-                    return;
-                }
-                // pkexec <timeout> -k 5 <seconds> <tailscale> login: ends by itself
-                _loginElevated = true;
-                _loginText = "";
-                _opProcess = _spawn([pkexecPath].concat(elevated.argv.slice(1)), _watchdogMs(_loginSeconds),
-                    answer => _loginExited(token, answer), text => _onLoginText(text, token));
-                return;
+        const error = TailscaleRules.errorKind(code, _loginText);
+        if (error.kind === "denied") {
+            // As administrator, its output streamed (the login link): the shell's timeout
+            // inside pkexec ends it at the login's limit
+            _loginElevated = true;
+            _loginText = "";
+            const started = _runPrivileged(TailscaleRules.commandFor(_loginCommand, {}), _loginSeconds, {
+                onStdout: text => _onLoginText(text, token),
+                onStderr: text => _onLoginText(text, token),
+                done: answer => _elevatedLoginEnded(token, answer)
+            });
+            if (!started.ok) {
+                _loginGaveUp();
+                _loginDone();
+                _loginFailed(description, elevationProblem !== "" ? elevationProblem : started.error);
             }
-            _loginGaveUp();
-            _loginDone();
-            _loginFailed(description, error.message);
             return;
         }
-        const outcome = TailscaleRules.pkexecOutcome(code);
+        _loginGaveUp();
+        _loginDone();
+        _loginFailed(description, error.message);
+    }
+
+    // The login as administrator ended (the shell's result: TailscaleRules.privilegedOutcome)
+    function _elevatedLoginEnded(token, answer) {
+        if (!running || token !== _opToken)
+            return;
+        _opPrivileged = null;
+        const description = TailscaleRules.commandFor(_loginCommand, {}).description;
+        // The login's own words are what it printed, read as it came
+        const outcome = TailscaleRules.privilegedOutcome(Object.assign({}, answer, { stderr: _loginText }), _loginCommand, _loginSeconds);
+        if (outcome.kind === "cancelled")
+            return;
+        if (outcome.kind === "ok" || TailscaleRules.parseLoginOutput(_loginText).success) {
+            _loginFrom = null;
+            _failureEvent("succeeded");
+            loginInterrupted = null;
+            if (accounts !== null)
+                _accountsChanged();
+            _loginDone();
+            return;
+        }
         // Dismissed: nothing ran as root — but the plain attempt before it may already have
         // moved to the empty profile (refused after the move): the state decides
         _loginGaveUp();
         _loginDone();
-        if (outcome.outcome === "dismissed")
+        if (outcome.kind === "dismissed")
             return;
-        _loginFailed(description, outcome.outcome === "no-agent" || outcome.outcome === "not-started" ? outcome.message : TailscaleRules.errorKind(code, _loginText).message);
+        _loginFailed(description, outcome.message, outcome.notify);
     }
 
-    // A login that failed: notified; one to connect (not another account) also on the entry
-    function _loginFailed(description, reason) {
-        failed(description, reason);
+    // A login that failed: notified (unless the shell told it: `notify` false); one to connect
+    // (not another account) also on the entry
+    function _loginFailed(description, reason, notify) {
+        if (notify !== false)
+            failed(description, reason);
         if (_loginCommand === "login")
             _noteFailure(reason, _readsBeforeEnd);
     }
@@ -1914,13 +1988,6 @@ QtObject {
     // ---- Processes and timers ----
 
     property CommandAction _misc: CommandAction {}
-    property PrivilegedAction _admin: PrivilegedAction {
-        // A failure is the provider's failed(), not PrivilegedAction's notification
-        notifyFailures: false
-    }
-    property PrivilegedAction _adminSpare: PrivilegedAction {
-        notifyFailures: false
-    }
 
     // One command: its output collected, its exit answered once, a watchdog
     property Component _processComponent: Component {
@@ -2032,8 +2099,8 @@ QtObject {
         onTriggered: root._startStream()
     }
 
-    // The login given up: no longer waited for (the plain one ended; a root one ends at its
-    // own timeout, set to the same time)
+    // The login given up: no longer waited for (the plain one ended; one as administrator
+    // cancelled — running as root it ends at its time limit, set to the same time)
     property Timer _loginTimer: Timer {
         interval: root.loginTimeoutMs
         onTriggered: {

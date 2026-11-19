@@ -68,7 +68,8 @@ For a development checkout, see [docs/development.md](docs/development.md).
 
 Reading Tailscale's state needs no privileges.
 Most changes need root or Tailscale's operator. The module first tries them as you.
-If Tailscale refuses, a click asks for an administrator's password through pkexec.
+If Tailscale refuses, a click asks for an administrator's password through the shell's prompt,
+which says that Tailscale asks and what for.
 The page offers to make your user the operator, so it asks only once.
 Taildrop, certificates and the exit node per network work only for the operator.
 
