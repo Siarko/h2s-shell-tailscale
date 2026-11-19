@@ -273,6 +273,37 @@ TestCase {
             assert(text.textFormat === Text.PlainText, "… as plain text: " + String(text.text).slice(0, 60));
         popup.destroy();
 
+        // --- module API 1.15: the client is the module's main's; the preset is the opener's ---
+        {
+            const asked = [];
+            const handle = {
+                main: { client: live },
+                presetValue: (type, preset, key) => {
+                    asked.push([type, preset, key]);
+                    return preset === "small" && key === "devices" ? 2 : undefined;
+                }
+            };
+            // Assigned, not handed to createObject (which copies a plain object): the same client
+            const opened = _popup.createObject(null, { opener: { widgetType: "tailscale", preset: "small", edge: "top", byTouch: false } });
+            opened.module = handle;
+            assert(opened.client === live, "popup: the client is module.main.client");
+            assertEqual(opened.deviceCap, 2, "popup: the device cap of the preset that opened it (opener.preset)");
+            assert(asked.some(call => call[0] === "tailscale" && call[1] === "small" && call[2] === "devices"), "… read through the handle for that preset");
+            opened.opener = { widgetType: "tailscale", preset: "", edge: "top", byTouch: false };
+            assertEqual(opened.deviceCap, 5, "… another entry (no value in its preset): the default");
+            opened.opener = null;
+            assertEqual(opened.deviceCap, 5, "… opened by no widget: the default");
+            opened.destroy();
+            const off = _popup.createObject(null, { module: { main: null } });
+            assertEqual(off.client, null, "popup: the module off (no main): no client");
+            assertEqual(find(off, "tailscalePopupStatus")?.text, "Not available", "… says so");
+            off.destroy();
+            const handled = _widget.createObject(null);
+            handled.module = handle;
+            assert(handled.client === live, "widget: the client is module.main.client");
+            handled.destroy();
+        }
+
         // --- the widget, built with a client ---
         const widget = _widget.createObject(null, { client: via });
         assertEqual(widget.summary.kind, "exit-node", "the widget: the client's state");

@@ -7,19 +7,21 @@ import qs.components
 // warning colour: something needs the user), a small globe beside it while an exit node
 // carries the internet traffic, a badge while received Taildrop files wait, and optionally a
 // short text (its preset: none, the state, the exit node's name). A click opens its popup
-// (TailscalePopup). It renders the live client's state (Tailscale.client) and runs nothing:
+// (TailscalePopup), which the shell tells this entry's preset (its `opener`). It renders the
+// live client's state (the module's main's: module.main?.client) and runs nothing:
 // no timer, no process. Not on the bar by default — added in Settings → Bar like any widget.
 PopupWidget {
     id: root
     objectName: "tailscaleWidget"
     widgetType: "tailscale"
 
-    // Set by the bar: the module's handle, the bar entry's preset
+    // Set by the bar: the module's handle, the bar entry's preset (the shell hands it to the
+    // popup too, module API 1.15)
     property var module: null
     property string preset: ""
 
     // The live client (a test gives its own)
-    property var client: Tailscale.client
+    property var client: module?.main?.client ?? null
     readonly property var summary: TailscaleWidgetRules.summaryOf(client)
     // Its preset's keys (module API 1.3: module.presetValue); on an older shell the defaults
     readonly property bool _presets: typeof module?.presetValue === "function"
@@ -31,9 +33,6 @@ PopupWidget {
     readonly property string barText: TailscaleWidgetRules.barText(summary, textMode, 16)
     readonly property var badge: TailscaleWidgetRules.badge(client?.taildrop?.waitingCount ?? 0, client?.taildrop?.busWaiting ?? false,
                                                             _preset("badge", true) !== false)
-
-    // The popup reads the preset of the widget that opened it (its device cap)
-    onPopupOpenChanged: if (popupOpen) Tailscale.popupPreset = preset
 
     function _tone(tone) {
         return tone === "accent" || tone === "pending" ? Api.theme.accent : tone === "warning" ? Api.theme.warning

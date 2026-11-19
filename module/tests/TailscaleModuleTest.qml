@@ -23,6 +23,10 @@ TestCase {
     }
 
     readonly property var module: Api.moduleAt(Qt.resolvedUrl("."))
+    // The live client, as the module's views reach it (module API 1.15); null while off
+    function _client() {
+        return module.main?.client ?? null;
+    }
     property var _steps: []
     property var _firstClient: null
     property CommandAction _shell: CommandAction {}
@@ -77,7 +81,7 @@ TestCase {
         assert(module !== null && module.active, "the module is loaded and active");
         assertEqual(module.status?.state, "loaded", "… state loaded");
         assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, qs.components, Quickshell)");
-        assertEqual(module.manifest.api, "1.14", "written for module API 1.14 (programs, test mode, running as administrator with a suite's environment, the system's facts)");
+        assertEqual(module.manifest.api, "1.15", "written for module API 1.15 (programs, test mode, running as administrator with a suite's environment, the system's facts, the main's client and the popup's opener)");
         assert(Api.testMode, "the module test runner: module test mode");
         const deprecations = JSON.stringify(module.status?.deprecations ?? []);
         assert(!/pkexec|PrivilegedAction|elevate|stand-in/i.test(deprecations),
@@ -98,8 +102,8 @@ TestCase {
         assert(Api.slots.some(slot => slot.name === "network.vpn.row"), "… offered by the shell");
         assertEqual(module.value("openLoginInBrowser"), true, "its setting: open the login in the browser (default on)");
 
-        _then("the main's client is there", () => Tailscale.client !== null && Tailscale.client.cli !== "unknown", () => {
-            const client = Tailscale.client;
+        _then("the main's client is there", () => _client() !== null && _client().cli !== "unknown", () => {
+            const client = module.main.client;
             _firstClient = client;
             const standIns = module.directory + "/tests/stand-in";
             assertEqual(client.tailscalePath, standIns + "/tailscale", "the client runs tailscale by the path module.programs gives: the stand-in");
@@ -108,12 +112,12 @@ TestCase {
             assertEqual(client.elevationProblem, "", "… changes as administrator offered");
             assert(client.running, "the client runs while the module is active");
         });
-        _then("the client read the stand-in's state", () => Tailscale.client?.status !== null && Tailscale.client?.entry.state === "activated", () => {
+        _then("the client read the stand-in's state", () => _client()?.status !== null && _client()?.entry.state === "activated", () => {
             assertEqual(module.facts["tailscale.connected"], true, "fact tailscale.connected pushed");
             assertEqual(module.facts["tailscale.exitNodeInUse"], false, "fact tailscale.exitNodeInUse: false (a neutral value, never a name)");
             assertEqual(module.facts["tailscale.exitNode"], undefined, "… no fact with the exit node's name");
             assert(module.setFact("connected", "yes") !== "", "… a fact checked against its declared type");
-            assert(Tailscale.client.streamStarts >= 1, "the main's client streams the bus");
+            assert(_client().streamStarts >= 1, "the main's client streams the bus");
             // Step 6: its bar widget, offered to the bar (the host's widget entries feed
             // WidgetRegistry, which the bar section editor lists), built as the bar builds it
             const widgetEntry = (ModuleTestKit.widgetEntries ?? []).find(entry => entry.type === "tailscale");
@@ -129,6 +133,21 @@ TestCase {
             if (typeof module.presetValue === "function")
                 assertEqual(module.presetValue("tailscale", "", "devices"), 5, "… its preset read through the handle (module API 1.3)");
             widget?.destroy();
+            // Its popup panel, row and card, as the shell builds them: each reaches the live
+            // client through the handle (module API 1.15: module.main.client)
+            const panelComponent = Qt.createComponent(widgetEntry.popupPanel, Component.PreferSynchronous);
+            const panel = panelComponent.status === Component.Ready
+                ? panelComponent.createObject(null, { module: module, opener: { widgetType: "tailscale", preset: "", edge: "top", byTouch: false } }) : null;
+            assert(panel !== null && panel.client === module.main.client, "its popup panel: the main's client (" + panelComponent.errorString() + ")");
+            assertEqual(panel?.deviceCap, 5, "… the device cap of the opener's preset: the default");
+            panel?.destroy();
+            for (const entry of module.manifest.slots ?? []) {
+                const component = Qt.createComponent("file://" + module.directory + "/" + entry.component, Component.PreferSynchronous);
+                const view = component.status === Component.Ready ? component.createObject(null, { module: module, context: null }) : null;
+                assert(view !== null && view.client === module.main.client, entry.slot + ": the main's client, no provider needed (" + component.errorString() + ")");
+                view?.destroy();
+            }
+            assert(!("client" in module.main.provider), "the provider carries no client of its own");
         });
         // The shell's queue, its test polkit agent and the module's on/off state are shared with
         // the live suites, which run beside this one through the same handle: another agent
@@ -139,19 +158,19 @@ TestCase {
             // saying who and what for just before pkexec starts — the run's `what`, recorded
             suite._notifiedBefore = (ModuleTestKit.notified ?? []).length;
             ModuleTestKit.setPolkitAgent("other");
-            assert(!Tailscale.client.canChange, "not the operator: a change needs an administrator");
-            assert(Tailscale.client.setShieldsUp(true), "Block incoming connections: starts");
+            assert(!_client().canChange, "not the operator: a change needs an administrator");
+            assert(_client().setShieldsUp(true), "Block incoming connections: starts");
         }, 55000);
-        _then("run as administrator through the shell", () => Tailscale.client.prefs?.shieldsUp === true && !Tailscale.client.busy && ModuleTestKit.privilegedIdle, () => {
+        _then("run as administrator through the shell", () => _client().prefs?.shieldsUp === true && !_client().busy && ModuleTestKit.privilegedIdle, () => {
             const notices = suite._ownNotices();
             same(notices.map(notice => notice.body), ["Authorization: Block incoming connections"],
                  "the shell said who and what for: \"Module: Tailscale\", \"Authorization: Block incoming connections\"");
             assertEqual(notices[0]?.format, "plain", "… as plain text");
             assert(!(ModuleTestKit.notified ?? []).slice(suite._notifiedBefore).some(notice => /^(Block|Allow) incoming connections/.test(notice.summary)),
                    "… and nothing failed");
-            assert(Tailscale.client.setShieldsUp(false), "and back: starts");
+            assert(_client().setShieldsUp(false), "and back: starts");
         });
-        _then("back", () => Tailscale.client.prefs?.shieldsUp === false && !Tailscale.client.busy && ModuleTestKit.privilegedIdle, () => {
+        _then("back", () => _client().prefs?.shieldsUp === false && !_client().busy && ModuleTestKit.privilegedIdle, () => {
             same(suite._ownNotices().map(notice => notice.body),
                  ["Authorization: Block incoming connections", "Authorization: Allow incoming connections"], "… each run with its own words");
             ModuleTestKit.setPolkitAgent("active");
@@ -165,7 +184,7 @@ TestCase {
             assert(ModuleTestKit.setEnabled("tailscale", false), "turned off");
         });
         _then("off", () => !module.active, () => {
-            assertEqual(Tailscale.client, null, "off: the main is gone, and the client's reference with it");
+            assertEqual(module.main, null, "off: the main is gone, and the client with it");
             let stillRunning = false;
             try {
                 stillRunning = _firstClient?.running === true;
@@ -174,8 +193,8 @@ TestCase {
             assert(module.setFact("connected", true) !== "", "off: no fact can be set");
             ModuleTestKit.setEnabled("tailscale", true);
         });
-        _then("on again", () => module.active && Tailscale.client !== null && Tailscale.client !== _firstClient, () => {
-            assert(Tailscale.client.running, "on again: a new client, running");
+        _then("on again", () => module.active && _client() !== null && _client() !== _firstClient, () => {
+            assert(_client().running, "on again: a new client, running");
         });
         _clock.start();
     }

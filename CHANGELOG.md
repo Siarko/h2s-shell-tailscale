@@ -4,7 +4,7 @@ Current version: 0.6.0 (`module/module.json`).
 
 ## Unreleased
 
-Needs h2s-shell with module API 1.14.
+Needs h2s-shell with module API 1.15.
 
 ### Added
 
@@ -58,6 +58,7 @@ Needs h2s-shell with module API 1.14.
 - IP forwarding, the download folder and the data folder come from the shell's system facts.
 - IPC `state`: `testMode` in place of `toolsMode`; `tools` names `tailscale`, `timeout`, `curl`, `systemctl`.
 - Commands run through the shell's command runner, each with its time limit. Without coreutils `timeout` they keep their limits, and the card no longer warns about it.
+- The popup shows as many devices as the preset of the bar entry that opened it, as the shell tells it.
 
 ### Removed
 

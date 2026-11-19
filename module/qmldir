@@ -1,5 +1,4 @@
 singleton TailscaleRules 1.0 TailscaleRules.qml
-singleton Tailscale 1.0 Tailscale.qml
 TailscaleClient 1.0 TailscaleClient.qml
 ExitNodeChooser 1.0 ExitNodeChooser.qml
 DeviceRow 1.0 DeviceRow.qml

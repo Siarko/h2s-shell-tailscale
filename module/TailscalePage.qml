@@ -19,9 +19,10 @@ ColumnLayout {
 
     property var module: null
     // Only when framed as a provider page (not contributed now): { slot, vpnId, entryId, vpn,
-    // provider, otherVpnsUp, close }; as a settings page null — the client is Tailscale.client
+    // provider, otherVpnsUp, close }; as a settings page null
     property var context: null
-    readonly property var client: context?.provider?.client ?? Tailscale.client
+    // The live client: the module's main's (module API 1.15), null while the module is off
+    readonly property var client: module?.main?.client ?? null
     readonly property var view: client?.view ?? null
     readonly property var prefs: client?.prefs ?? null
     readonly property string need: client && !client.canChange ? "auth" : ""

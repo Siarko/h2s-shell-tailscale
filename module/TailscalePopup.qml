@@ -9,16 +9,20 @@ import qs.components
 // the network popup's row uses); this device's addresses to copy; the devices, online ones
 // first, capped (the widget's preset), with "Send file…" for the operator; received files
 // waiting with Save; Settings… and the admin console. Everything is the live client's state
-// and actions (Tailscale.client) — the same the page and the network popup's row show; built
-// by the popup from Qt.callLater like every panel, gone when it closes.
+// and actions (the module's main's, module API 1.15: module.main?.client) — the same the page
+// and the network popup's row show; built by the popup from Qt.callLater like every panel,
+// gone when it closes.
 Item {
     id: root
     objectName: "tailscalePopup"
 
     property var module: null
+    // The bar widget that opened it (module API 1.15: { widgetType, preset, edge, byTouch },
+    // set by the shell; null when no widget opened it)
+    property var opener: null
 
     // The live client (a test gives its own)
-    property var client: Tailscale.client
+    property var client: module?.main?.client ?? null
     readonly property var view: client?.view ?? null
     readonly property var entry: client?.entry ?? null
     readonly property var taildrop: client?.taildrop ?? null
@@ -30,15 +34,15 @@ Item {
 
     // The device cap of the widget that opened it (its preset; module API 1.3)
     readonly property int deviceCap: {
-        const value = typeof module?.presetValue === "function" ? module.presetValue("tailscale", Tailscale.popupPreset, "devices") : undefined;
+        const value = typeof module?.presetValue === "function" ? module.presetValue("tailscale", String(opener?.preset ?? ""), "devices") : undefined;
         return TailscaleWidgetRules.deviceCap(value);
     }
     readonly property var deviceList: TailscaleWidgetRules.deviceList(_loggedIn ? (client?.devices ?? []) : [], deviceCap)
 
     implicitWidth: Api.theme.popupWidth("tailscale", 320)
-    // The most height the popup lets this panel take (Popup.availableContentHeight, given to a
-    // panel that declares it, as to NetworkPanel); past it the panel scrolls — 20 devices and an
-    // open exit-node chooser still fit a small screen
+    // The most height the panel may take before it must scroll (module API 1.15, kept current
+    // by the shell); past it the panel scrolls — 20 devices and an open exit-node chooser still
+    // fit a small screen
     property real availableHeight: Infinity
     implicitHeight: Math.min(_column.implicitHeight, availableHeight)
 

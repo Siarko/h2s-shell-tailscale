@@ -16,7 +16,8 @@ ColumnLayout {
     property var module: null
     // { slot, vpnId, entryId, vpn, provider, otherVpnsUp, open }
     property var context: null
-    readonly property var client: context?.provider?.client ?? Tailscale.client
+    // The live client: the module's main's (module API 1.15), null while the module is off
+    readonly property var client: module?.main?.client ?? null
     readonly property var status: client?.status ?? null
     readonly property var self: client?.self ?? null
 

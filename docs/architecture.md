@@ -19,7 +19,6 @@ module/
   module.json                  manifest: main, widget, two VPN slots, page, setting, facts, programs, tests
   qmldir                       types and singletons
   Main.qml                     created by the shell's module host: client, VPN provider, IPC, facts
-  Tailscale.qml                singleton pointing at the running client
   TailscaleRules.qml           state, entry, devices, exit nodes, event bus, errors, commands
   TailscaleClient.qml          event stream, reads, actions, programs, runs as administrator
   TailscaleRow.qml             slot network.vpn.row: exit node chooser, login link
@@ -55,6 +54,14 @@ tests/lock-bed/                runs the real shell with the module and the stand
 `Main.qml` owns one `TailscaleClient`. The client runs only while `module.active` is true.
 Turning the module off destroys `Main`, which ends the stream, the timers and every command.
 The feature clients (`TaildropClient`, `ServeClient`, …) hang off the main client.
+
+The views (the widget, its popup, the page, the VPN row and card) reach the client through
+the module's handle: `module.main?.client` (module API 1.15). It is null while the module is
+off, and the views show nothing then.
+
+The popup's device cap is the preset of the bar entry that opened it: the shell hands the
+popup that entry as `opener` (`opener.preset`). The popup takes at most `availableHeight`,
+which the shell keeps current, and scrolls past it.
 
 ## Running commands
 

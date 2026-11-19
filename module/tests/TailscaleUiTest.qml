@@ -99,7 +99,7 @@ TestCase {
             view: { phase: "running", exitNode: { name: crafted, online: false } },
             warnings: [{ kind: "health", text: crafted }]
         };
-        const card = _card.createObject(null, { context: { provider: { client: fakeClient }, otherVpnsUp: [] } });
+        const card = _card.createObject(null, { module: { main: { client: fakeClient } }, context: { otherVpnsUp: [] } });
         checkPlain(card, "card");
         card.destroy();
 
@@ -131,7 +131,7 @@ TestCase {
             devices: [Object.assign({}, device, { id: "n1" })], pings: { n1: { running: false, ok: false, text: crafted } },
             watch: () => {}, unwatch: () => {}
         };
-        const page = _page.createObject(null, { context: { provider: { client: pageClient } }, _diagnosticsOpen: true });
+        const page = _page.createObject(null, { module: { main: { client: pageClient }, value: key => undefined, setValue: (key, value) => {} }, _diagnosticsOpen: true });
         const pageTexts = checkPlain(page, "page");
         assert(pageTexts.length >= 12, "page: the crafted names in every new section (" + pageTexts.length + " texts)");
         page.destroy();

@@ -12,7 +12,8 @@ ColumnLayout {
     property var module: null
     // { slot, vpnId, entryId, vpn, provider, otherVpnsUp } (VpnManager.contextFor)
     property var context: null
-    readonly property var client: context?.provider?.client ?? Tailscale.client
+    // The live client: the module's main's (module API 1.15), null while the module is off
+    readonly property var client: module?.main?.client ?? null
     // Conditions as properties: a child's `visible` reads false while its parent is hidden
     readonly property bool _choosing: client !== null && client.view.phase === "running" && client.exitNodes.count > 0
     readonly property bool _loggingIn: client !== null && client.authUrl !== ""

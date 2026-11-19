@@ -18,11 +18,9 @@ QtObject {
     }
 
     // Tailscale among the shell's VPNs. providerId: the module's id (module API 1.1), so its
-    // VPN slots (the row's, the card's) are the manifest's
+    // VPN slots (the row's, the card's) are the manifest's. The module's views reach the live
+    // client as module.main?.client (module API 1.15)
     property VpnProvider provider: VpnProvider {
-        // The live client, for the slots' contributions (context.provider.client)
-        readonly property var client: main.client
-
         providerId: main.module?.moduleId ?? "tailscale"
         kind: "mesh"
         typeName: TailscaleRules.typeName
@@ -332,12 +330,7 @@ QtObject {
         // button.
         if ("settingsPage" in provider)
             provider.settingsPage = main.module?.moduleId ?? "tailscale";
-        Tailscale.client = client;
         module?.setFact("connected", connected);
         module?.setFact("exitNodeInUse", exitNodeInUse);
-    }
-    Component.onDestruction: {
-        if (Tailscale.client === client)
-            Tailscale.client = null;
     }
 }
