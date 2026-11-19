@@ -129,24 +129,6 @@ Singleton {
         return { shown: ordered.slice(0, most), more: Math.max(0, ordered.length - most), online: online.length };
     }
 
-    // How long the popup's "Send file…" request waits for the page's Taildrop section
-    readonly property int chooseRequestMs: 10000
-
-    // What the section does with that request → "none" (no request), "open" (open the file
-    // chooser now, and clear it), "expire" (too old or from the future: clear it, open
-    // nothing), "wait" (fresh, but not yet: not on screen, not the operator, not connected, the
-    // target gone — opened if that changes in time). `request`: { requestedAt, now, operator,
-    // connected, targetExists, shown }
-    function chooseRequestState(request) {
-        const requestedAt = Number(request?.requestedAt ?? 0);
-        const now = Number(request?.now ?? 0);
-        if (!(requestedAt > 0))
-            return "none";
-        if (!(now >= requestedAt) || now - requestedAt > chooseRequestMs)
-            return "expire";
-        return request.operator === true && request.connected === true && request.targetExists === true && request.shown === true ? "open" : "wait";
-    }
-
     // Whether "Send file…" is offered for a device: Taildrop sends only as the operator, while
     // connected, to a device that can receive (the page's device rows and the popup's)
     function canSendTo(device, phase, isOperator) {

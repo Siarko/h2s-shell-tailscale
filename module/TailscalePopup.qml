@@ -7,7 +7,8 @@ import qs.components
 // The bar widget's popup (step 6): what one does daily. The state and Connect / Disconnect
 // (or the attention's own action: Log in, Start…), the account; the exit node (the chooser
 // the network popup's row uses); this device's addresses to copy; the devices, online ones
-// first, capped (the widget's preset), with "Send file…" for the operator; received files
+// first, capped (the widget's preset), with "Send file…" for the operator (the shell's file
+// chooser, then a row under the device: Send, the send's progress, its result); received files
 // waiting with Save; Settings… and the admin console. Everything is the live client's state
 // and actions (the module's main's, module API 1.15: module.main?.client) — the same the page
 // and the network popup's row show; built by the popup from Qt.callLater like every panel,
@@ -222,44 +223,55 @@ Item {
                     required property var modelData
                     objectName: "tailscalePopupDevice"
                     Layout.fillWidth: true
-                    implicitHeight: _deviceLine.implicitHeight + 8
+                    implicitHeight: _deviceColumn.implicitHeight + 8
                     radius: Api.theme.row.radius
                     color: Api.theme.surface
 
-                    RowLayout {
-                        id: _deviceLine
+                    ColumnLayout {
+                        id: _deviceColumn
                         x: Api.theme.row.horizontalPadding
                         width: parent.width - 2 * Api.theme.row.horizontalPadding
                         anchors.verticalCenter: parent.verticalCenter
-                        spacing: 6
-                        Rectangle {
-                            implicitWidth: 8
-                            implicitHeight: 8
-                            radius: 4
-                            color: _deviceRow.modelData.online ? Api.theme.success : Api.theme.textDisabled
-                        }
-                        Text {
-                            textFormat: Text.PlainText
+                        spacing: 4
+
+                        RowLayout {
+                            id: _deviceLine
                             Layout.fillWidth: true
-                            elide: Text.ElideRight
-                            text: _deviceRow.modelData.name ?? ""
-                            font.family: Api.theme.fontFamily
-                            font.pixelSize: Api.theme.fontSizeBody
-                            color: _deviceRow.modelData.online ? Api.theme.textPrimary : Api.theme.textMuted
-                        }
-                        CopyChips {
-                            chipMaxWidth: 140
-                            texts: _deviceRow.modelData.ipv4 ? [_deviceRow.modelData.ipv4] : []
-                        }
-                        SmallButton {
-                            objectName: "tailscalePopupSend"
-                            visible: TailscaleWidgetRules.canSendTo(_deviceRow.modelData, root.view?.phase, root.taildrop?.isOperator)
-                            label: "Send file…"
-                            fontSize: Api.theme.fontSizeXSmall
-                            onClicked: {
-                                root.taildrop.chooseInPage(_deviceRow.modelData.id);
-                                root.module?.openSettings("");
+                            spacing: 6
+                            Rectangle {
+                                implicitWidth: 8
+                                implicitHeight: 8
+                                radius: 4
+                                color: _deviceRow.modelData.online ? Api.theme.success : Api.theme.textDisabled
                             }
+                            Text {
+                                textFormat: Text.PlainText
+                                Layout.fillWidth: true
+                                elide: Text.ElideRight
+                                text: _deviceRow.modelData.name ?? ""
+                                font.family: Api.theme.fontFamily
+                                font.pixelSize: Api.theme.fontSizeBody
+                                color: _deviceRow.modelData.online ? Api.theme.textPrimary : Api.theme.textMuted
+                            }
+                            CopyChips {
+                                chipMaxWidth: 140
+                                texts: _deviceRow.modelData.ipv4 ? [_deviceRow.modelData.ipv4] : []
+                            }
+                            SmallButton {
+                                objectName: "tailscalePopupSend"
+                                visible: TailscaleWidgetRules.canSendTo(_deviceRow.modelData, root.view?.phase, root.taildrop?.isOperator)
+                                label: "Send file…"
+                                fontSize: Api.theme.fontSizeXSmall
+                                // The shell's chooser; the files picked show in the row below
+                                onClicked: root.taildrop.chooseForPopup(_deviceRow.modelData.id)
+                            }
+                        }
+                        // Taildrop: the files picked for this device, Send, then the send's progress
+                        TaildropSendRow {
+                            objectName: "tailscalePopupSendRow"
+                            Layout.fillWidth: true
+                            taildrop: root.taildrop
+                            deviceId: String(_deviceRow.modelData.id ?? "")
                         }
                     }
                 }

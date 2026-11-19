@@ -30,6 +30,7 @@ module/
   SharingSection.qml           exit node and route offers, forwarding, web interface, More
   SshSection.qml               SSH server
   Taildrop{Rules,Client,Section}.qml     Taildrop
+  TaildropSendRow.qml          the popup's row under a device: files chosen, Send, progress
   Serve{Rules,Client,Section}.qml        serve and Funnel
   Cert{Rules,Client,Section}.qml         certificates
   Lock{Rules,Client,Section}.qml         tailnet lock status
@@ -158,14 +159,16 @@ that absolute path (`TailscaleRules.programsFound`).
 - "Check again", a view coming on screen and the backoff ask the shell to look again
   (`module.recheckPrograms()`); the shell also does after the machine wakes.
 
-Links open through `Api.openUrl`. Runs as administrator go through the handle's
+Links open through `Api.openUrl`. Taildrop's files and folder are chosen through the handle's
+`module.chooseFiles` (module API 1.17: the shell's one chooser); an answer after the client
+stopped, or to an older ask, is dropped. Runs as administrator go through the handle's
 `module.privileged.start`, with the command's `what` and its time limit
 (`TailscaleRules.privilegedRun`); the result is read by `TailscaleRules.privilegedOutcome`.
 See [privileges.md](privileges.md).
 
 The system's facts come from `Api.system` (module API 1.13): the user's name and uid (who may
 change Tailscale without a password), the host name (this device's name when none is set in
-Tailscale), the home and download folders (Taildrop's dialogs and default folder), IP
+Tailscale), the home and download folders (where Taildrop's choosers start, its default folder), IP
 forwarding (`readIpForwarding()`). The networks this computer is on are
 `Api.localNetworks` (module API 1.16: "an accepted route covers the local network"); the
 saved networks `Api.networks`, and `Api.networksReady` says they are read whole (the exit

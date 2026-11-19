@@ -13,7 +13,8 @@ import qs.api
 //     finds (a program installed meanwhile);
 //   - `privilegedAvailable` false: as if the shell had no way to run as administrator;
 //   - `dataDirectory`: the scenario's own folder ("" none); `log` keeps module.log's one line per
-//     key for the scenario alone, writes through the shell's handle, records each line (`logged`).
+//     key for the scenario alone, writes through the shell's handle, records each line (`logged`);
+//   - `openSettings` only counts (`settingsOpened`); `chooseFiles` is the shell's handle's.
 QtObject {
     id: root
 
@@ -84,6 +85,18 @@ QtObject {
     }
     function value(key) {
         return undefined;
+    }
+
+    // The shell's file chooser (module API 1.17) through the shell's handle: in module test
+    // mode no dialog opens, the suite answers (ModuleTestKit.answerChooser / cancelChooser).
+    // One chooser for the whole shell: only one scenario at a time may ask
+    function chooseFiles(options, done) {
+        return root.shellHandle.chooseFiles(options, done);
+    }
+    // The settings window: never opened by a scenario, only counted
+    property int settingsOpened: 0
+    function openSettings(page) {
+        settingsOpened++;
     }
 
     property bool privilegedAvailable: true

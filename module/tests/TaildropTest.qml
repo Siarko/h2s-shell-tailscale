@@ -37,6 +37,8 @@ TestCase {
         waiting();
         saving();
         folders();
+        choosing();
+        popupRows();
     }
 
     function targets() {
@@ -189,5 +191,56 @@ TestCase {
         assertEqual(rules.folderProblem("/a/../b"), "\".\" or \"..\" in the path", "\"..\" refused");
         same([rules.waitingText(2, true), rules.waitingText(1, false), rules.waitingText(-1, true), rules.waitingText(-1, false), rules.waitingText(0, true)],
              ["2 files received", "1 file received", "Files received", "", ""], "the entry's status line");
+    }
+
+    function choosing() {
+        const answer = changes => Object.assign({ paths: [], cancelled: false, blocked: "", error: "" }, changes);
+        same(rules.chosenPaths(answer({ paths: ["/home/u/a.txt", "/home/u/b c.pdf"] })), ["/home/u/a.txt", "/home/u/b c.pdf"], "the chooser's files kept");
+        same(rules.chosenPaths(answer({ paths: ["/home/u/a.txt"], cancelled: true })), [], "closed: nothing");
+        same(rules.chosenPaths(answer({ blocked: "locked" })), [], "the session locked: nothing");
+        same(rules.chosenPaths(answer({ blocked: "busy" })), [], "another chooser open: nothing");
+        same(rules.chosenPaths(answer({ paths: ["/a"], error: "x" })), [], "an error: nothing");
+        same(rules.chosenPaths(answer({ paths: ["/home/u/a.txt", "relative", "file:///etc/passwd", "/x/../y", "/home/u/a.txt", 7] })), ["/home/u/a.txt"],
+             "only absolute plain paths, once: no URL, no relative path, no \"..\"");
+        assertEqual(rules.chosenPaths(answer({ paths: Array.from({ length: 40 }, (_, i) => "/f/" + i) })).length, rules.maxFiles, "at most maxFiles");
+        same(rules.chosenPaths(null), [], "no answer: nothing");
+        assertEqual(rules.chosenFolder(answer({ paths: ["/home/u/Received/"] })), "/home/u/Received", "a folder, without the trailing \"/\"");
+        assertEqual(rules.chosenFolder(answer({ paths: ["/home/u/Received"], cancelled: true })), "", "… closed: none");
+        assertEqual(rules.chosenFolder(answer({ paths: ["/a", "/b"] })), "", "… two: none");
+        assertEqual(rules.chosenFolder(answer({ paths: ["/a/../b"] })), "", "… not a usable folder: none");
+    }
+
+    function popupRows() {
+        const choice = { targetId: "p1", paths: ["/home/u/report.pdf"] };
+        const idle = { state: "", targetId: "", origin: "", files: [], message: "" };
+        same(rules.popupRow({ targetId: "", paths: [] }, idle, "p1", false), null, "nothing chosen, nothing sent: no row");
+        const picked = rules.popupRow(choice, idle, "p1", false);
+        same([picked.kind, picked.label, picked.canSend, picked.canDrop, picked.canCancel], ["choice", "report.pdf", true, true, false], "one file picked: its name, Send and \"×\"");
+        same(rules.popupRow(choice, idle, "p2", false), null, "… only under its own device");
+        assertEqual(rules.popupRow(choice, idle, "p1", true).canSend, false, "… Send waits while another send runs");
+        const several = rules.popupRow({ targetId: "p1", paths: ["/a/one.txt", "/b/<two>.txt"] }, idle, "p1", false);
+        same([several.label, several.names], ["2 files", "one.txt, <two>.txt"], "several: \"2 files\", the names for the tooltip");
+
+        const file = (name, changes) => Object.assign({ path: "/f/" + name, name: name, ok: true, size: 1000, sent: 0, outcome: "sending", problem: "" }, changes);
+        const sending = { state: "sending", targetId: "p1", origin: "popup", message: "", files: [file("a", { sent: 500 }), file("b", { size: 3000 })] };
+        const running = rules.popupRow(null, sending, "p1", true);
+        same([running.kind, running.fraction, running.text, running.canCancel, running.canDrop], ["sending", 0.125, "12 %", true, false],
+             "a send runs: its bytes over all files (500 of 4000), Cancel");
+        same(rules.popupRow(choice, sending, "p1", true).kind, "sending", "… a choice made meanwhile waits behind it");
+        same(rules.popupRow(null, Object.assign({}, sending, { origin: "page" }), "p1", true), null, "the page's send: not the popup's row");
+        same(rules.popupRow(null, Object.assign({}, sending, { state: "checking" }), "p1", true).text, "Checking…", "the check first: no bar yet");
+        same(rules.popupRow(null, Object.assign({}, sending, { files: [file("a", { size: 0 })] }), "p1", true).fraction, -1, "no size known: no share");
+
+        const ended = (state, changes) => rules.popupRow(null, Object.assign({}, sending, { state: state }, changes), "p1", false);
+        same([ended("done").kind, ended("done").text, ended("done").tone, ended("done").canDrop], ["result", "Sent", "success", true], "sent: said so, \"×\" clears it");
+        same(ended("done", { files: [file("a"), file("b", { ok: false, problem: "Folder" })] }).text, "Sent 1 of 2", "… one left out: counted");
+        same([ended("failed", { message: "Device can't receive files" }).text, ended("failed").tone], ["Device can't receive files", "warning"], "failed: why");
+        same(ended("failed", { message: "Nothing to send", files: [file("x", { ok: false, problem: "Not found" })] }).text, "Nothing to send · Not found",
+             "… the one file's problem");
+        same([ended("cancelled", { message: "Cancelled" }).text, ended("cancelled").tone], ["Cancelled", "muted"], "cancelled");
+        same(rules.popupRow(choice, Object.assign({}, sending, { state: "done" }), "p1", false).kind, "choice", "a new choice replaces the last result");
+        same(rules.sendTotals([file("a", { outcome: "sent", sent: 0 }), file("b", { sent: 5000 })]), { sent: 2000, total: 2000, fraction: 1 },
+             "totals: a sent file counts whole, no more than its size");
+        same(rules.popupRow(choice, idle, "", false), null, "no device: no row");
     }
 }

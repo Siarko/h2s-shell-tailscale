@@ -11,7 +11,10 @@ import "liveSuites.js" as LiveSuites
 // arrivals for a user who is not the operator (a notice, no listing, no save), the operator's
 // listing and save with adversarial names into a real folder (sanitised, owned by the user,
 // numbered, overwritten, left waiting), a folder that is a link, saving by itself, giving the
-// operator up. Each scenario has its own directory, stand-in state and client.
+// operator up — and the bar popup's send: the shell's chooser (answered through the test kit:
+// closed, locked, one file, two), the row under the device, Send, the progress bar from the
+// bus, sent, cancelled, failed, never the settings window; the received-files folder through
+// the chooser. Each scenario has its own directory, stand-in state and client.
 TestCase {
     id: suite
     suiteName: "tailscale: Taildrop against the stand-ins"
@@ -38,6 +41,11 @@ TestCase {
     property CommandAction _shell: CommandAction {}
     property Component _moduleComponent: Component {
         ScenarioHandle {}
+    }
+    property Component _popupComponent: Component {
+        TailscalePopup {
+            width: 320
+        }
     }
 
     // options: { env {}, setup (sh lines, $1 the scenario's directory) }
@@ -140,6 +148,49 @@ TestCase {
         return s.client.taildrop;
     }
 
+    // The bar popup on the scenario's client and handle, its Repeaters built
+    function popupOf(s) {
+        if (!s.popup) {
+            s.popup = _popupComponent.createObject(null, { client: s.client, _ready: true });
+            s.popup.module = s.module;
+        }
+        return s.popup;
+    }
+
+    function findAll(item, name, found) {
+        const list = found ?? [];
+        if (!item)
+            return list;
+        if (item.objectName === name)
+            list.push(item);
+        for (const child of item.children ?? [])
+            findAll(child, name, list);
+        return list;
+    }
+
+    function shown(item) {
+        for (let node = item; node; node = node.parent)
+            if (node.visible === false)
+                return false;
+        return item !== null && item !== undefined;
+    }
+
+    // The popup's device row of a device, and the Taildrop row under it
+    function deviceRowOf(s, deviceId) {
+        return findAll(popupOf(s), "tailscalePopupDevice").find(row => row.modelData?.id === deviceId) ?? null;
+    }
+    function sendRowOf(s, deviceId) {
+        return findAll(popupOf(s), "tailscalePopupSendRow").find(row => row.deviceId === deviceId) ?? null;
+    }
+    function inRow(row, name) {
+        return findAll(row, name)[0] ?? null;
+    }
+
+    // The chooser calls this module made, newest last
+    function chooserCalls() {
+        return (ModuleTestKit.chooserCalls ?? []).filter(call => call.moduleId === "tailscale");
+    }
+
     // An arrival as the daemon announces it (feature/taildrop/send.go: SendFileNotify after the
     // rename, Done set; ext.go setNotifyFilesWaiting adds FilesWaiting), appended to the bus
     function arriveLine(name, size) {
@@ -195,8 +246,11 @@ TestCase {
     }
 
     function _finishAll() {
-        for (const s of _all)
+        ModuleTestKit.setChooserLocked(false);
+        for (const s of _all) {
+            s.popup?.destroy();
             s.client?.destroy();
+        }
         _shell.run(["rm", "-rf", "--", base], () => suite.finish());
     }
 
@@ -487,6 +541,135 @@ TestCase {
         logs(auto, "after giving up", () => {
             assertEqual(count(auto.logLines, /^set --operator=$/), 1, "`set --operator=` (empty), plainly");
             assertEqual(auto.pkexecLines.length, 0, "… the operator needs no pkexec for it");
+        });
+        // ---- The bar popup: the shell's chooser, a row under the device, Send, progress ----
+        // (one chooser for the whole shell: only this scenario asks for it)
+        const pop = scenario("popup", { env: Object.assign({ TS_FAKE_SEND_DELAY: "1" }, operator), setup: [operatorPrefs,
+            "head -c 4000 /dev/zero > \"$1/files/one.bin\"", "head -c 4000 /dev/zero > \"$1/files/two.bin\"", "mkdir \"$1/elsewhere\""] });
+        const peer = "nPEER4CNTRL";
+        then(pop, "devices read", () => busReady(pop) && pop.client.canChange && drop(pop).targets.length > 0 && deviceRowOf(pop, peer) !== null, () => {
+            assert(!shown(sendRowOf(pop, peer)), "no row under the device before anything is chosen");
+            pop.calls = chooserCalls().length;
+            const button = inRow(deviceRowOf(pop, peer), "tailscalePopupSend");
+            assert(shown(button), "the device's \"Send file…\" offered");
+            button.clicked();
+            const calls = chooserCalls();
+            assertEqual(calls.length, pop.calls + 1, "\"Send file…\": the shell's chooser asked once");
+            same([calls[calls.length - 1].mode, calls[calls.length - 1].title], ["openMany", "Files to send"], "… for several files, titled");
+            assertEqual(pop.module.settingsOpened, 0, "… the settings window not opened");
+            assertEqual(ModuleTestKit.cancelChooser("tailscale"), "", "the user closes the chooser");
+        });
+        then(pop, "closed: no row", () => !ModuleTestKit.chooserOpen, () => {
+            same(drop(pop).popupChoice.paths, [], "nothing chosen");
+            assert(!shown(sendRowOf(pop, peer)), "… no row");
+            // The session locked: nothing opens, no row
+            ModuleTestKit.setChooserLocked(true);
+            assert(drop(pop).chooseForPopup(peer), "asked while locked");
+        });
+        then(pop, "locked: no row", () => !ModuleTestKit.chooserOpen, () => {
+            same(drop(pop).popupChoice.paths, [], "locked: nothing chosen");
+            assert(!shown(sendRowOf(pop, peer)), "… no row");
+            ModuleTestKit.setChooserLocked(false);
+            assert(drop(pop).chooseForPopup(peer), "asked again");
+            assert(ModuleTestKit.chooserOpen, "… open");
+            // A lock while it is open closes it
+            ModuleTestKit.setChooserLocked(true);
+        });
+        then(pop, "a lock closed it: no row", () => !ModuleTestKit.chooserOpen, () => {
+            same(drop(pop).popupChoice.paths, [], "closed by a lock: nothing chosen");
+            assert(!shown(sendRowOf(pop, peer)), "… no row");
+            ModuleTestKit.setChooserLocked(false);
+            inRow(deviceRowOf(pop, peer), "tailscalePopupSend").clicked();
+            assertEqual(ModuleTestKit.answerChooser("tailscale", [pop.dir + "/files/one.bin"]), "", "one file chosen");
+        });
+        then(pop, "one file: its row", () => drop(pop).popupChoice.paths.length === 1 && shown(sendRowOf(pop, peer)), () => {
+            const row = sendRowOf(pop, peer);
+            assertEqual(inRow(row, "taildropPopupFiles").text, "one.bin", "the row names the file");
+            assert(shown(inRow(row, "taildropPopupSend")) && inRow(row, "taildropPopupSend").available, "… Send offered");
+            assert(shown(inRow(row, "taildropPopupDrop")), "… and \"×\"");
+            assert(!shown(inRow(row, "taildropPopupProgress")), "… no bar before Send");
+            assertEqual(pop.module.settingsOpened, 0, "the settings window never opened");
+            same(drop(pop).chosen, [], "the page's list untouched");
+            inRow(row, "taildropPopupDrop").clicked();
+            same(drop(pop).popupChoice.paths, [], "\"×\": the choice dropped");
+            assert(!shown(sendRowOf(pop, peer)), "… the row gone");
+            inRow(deviceRowOf(pop, peer), "tailscalePopupSend").clicked();
+            assertEqual(ModuleTestKit.answerChooser("tailscale", [pop.dir + "/files/one.bin", pop.dir + "/files/two.bin"]), "", "two files chosen");
+        });
+        then(pop, "two files: one row", () => drop(pop).popupChoice.paths.length === 2 && shown(sendRowOf(pop, peer)), () => {
+            const row = sendRowOf(pop, peer);
+            assertEqual(inRow(row, "taildropPopupFiles").text, "2 files", "several: \"2 files\"");
+            assertEqual(inRow(row, "taildropPopupSend").tooltip, "one.bin, two.bin", "… the names on the Send button's tooltip");
+            inRow(row, "taildropPopupSend").clicked();
+            same(drop(pop).popupChoice.paths, [], "Send: the choice became the send");
+            assertEqual(drop(pop).send.origin, "popup", "… the popup's send");
+        });
+        then(pop, "the bar moves", () => {
+            const fraction = sendRowOf(pop, peer)?.row?.fraction ?? -1;
+            return drop(pop).send.state === "sending" && fraction > 0 && fraction < 1;
+        }, () => {
+            const row = sendRowOf(pop, peer);
+            assertEqual(row.row.kind, "sending", "while it runs: the send's row");
+            assert(shown(inRow(row, "taildropPopupProgress")), "… the progress bar");
+            assert(/^\d+ %$/.test(inRow(row, "taildropPopupState").text), "… the share sent: " + inRow(row, "taildropPopupState").text);
+            assert(shown(inRow(row, "taildropPopupCancel")), "… Cancel");
+            assert(!shown(inRow(row, "taildropPopupSend")) && !shown(inRow(row, "taildropPopupDrop")), "… no Send, no \"×\"");
+            const bar = inRow(row, "taildropPopupProgress");
+            assert(bar.fraction > 0 && bar.fraction < 1, "… the bar filled part way: " + bar.fraction);
+        });
+        then(pop, "sent", () => drop(pop).send.state === "done", () => {
+            const row = sendRowOf(pop, peer);
+            same([row.row.kind, inRow(row, "taildropPopupState").text], ["result", "Sent"], "the row says sent");
+            assert(shown(inRow(row, "taildropPopupDrop")) && !shown(inRow(row, "taildropPopupCancel")), "… \"×\" to clear it, no Cancel");
+            assertEqual(pop.module.settingsOpened, 0, "… the settings window never opened");
+            inRow(row, "taildropPopupDrop").clicked();
+            assert(!shown(sendRowOf(pop, peer)), "\"×\": the row gone");
+            // The received-files folder through the chooser
+            pop.calls = chooserCalls().length;
+            assert(drop(pop).chooseFolder(), "the folder's \"Choose…\"");
+            const call = chooserCalls()[pop.calls];
+            same([call?.mode, call?.title], ["folder", "Save received files to"], "… the shell's chooser, for a folder");
+            assertEqual(ModuleTestKit.answerChooser("tailscale", [pop.dir + "/elsewhere"]), "", "a folder chosen");
+        });
+        then(pop, "the folder taken", () => drop(pop).folder === pop.dir + "/elsewhere", () => {
+            assert(!drop(pop).folderIsDefault, "the chosen folder is the setting");
+        });
+        thenShell(pop, "what arrived", "ls \"$1/state/sent\"", "arrived", lines => same(lines, ["one.bin", "two.bin"], "both files sent"));
+        logs(pop, "after the popup's send", () => {
+            assertEqual(count(pop.logLines, new RegExp("^file cp -- " + rx(pop.dir + "/files/one.bin") + " " + rx(pop.dir + "/files/two.bin") + " 100\\.64\\.0\\.4:$")), 1,
+                        "one `file cp` for both, as the user");
+            assertEqual(pop.pkexecLines.length, 0, "never through pkexec");
+        });
+
+        // ---- The popup's send cancelled, and one that fails (the choice given directly: the chooser is the scenario above's) ----
+        const popCancel = scenario("popup-cancel", { env: Object.assign({ TS_FAKE_SEND_DELAY: "3" }, operator), setup: [operatorPrefs, "printf 'abc' > \"$1/files/a.txt\""] });
+        then(popCancel, "devices read", () => busReady(popCancel) && popCancel.client.canChange && deviceRowOf(popCancel, peer) !== null, () => {
+            drop(popCancel).popupChoice = { targetId: peer, paths: [popCancel.dir + "/files/a.txt"] };
+            inRow(sendRowOf(popCancel, peer), "taildropPopupSend").clicked();
+        });
+        then(popCancel, "sending", () => drop(popCancel).send.state === "sending" && shown(inRow(sendRowOf(popCancel, peer), "taildropPopupCancel")), () => {
+            inRow(sendRowOf(popCancel, peer), "taildropPopupCancel").clicked();
+            const row = sendRowOf(popCancel, peer);
+            same([row.row.kind, inRow(row, "taildropPopupState").text], ["result", "Cancelled"], "Cancel: the row says cancelled");
+            assert(!shown(inRow(row, "taildropPopupProgress")), "… no bar");
+        });
+        const popFail = scenario("popup-fail", { env: Object.assign({ TS_FAKE_SEND_FAIL: "1" }, operator), setup: [operatorPrefs, "printf 'abc' > \"$1/files/a.txt\""] });
+        then(popFail, "devices read", () => busReady(popFail) && popFail.client.canChange && deviceRowOf(popFail, peer) !== null, () => {
+            drop(popFail).popupChoice = { targetId: peer, paths: [popFail.dir + "/files/missing.txt"] };
+            inRow(sendRowOf(popFail, peer), "taildropPopupSend").clicked();
+        });
+        then(popFail, "nothing to send", () => drop(popFail).send.state === "failed", () => {
+            const row = sendRowOf(popFail, peer);
+            assertEqual(inRow(row, "taildropPopupState").text, "Nothing to send · Not found", "a missing file: the row says why");
+            assertEqual(inRow(row, "taildropPopupFiles").text, "missing.txt", "… naming it");
+            drop(popFail).popupChoice = { targetId: peer, paths: [popFail.dir + "/files/a.txt"] };
+            assertEqual(sendRowOf(popFail, peer).row.kind, "choice", "a new choice replaces the result");
+            inRow(sendRowOf(popFail, peer), "taildropPopupSend").clicked();
+        });
+        then(popFail, "failed", () => drop(popFail).send.state === "failed" && drop(popFail).send.files.some(file => file.ok), () => {
+            const row = sendRowOf(popFail, peer);
+            assertEqual(row.row.tone, "warning", "the daemon's failure: in the warning colour");
+            assert(inRow(row, "taildropPopupState").text !== "" && inRow(row, "taildropPopupState").text !== "Sent", "… with its reason: " + inRow(row, "taildropPopupState").text);
         });
         _clock.start();
     }

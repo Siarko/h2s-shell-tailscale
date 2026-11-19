@@ -546,7 +546,6 @@ ColumnLayout {
         Layout.fillWidth: true
         client: root.client
         need: root.need
-        shown: root.shown
     }
 
     // ── Serve and Funnel, certificates, tailnet lock (step 5) ──

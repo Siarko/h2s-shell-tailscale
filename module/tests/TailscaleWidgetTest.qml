@@ -6,7 +6,8 @@ import ".."
 // phase, the text beside it, the Taildrop badge, the popup's devices (online
 // first, capped), who may send — then the popup and the widget built with plain clients: a
 // state for no client, a missing daemon, logged out, connected; crafted tailnet names shown
-// as plain text; the buttons each state offers.
+// as plain text; the buttons each state offers; Taildrop's choices through the chooser (a
+// recording handle: the page's files and folder, the popup's, late answers dropped).
 TestCase {
     id: suite
     suiteName: "tailscale: the bar widget and its popup"
@@ -170,46 +171,39 @@ TestCase {
         assert(!rules.canSendTo({ canReceiveFiles: true }, "stopped", true), "… not while off");
         assert(!rules.canSendTo({ canReceiveFiles: false }, "running", true), "… not to a device that cannot receive");
 
-        // --- the popup's "Send file…" request: short-lived, honoured only when it makes sense ---
-        const at = 1000000;
-        const request = (changes) => Object.assign({ requestedAt: at, now: at + 2000, operator: true, connected: true, targetExists: true, shown: true }, changes ?? {});
-        assertEqual(rules.chooseRequestState(request()), "open", "send request: fresh, operator, connected, target, on screen: open");
-        assertEqual(rules.chooseRequestState(request({ requestedAt: 0 })), "none", "… none asked: nothing");
-        assertEqual(rules.chooseRequestState(request({ now: at + 10001 })), "expire", "… older than 10 s: expired");
-        assertEqual(rules.chooseRequestState(request({ now: at - 1 })), "expire", "… from the future: expired");
-        assertEqual(rules.chooseRequestState(request({ operator: false })), "wait", "… not the operator: not opened");
-        assertEqual(rules.chooseRequestState(request({ connected: false })), "wait", "… not connected: not opened");
-        assertEqual(rules.chooseRequestState(request({ targetExists: false })), "wait", "… the target gone: not opened");
-        assertEqual(rules.chooseRequestState(request({ shown: false })), "wait", "… not on screen: not opened");
+        // --- Taildrop's choices go through the shell's chooser (a recording handle here) ---
         {
             const fake = fakeClient(true);
+            const asked = [];
+            fake.module = { chooseFiles: (options, done) => {
+                asked.push({ options: options, done: done });
+                return { open: true, cancel: () => {} };
+            } };
             const drop = _taildrop.createObject(suite, { client: fake });
             fake.taildrop = drop;
-            drop.targetId = "p1";
-            assert(drop.target !== null, "section: the fake target exists");
-            const section = _section.createObject(null, { client: fake, shown: true });
-            drop.chooseRequestedAt = Date.now() - 20000;
-            assertEqual(section.choosersOpened, 0, "section: a stale request opens no dialog");
-            assertEqual(drop.chooseRequestedAt, 0, "… and is cleared");
-            section.shown = false;
-            drop.chooseRequestedAt = Date.now();
-            assertEqual(section.choosersOpened, 0, "section: not on screen, no dialog");
-            assert(drop.chooseRequestedAt > 0, "… the request waits");
-            // (Its Component.onDestruction clears it too; destroy() is deferred, so not checked here)
-            drop.chooseRequestedAt = 0;
-            section.destroy();
-            drop.destroy();
-            fake.destroy();
-        }
-        {
-            const fake = fakeClient(false);
-            const drop = _taildrop.createObject(suite, { client: fake });
-            fake.taildrop = drop;
-            drop.targetId = "p1";
-            const section = _section.createObject(null, { client: fake, shown: true });
-            drop.chooseRequestedAt = Date.now();
-            assertEqual(section.choosersOpened, 0, "section: not the operator, no dialog");
-            drop.chooseRequestedAt = 0;
+            fake.running = true;
+            const section = _section.createObject(null, { client: fake });
+            find(section, "taildropChooseFiles").clicked();
+            same([asked.length, asked[0].options.mode, asked[0].options.title], [1, "openMany", "Files to send"], "the page's \"Choose files…\": the shell's chooser, several files");
+            asked[0].done({ paths: ["/home/u/a.txt", "/home/u/b.txt"], cancelled: false, blocked: "", error: "" });
+            same(drop.chosen, ["/home/u/a.txt", "/home/u/b.txt"], "… the files join the page's list");
+            same(drop.popupChoice.paths, [], "… not the popup's choice");
+            find(section, "taildropChooseFolder").clicked();
+            same([asked[1].options.mode, asked[1].options.title], ["folder", "Save received files to"], "the folder's \"Choose…\": the chooser, a folder");
+            asked[1].done({ paths: ["/home/u/Received"], cancelled: false, blocked: "", error: "" });
+            assertEqual(drop.folder, "/home/u/Received", "… taken as the folder");
+            assert(drop.chooseForPopup("p1"), "the popup's \"Send file…\"");
+            assert(drop.chooseForPopup("p1"), "… asked again before an answer");
+            asked[2].done({ paths: ["/home/u/old.txt"], cancelled: false, blocked: "", error: "" });
+            same(drop.popupChoice.paths, [], "an answer to the older ask is dropped");
+            asked[3].done({ paths: [], cancelled: true, blocked: "", error: "" });
+            same(drop.popupChoice.paths, [], "closed: nothing chosen");
+            assert(drop.chooseForPopup("p1"), "asked once more");
+            fake.running = false;
+            asked[4].done({ paths: ["/home/u/late.txt"], cancelled: false, blocked: "", error: "" });
+            same(drop.popupChoice.paths, [], "an answer after the client stopped is dropped");
+            assert(!drop.chooseForPopup("p1"), "stopped: the chooser is not asked");
+            assertEqual(asked.length, 5, "… nothing more asked");
             section.destroy();
             drop.destroy();
             fake.destroy();
@@ -252,7 +246,7 @@ TestCase {
             devices: [peer, { id: "p2", name: "off", online: false, ipv4: "100.64.0.10", canReceiveFiles: true }],
             exitNodes: { own: [{ id: "n", label: crafted, name: crafted, dnsName: "", online: true, current: false }], countries: [], current: null, suggested: null, count: 1 },
             taildrop: { waitingCount: 2, busWaiting: true, statusText: "2 files received", isOperator: true, canSave: true,
-                        saved: [{ name: crafted, savedAs: crafted, outcome: "saved" }], saveError: "", chooseInPage: () => {}, save: () => {} }
+                        saved: [{ name: crafted, savedAs: crafted, outcome: "saved" }], saveError: "", chooseForPopup: () => {}, save: () => {} }
         });
         const popup = _popup.createObject(null, { client: live, _ready: true });
         assert(shown(find(popup, "tailscalePopupDisconnect")), "popup, connected: Disconnect");

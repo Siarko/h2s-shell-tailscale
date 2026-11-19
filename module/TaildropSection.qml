@@ -1,14 +1,13 @@
 import QtQuick
 import QtQuick.Layouts
-import QtQuick.Dialogs
 import Quickshell
 import qs.api
 import qs.components
 
 // The page's "Taildrop" (step 4). Taildrop needs this user to be Tailscale's operator (the
 // LocalAPI's write access; nothing of it runs through pkexec): not the operator, the section
-// says so and offers becoming it. The operator sends files (the file chooser, pasted absolute
-// paths, or dropped here — the last two work without the dialog) to a device that can receive,
+// says so and offers becoming it. The operator sends files (the shell's file chooser, pasted
+// absolute paths, or dropped here — the last two work without the dialog) to a device that can receive,
 // with per-file progress, Cancel and results; and saves received files into a folder. Anyone
 // sees that files arrived. Everything it does is TaildropClient's.
 ColumnLayout {
@@ -17,8 +16,6 @@ ColumnLayout {
     property var client: null
     // Kept for the page's interface: Taildrop never asks for a password
     property string need: ""
-    // On screen (the page's `shown`): the popup's "Send file…" waits for it
-    property bool shown: false
 
     readonly property var taildrop: client?.taildrop ?? null
     readonly property bool _connected: client?.view?.phase === "running"
@@ -129,7 +126,7 @@ ColumnLayout {
                 SmallButton {
                     objectName: "taildropChooseFiles"
                     label: "Choose files…"
-                    onClicked: _fileDialog.open()
+                    onClicked: root.taildrop.chooseFor("")
                 }
                 InputField {
                     id: _pathField
@@ -317,8 +314,9 @@ ColumnLayout {
             color: Api.theme.textPrimary
         }
         SmallButton {
+            objectName: "taildropChooseFolder"
             label: "Choose…"
-            onClicked: _folderDialog.open()
+            onClicked: root.taildrop.chooseFolder()
         }
         SmallButton {
             visible: !(root.taildrop?.folderIsDefault ?? true)
@@ -357,61 +355,5 @@ ColumnLayout {
         visible: root._operator && root.taildrop?.autoSave === true && root.taildrop?.conflict === "overwrite"
         text: "Auto-save keeps both"
         color: Api.theme.textMuted
-    }
-
-    // The bar popup's "Send file…" (TaildropClient.chooseRequestedAt): the file chooser opened
-    // once this section is on screen, only within a few seconds of the click and only while it
-    // still makes sense (TailscaleWidgetRules.chooseRequestState); checked when the request
-    // comes, when this section is built, comes on screen or the conditions change — no timer
-    property int choosersOpened: 0
-    function _chooseIfWanted() {
-        if (!taildrop)
-            return;
-        const state = TailscaleWidgetRules.chooseRequestState({
-            requestedAt: taildrop.chooseRequestedAt, now: Date.now(), operator: _operator, connected: _connected,
-            targetExists: taildrop.target !== null && taildrop.target !== undefined, shown: shown && visible
-        });
-        if (state === "expire" || state === "open")
-            taildrop.chooseRequestedAt = 0;
-        if (state === "open") {
-            choosersOpened++;
-            _fileDialog.open();
-        }
-    }
-    onShownChanged: _chooseIfWanted()
-    onVisibleChanged: _chooseIfWanted()
-    on_OperatorChanged: _chooseIfWanted()
-    on_ConnectedChanged: _chooseIfWanted()
-    Component.onCompleted: Qt.callLater(_chooseIfWanted)
-    Component.onDestruction: {
-        if (taildrop)
-            taildrop.chooseRequestedAt = 0;
-    }
-
-    FileDialog {
-        id: _fileDialog
-        title: "Files to send"
-        fileMode: FileDialog.OpenFiles
-        currentFolder: TaildropRules.folderUrl(String(root.client?.system?.home ?? ""))
-        onAccepted: root.taildrop.addPaths(selectedFiles.map(url => String(url)))
-    }
-    FolderDialog {
-        id: _folderDialog
-        title: "Save received files to"
-        currentFolder: TaildropRules.folderUrl(root.taildrop?.folder ?? "") || TaildropRules.folderUrl(String(root.client?.system?.home ?? ""))
-        onAccepted: {
-            const match = /^file:\/\/(\/[^?#]*)$/.exec(String(selectedFolder));
-            if (match)
-                root.taildrop.setFolder(decodeURIComponent(match[1]));
-        }
-    }
-    Connections {
-        target: root.taildrop
-        function onChooseFilesRequested() {
-            _fileDialog.open();
-        }
-        function onChooseRequestedAtChanged() {
-            root._chooseIfWanted();
-        }
     }
 }

@@ -322,6 +322,94 @@ Singleton {
         return size > 0 ? Math.max(0, Math.min(100, Math.floor(100 * sent / size))) : -1;
     }
 
+    // ---- Choosing (the shell's chooser, module API 1.17) ----
+
+    // Whether a chooser's answer holds a choice: not when the user closed it, the session
+    // was locked, another chooser was open, or it failed
+    function _chose(result) {
+        return _isObject(result) && result.cancelled !== true && String(result.blocked ?? "") === "" && String(result.error ?? "") === ""
+            && Array.isArray(result.paths);
+    }
+
+    // The files of a chooser's answer → the paths to keep ([] when nothing was chosen), each
+    // checked as a pasted one (pathProblem), at most maxFiles
+    function chosenPaths(result) {
+        if (!_chose(result))
+            return [];
+        return parsePaths(result.paths.filter(path => typeof path === "string" && path.startsWith("/"))).paths.slice(0, maxFiles);
+    }
+
+    // The folder of a chooser's answer ("folder" mode) → its path, "" when none was chosen
+    function chosenFolder(result) {
+        if (!_chose(result) || result.paths.length !== 1 || typeof result.paths[0] !== "string")
+            return "";
+        const folder = cleanFolder(result.paths[0]);
+        return folderProblem(folder) === "" ? folder : "";
+    }
+
+    // ---- The bar popup's send row ----
+
+    // A send's bytes so far over the files it sends → { sent, total, fraction (0…1; -1 while
+    // no size is known) }; a file sent counts whole
+    function sendTotals(files) {
+        let sent = 0;
+        let total = 0;
+        for (const file of Array.isArray(files) ? files : []) {
+            if (!_isObject(file) || file.ok !== true)
+                continue;
+            const size = Math.max(0, _number(file.size, 0));
+            total += size;
+            sent += file.outcome === "sent" ? size : Math.min(size, Math.max(0, _number(file.sent, 0)));
+        }
+        return { sent: sent, total: total, fraction: total > 0 ? Math.max(0, Math.min(1, sent / total)) : -1 };
+    }
+
+    // What the files are called on one line: one file's name, "N files" for several
+    function filesLabel(paths) {
+        const list = Array.isArray(paths) ? paths : [];
+        return list.length === 1 ? displayName(baseName(list[0])) : list.length + " files";
+    }
+
+    // The row under a device in the bar popup and what its buttons do. `choice` { targetId,
+    // paths }: the files picked there, not sent yet; `send`: TaildropClient's send (`origin`
+    // "popup" when the popup started it); `busy`: some send runs. → null (no row), or { kind,
+    // label, names, fraction, text, tone, canSend, canCancel, canDrop }:
+    //   "sending"  this device's send from the popup runs: the bar, Cancel
+    //   "choice"   files picked for it: Send (while no send runs), "×" drops them
+    //   "result"   its send from the popup ended (sent, failed and why, cancelled): "×" clears it
+    // A run outranks a choice made meanwhile; a choice outranks the last result.
+    function popupRow(choice, send, deviceId, busy) {
+        const id = String(deviceId ?? "");
+        if (id === "")
+            return null;
+        const ours = _isObject(send) && send.origin === "popup" && String(send.targetId ?? "") === id;
+        const files = ours && Array.isArray(send.files) ? send.files.filter(file => _isObject(file)) : [];
+        const names = list => list.map(item => typeof item === "string" ? displayName(baseName(item)) : String(item.name ?? "")).join(", ").slice(0, 300);
+        if (ours && (send.state === "checking" || send.state === "sending")) {
+            const totals = sendTotals(files);
+            const checking = send.state === "checking";
+            return { kind: "sending", label: filesLabel(files.map(file => file.path)), names: names(files), fraction: checking ? -1 : totals.fraction,
+                     text: checking ? "Checking…" : totals.fraction >= 0 ? Math.floor(totals.fraction * 100) + " %" : "Sending…",
+                     tone: "normal", canSend: false, canCancel: true, canDrop: false };
+        }
+        const paths = _isObject(choice) && String(choice.targetId ?? "") === id && Array.isArray(choice.paths) ? choice.paths : [];
+        if (paths.length > 0)
+            return { kind: "choice", label: filesLabel(paths), names: names(paths), fraction: -1, text: "", tone: "normal",
+                     canSend: busy !== true, canCancel: false, canDrop: true };
+        if (!ours || !["done", "failed", "cancelled"].includes(send.state))
+            return null;
+        const good = files.filter(file => file.ok === true);
+        const refused = files.filter(file => file.ok !== true && String(file.problem ?? "") !== "");
+        const message = String(send.message ?? "");
+        const text = send.state === "done" ? (refused.length > 0 ? "Sent " + good.length + " of " + files.length : "Sent")
+            : send.state === "cancelled" ? (message || "Cancelled")
+            : [message || "Not sent", good.length === 0 && refused.length === 1 ? String(refused[0].problem) : ""].filter(part => part !== "").join(" · ");
+        return { kind: "result", label: files.length > 0 ? filesLabel(files.map(file => file.path)) : "", names: names(files),
+                 fraction: send.state === "done" ? 1 : -1, text: text,
+                 tone: send.state === "done" ? "success" : send.state === "failed" ? "warning" : "muted",
+                 canSend: false, canCancel: false, canDrop: true };
+    }
+
     // ---- Receiving ----
 
     // A received name as it is written: Tailscale already refuses "/", "\", control and other

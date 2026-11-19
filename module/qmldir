@@ -8,6 +8,7 @@ SshSection 1.0 SshSection.qml
 singleton TaildropRules 1.0 TaildropRules.qml
 TaildropClient 1.0 TaildropClient.qml
 TaildropSection 1.0 TaildropSection.qml
+TaildropSendRow 1.0 TaildropSendRow.qml
 singleton ServeRules 1.0 ServeRules.qml
 ServeClient 1.0 ServeClient.qml
 ServeSection 1.0 ServeSection.qml

@@ -181,8 +181,10 @@ Offering an exit node and using one exclude each other. The page says so and off
 
 Needs your user to be Tailscale's operator.
 
-- Send files to devices that can receive them. Choose files, paste absolute paths, or drop them.
-- Progress is shown per file. Cancel stops the send.
+- Send files to devices that can receive them. On the page: choose files, paste absolute paths, or drop them.
+- From the bar popup: a device's "Send file…" opens the shell's file chooser. The files chosen show in a row under that device ("2 files" for several, their names on Send's tooltip) with Send and "×" to drop them. After Send the row shows a progress bar and Cancel, then "Sent", why it failed, or "Cancelled". The settings window does not open.
+- On the page progress is shown per file. Cancel stops the send.
+- Files and the folder for received files are chosen in the shell's file chooser. A chooser closed by the lock screen chooses nothing.
 - A send with no progress for 2 minutes is stopped. A send lasts 6 hours at most.
 - Received files raise a notification (the names on one line, as plain text) and show "Files received" on the entry.
 - Save them by hand or automatically (off by default).
@@ -286,7 +288,7 @@ The popup holds:
 - account and tailnet
 - the exit node chooser
 - this device's addresses and name
-- devices, online first, with "Send file…" for the operator and "All devices…" past the limit
+- devices, online first, with "Send file…" for the operator and "All devices…" past the limit; under a device, the files chosen for it with Send, then the send's progress and result
 - received files with Save
 - "Settings…" and "Admin console"
 

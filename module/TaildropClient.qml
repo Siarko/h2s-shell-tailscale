@@ -17,7 +17,9 @@ import qs.api
 // missing). Progress from the bus's OutgoingFiles. Cancel kills it (the user's own process);
 // so do Disconnect, logout, an account switch and the module going away. Limits: no progress
 // on the bus for idleLimitMs (2 minutes) → stopped as stalled; overall TailscaleRules'
-// timeLimits.send.
+// timeLimits.send. Files come from the shell's chooser (module.chooseFiles): the page's list
+// (`chosen`, also pasted or dropped paths) or the bar popup's choice for one device
+// (`popupChoice`), sent from the row under that device, which shows the send's progress.
 //
 // RECEIVING — anyone sees that files arrived (the bus's IncomingFiles with Done, FilesWaiting):
 // a notification per arrival, the count on the page and the entry's status line. The operator
@@ -128,31 +130,89 @@ QtObject {
     property var inputProblems: []
     // { state: "" | "checking" | "sending" | "done" | "failed" | "cancelled", targetName,
     //   targetId, files [{ path, name, size, problem, sent, percent, outcome }], message }
-    property var send: ({ state: "", targetName: "", targetId: "", files: [], message: "", startedAt: 0 })
+    // origin: "page" | "popup" (whose Send started it)
+    property var send: ({ state: "", targetName: "", targetId: "", origin: "", files: [], message: "", startedAt: 0 })
     readonly property bool sending: send.state === "checking" || send.state === "sending"
     // The send's run (the runner's handle: the check, then `file cp`), null none
     property var _sendRun: null
     property int _sendToken: 0
     property real _progressAt: 0
     property var _outgoing: []
-    // A device row's "Send file…": the section opens its file chooser
-    signal chooseFilesRequested()
+    // The bar popup's choice: the files picked for a device there, waiting for its Send
+    // ({ targetId, paths }; TaildropRules.popupRow says what the row under the device shows)
+    property var popupChoice: ({ targetId: "", paths: [] })
+    // The chooser this client asked for (the shell's: one for the whole shell), null none;
+    // an answer to an older one, or after the client stopped, is dropped
+    property var _chooser: null
+    property int _chooserToken: 0
 
-    function chooseFor(deviceId) {
-        targetId = String(deviceId ?? "");
-        chooseFilesRequested();
+    // Asks the shell's chooser (module API 1.17), then done(result) with the answer — only
+    // while the client still runs and no newer chooser was asked for
+    function _choose(options, done) {
+        if (!running || typeof module?.chooseFiles !== "function")
+            return false;
+        const token = ++_chooserToken;
+        const handle = module.chooseFiles(Object.assign({ startDirectory: String(client?.system?.home ?? "") }, options), result => {
+            if (token !== _chooserToken)
+                return;
+            _chooser = null;
+            if (running)
+                done(result);
+        });
+        _chooser = handle?.open === true ? handle : null;
+        return true;
     }
 
-    // The bar popup's "Send file…": this device as the target, and a short-lived request that
-    // the page's Taildrop section opens its file chooser once it is on screen (the popup opens
-    // the page). When it was asked (ms since 1970), 0 for none; honoured only within
-    // TailscaleWidgetRules.chooseRequestMs and only while it still makes sense
-    // (chooseRequestState), so a request never opens a dialog by itself much later
-    property real chooseRequestedAt: 0
+    // The popup's "Send file…": the files for this device, kept for its row's Send. Nothing
+    // chosen (closed, the session locked, another chooser open): no row
+    function chooseForPopup(deviceId) {
+        const id = String(deviceId ?? "");
+        return id !== "" && _choose({ mode: "openMany", title: "Files to send" }, result => {
+            const paths = TaildropRules.chosenPaths(result);
+            if (paths.length > 0)
+                popupChoice = { targetId: id, paths: paths };
+        });
+    }
 
-    function chooseInPage(deviceId) {
-        targetId = String(deviceId ?? "");
-        chooseRequestedAt = Date.now();
+    function dropChoice() {
+        popupChoice = { targetId: "", paths: [] };
+    }
+
+    // The popup row's Send: the choice becomes the send (one at a time); the row then shows
+    // its progress and result
+    function sendChoice() {
+        if (!running || sending || popupChoice.paths.length === 0)
+            return false;
+        const request = { targetId: popupChoice.targetId, paths: popupChoice.paths.slice(), origin: "popup" };
+        dropChoice();
+        return sendFiles(request);
+    }
+
+    // The popup row's "×" on a result
+    function dismissPopupSend(deviceId) {
+        if (send.origin === "popup" && send.targetId === String(deviceId ?? ""))
+            dismissSend();
+    }
+
+    // The page's "Choose files…", and a device row's "Send file…" there (that device as the
+    // target): the files chosen join the list
+    function chooseFor(deviceId) {
+        if (deviceId !== undefined && deviceId !== null && String(deviceId) !== "")
+            targetId = String(deviceId);
+        return _choose({ mode: "openMany", title: "Files to send" }, result => {
+            const paths = TaildropRules.chosenPaths(result);
+            if (paths.length > 0)
+                addPaths(paths);
+        });
+    }
+
+    // The page's "Choose…" for the folder received files are saved to
+    function chooseFolder() {
+        return _choose({ mode: "folder", title: "Save received files to", startDirectory: folder }, result => {
+            const path = TaildropRules.chosenFolder(result);
+            if (path !== "")
+                setFolder(path);
+        });
     }
 
     function addPaths(input) {
@@ -180,26 +240,31 @@ QtObject {
         send = Object.assign({}, send, changes);
     }
 
-    // Sends `chosen` to `targetId`, as this user (the operator); never a prompt
-    function sendFiles() {
+    // Sends files to a device, as this user (the operator); never a prompt. `request`
+    // { targetId, paths, origin }: the popup's; none: the page's `chosen` to `targetId`
+    function sendFiles(request) {
         if (!running || sending)
             return false;
+        const origin = request?.origin === "popup" ? "popup" : "page";
+        const wantedId = request ? String(request.targetId ?? "") : targetId;
+        const wanted = request ? (Array.isArray(request.paths) ? request.paths : []) : chosen;
+        const failed = message => _setSend({ state: "failed", message: message, files: [], origin: origin, targetId: wantedId, targetName: "" });
         if (!canSend) {
-            _setSend({ state: "failed", message: "Needs the operator", files: [] });
+            failed("Needs the operator");
             return false;
         }
-        const device = target;
+        const device = targets.find(item => item.id === wantedId) ?? null;
         if (device === null || !device.available) {
-            _setSend({ state: "failed", message: device === null ? "Choose a device" : "Device is offline", files: [] });
+            failed(device === null ? "Choose a device" : "Device is offline");
             return false;
         }
-        if (chosen.length === 0) {
-            _setSend({ state: "failed", message: "Choose files", files: [] });
+        if (wanted.length === 0) {
+            failed("Choose files");
             return false;
         }
-        const paths = chosen.slice();
+        const paths = wanted.slice();
         const token = ++_sendToken;
-        _setSend({ state: "checking", targetName: device.name, targetId: device.id, message: "", startedAt: Date.now(),
+        _setSend({ state: "checking", targetName: device.name, targetId: device.id, origin: origin, message: "", startedAt: Date.now(),
                    files: paths.map(path => ({ path: path, name: TaildropRules.displayName(TaildropRules.baseName(path)), size: 0, problem: "", sent: 0, percent: -1, outcome: "" })) });
         // Only for a clear message (the CLI opens the files itself, as this user)
         _sendRun = client._run(TaildropRules.checkArgv(paths), TaildropRules.checkLimitMs, result => {
@@ -263,7 +328,8 @@ QtObject {
         if (result.ok) {
             _setSend({ state: "done", message: "",
                        files: send.files.map(file => file.ok ? Object.assign({}, file, { outcome: "sent", percent: 100, sent: file.size }) : file) });
-            chosen = chosen.filter(path => !send.files.some(file => file.ok && file.path === path));
+            if (send.origin === "page")
+                chosen = chosen.filter(path => !send.files.some(file => file.ok && file.path === path));
             return;
         }
         const error = result.timedOut === true ? { message: "Took too long, stopped" }
@@ -293,7 +359,7 @@ QtObject {
 
     function dismissSend() {
         if (!sending)
-            _setSend({ state: "", files: [], message: "" });
+            _setSend({ state: "", files: [], message: "", origin: "" });
     }
 
     // No progress on the bus for idleLimitMs: stalled (only judged while the bus is up — without
@@ -526,8 +592,16 @@ QtObject {
             _autoPending = false;
             _autoStartChecked = false;
             _stopSend("cancelled", "Stopped");
+            _chooserToken++;
+            _chooser?.cancel();
+            _chooser = null;
+            dropChoice();
         }
     }
     onCanSaveChanged: refreshWaiting()
-    Component.onDestruction: _stopSend("cancelled", "Stopped")
+    Component.onDestruction: {
+        _stopSend("cancelled", "Stopped");
+        _chooserToken++;
+        _chooser?.cancel();
+    }
 }

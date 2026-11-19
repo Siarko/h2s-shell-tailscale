@@ -74,7 +74,7 @@ Rectangle {
                 font.pixelSize: Api.theme.fontSizeXSmall
                 color: root.device?.connection === "relayed" ? Api.theme.warning : Api.theme.textMuted
             }
-            // Taildrop (the operator's): this device as the target, then the section's file chooser
+            // Taildrop (the operator's): this device as the target, then the shell's file chooser
             SmallButton {
                 objectName: "taildropDeviceSend"
                 visible: root.client !== null && TailscaleWidgetRules.canSendTo(root.device, root.client.view?.phase, root.client.taildrop?.isOperator)
