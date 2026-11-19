@@ -312,6 +312,36 @@ TestCase {
             const down = rules.entry(status("stopped"), prefs("stopped"), { now: now });
             same([down.fullTunnel, down.setsDns, down.routes], [null, null, null], "entry: not up — not known (null), never false");
             same([rules.traffic(status("running"), null, rules.stateOf(status("running"), null, { now: now })).routes], [null], "traffic: prefs not read — unknown");
+            // Routes only when known whole: the peers read, not cut, at most the shell's 256
+            const runningPrefs = prefs("running");
+            const runningView = rules.stateOf(status("running"), runningPrefs, { now: now });
+            const withPeers = peers => rules.parseStatus(Object.assign(JSON.parse(fixture("status-running.json")), { Peer: peers }));
+            assertEqual(rules.traffic(withPeers(null), runningPrefs, runningView).routes, null,
+                        "traffic: routes accepted, the peer map not read yet — routes unknown (null), not the tailnet's ranges alone");
+            const notAccepted = rules.parsePrefs(Object.assign(JSON.parse(fixture("prefs-running.json")), { RouteAll: false }));
+            same(rules.traffic(withPeers(null), notAccepted, runningView).routes, ["100.64.0.0/10", "fd7a:115c:a1e0::/48"],
+                 "… routes not accepted: the tailnet's ranges are known without the peers");
+            const cut = rules.parseStatus(JSON.parse(fixture("status-running.json")));
+            cut.peersCut = true;
+            assertEqual(rules.traffic(cut, runningPrefs, runningView).routes, null, "traffic: more peers than read (peersCut) — routes unknown");
+            const manyRoutes = {};
+            for (let i = 0; i < 2; i++) {
+                const routesOfPeer = [];
+                for (let j = 0; j < 200; j++)
+                    routesOfPeer.push("10." + i + "." + j + ".0/24");
+                manyRoutes["nodekey:many" + i] = { ID: "many" + i, PublicKey: "nodekey:many" + i, HostName: "many" + i, DNSName: "many" + i + ".example-tailnet.ts.net.",
+                                                   TailscaleIPs: ["100.64.9." + (i + 1)], PrimaryRoutes: routesOfPeer, Online: true };
+            }
+            assertEqual(rules.traffic(withPeers(manyRoutes), runningPrefs, runningView).routes, null,
+                        "traffic: more than 256 routes — unknown (null), never a list cut short");
+            // DNS: known only with Tailscale's DNS off (false) or MagicDNS on (true)
+            const magicOff = rules.parseStatus(JSON.parse(fixture("status-running.json")));
+            magicOff.tailnet.magicDnsEnabled = false;
+            assertEqual(rules.traffic(magicOff, runningPrefs, runningView).setsDns, null,
+                        "traffic: DNS accepted, MagicDNS off — unknown (nameservers or split DNS may still be set), not false");
+            const dnsOff = rules.parsePrefs(Object.assign(JSON.parse(fixture("prefs-running.json")), { CorpDNS: false }));
+            assertEqual(rules.traffic(magicOff, dnsOff, runningView).setsDns, false, "… Tailscale's DNS not accepted: false");
+            assertEqual(rules.traffic(status("running"), runningPrefs, runningView).setsDns, true, "… accepted with MagicDNS on: true");
             assertEqual(running.busy, false, "entry: not busy");
             same(Object.keys(rules.entry(status("needs-login"), prefs("logged-out"), { now: now }).attention).sort(), ["action", "reason"],
                  "entry: attention is exactly { reason, action }");

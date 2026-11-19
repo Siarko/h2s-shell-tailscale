@@ -73,6 +73,20 @@ TestCase {
         }
     }
 
+    // The first item under `item` (children and a Flickable's content) with that objectName
+    function _findNamed(item, name) {
+        if (!item)
+            return null;
+        if (item.objectName === name)
+            return item;
+        for (const child of [item.contentItem].concat(Array.from(item.children ?? []))) {
+            const found = child && child !== item ? _findNamed(child, name) : null;
+            if (found)
+                return found;
+        }
+        return null;
+    }
+
     function same(actual, expected, message) {
         assertEqual(JSON.stringify(actual), JSON.stringify(expected), message);
     }
@@ -110,6 +124,23 @@ TestCase {
         same(TailscaleRules.fullTunnelVpns(Api.vpnsUp, module.moduleId), [], "another VPN, a split one: no \"another VPN is also on\"");
         ModuleTestKit.setNetworks({ vpnsUp: [{ name: "Work", type: "wireguard", provider: "", fullTunnel: true, setsDns: true, routes: ["0.0.0.0/0"] }] });
         same(TailscaleRules.fullTunnelVpns(Api.vpnsUp, module.moduleId), ["Work"], "… a full tunnel: said");
+        // The page's "Another VPN is also on", as the page shows it from Api.vpnsUp: no exit node
+        // in use here, so only a VPN whose routes overlap Tailscale's (the accepted subnet route
+        // 192.168.99.0/24) shows it; a split one beside it does not
+        const pageComponent = Qt.createComponent("file://" + module.directory + "/TailscalePage.qml", Component.PreferSynchronous);
+        const page = pageComponent.status === Component.Ready ? pageComponent.createObject(null, { module: module, width: 700 }) : null;
+        assert(page !== null, "the page builds (" + pageComponent.errorString() + ")");
+        const hint = _findNamed(page, "tailscaleOtherVpnHint");
+        assert(hint !== null, "… with its two-VPN hint");
+        ModuleTestKit.setNetworks({ vpnsUp: [{ name: "Office", type: "wireguard", provider: "", fullTunnel: false, setsDns: false, routes: ["10.20.0.0/16"] }] });
+        same([client.view.exitNode, hint?.visible], [null, false], "the page: no exit node, a split VPN beside the tailnet — no hint");
+        ModuleTestKit.setNetworks({ vpnsUp: [{ name: "Lab", type: "wireguard", provider: "", fullTunnel: false, setsDns: false, routes: ["192.168.99.0/25"] }] });
+        assertEqual(hint?.visible, true, "… a split VPN whose route overlaps the accepted subnet route — \"Another VPN is also on\"");
+        ModuleTestKit.setNetworks({ vpnsUp: [{ name: "Lab", type: "wireguard", provider: "", fullTunnel: false, setsDns: false, routes: ["100.100.0.0/16"] }] });
+        assertEqual(hint?.visible, true, "… one that overlaps the tailnet's own range — said too");
+        ModuleTestKit.setNetworks({ vpnsUp: [{ name: "Plugin", type: "vpn", provider: "", fullTunnel: null, setsDns: null, routes: null }] });
+        assertEqual(hint?.visible, false, "… routes not known and no exit node — not an overlap");
+        page?.destroy();
         ModuleTestKit.setNetworks(null);
         // Its own VPN's traffic, reported on the provider's entry (Api.vpnsUp's for it)
         const entry = module.main.provider.entries[0];

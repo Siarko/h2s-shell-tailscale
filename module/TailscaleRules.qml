@@ -2725,11 +2725,13 @@ Singleton {
     }
 
     // Tailscale beside another VPN: twoVpnsNote({ tailscaleUp, exitNode (name or ""), acceptDns,
-    // otherVpns: the other VPNs up as the shell's Api.vpnsUp rows ({ name, fullTunnel, setsDns,
-    // routes }, module API 1.16) }) → a sentence, or "" when there is nothing to say. An exit
-    // node competes only with a VPN that takes all traffic, Tailscale's DNS only with one that
-    // brings its own servers; what the shell does not know (null) may compete. A split VPN that
-    // sets no DNS is no conflict.
+    // routes (traffic().routes: what Tailscale carries, null not known), otherVpns: the other
+    // VPNs up as the shell's Api.vpnsUp rows ({ name, fullTunnel, setsDns, routes }, module API
+    // 1.16) }) → a sentence, or "" when there is nothing to say. An exit node competes only with
+    // a VPN that takes all traffic, Tailscale's DNS only with one that brings its own servers;
+    // what the shell does not know (null) may compete. A VPN whose routes overlap the tailnet or
+    // the subnet routes Tailscale carries competes for those addresses (overlappingVpns). A split
+    // VPN that sets no DNS and carries none of Tailscale's addresses is no conflict.
     function twoVpnsNote(input) {
         const others = _otherVpns(_get(input, "otherVpns"));
         if (_get(input, "tailscaleUp") !== true || others.length === 0)
@@ -2739,6 +2741,8 @@ Singleton {
         const traffic = others.filter(vpn => vpn.fullTunnel !== false).map(vpn => vpn.name);
         if (exitNode !== "" && traffic.length > 0)
             parts.push(traffic.join(", ") + " and Tailscale's exit node " + exitNode + " compete for internet traffic");
+        for (const found of _overlaps(others, _get(input, "routes")))
+            parts.push(found.name + " and Tailscale both route " + found.route + ": some devices may be out of reach");
         const dns = others.filter(vpn => vpn.setsDns !== false).map(vpn => vpn.name);
         if (_get(input, "acceptDns") !== false && dns.length > 0)
             parts.push("Tailscale's DNS (" + quadHundred + ") and " + dns.join(", ") + "'s compete: some names may not resolve");
@@ -2749,49 +2753,107 @@ Singleton {
     // fullTunnelVpns(vpnsUp (Api.vpnsUp's rows), ownProvider (this module's id: its own row
     // left out)) — beside an exit node, "another VPN is also on"
     function fullTunnelVpns(vpnsUp, ownProvider) {
-        const own = _string(ownProvider, 64);
-        return _otherVpns((Array.isArray(vpnsUp) ? vpnsUp : []).filter(vpn => !(_isObject(vpn) && own !== "" && vpn.provider === own)))
-            .filter(vpn => vpn.fullTunnel !== false).map(vpn => vpn.name);
+        return _otherVpns(_withoutOwn(vpnsUp, ownProvider)).filter(vpn => vpn.fullTunnel !== false).map(vpn => vpn.name);
     }
 
-    // At most 8 rows { name, fullTunnel, setsDns } of Api.vpnsUp's (true / false / null each;
-    // anything else null), named. A list handed through an element's context may come as a
-    // list-like object rather than an array
+    // The other VPNs whose routes overlap the tailnet's ranges or the routes Tailscale carries,
+    // by name: overlappingVpns(vpnsUp, ownProvider, routes (traffic().routes; null: the
+    // tailnet's ranges only)) — "another VPN is also on", with or without an exit node. A VPN
+    // whose routes are not known (null) is not counted here; routes of all of a family (/0, or
+    // its halves) are the full tunnel's case, not an overlap.
+    function overlappingVpns(vpnsUp, ownProvider, routes) {
+        const names = [];
+        for (const found of _overlaps(_otherVpns(_withoutOwn(vpnsUp, ownProvider)), routes))
+            if (!names.includes(found.name))
+                names.push(found.name);
+        return names;
+    }
+
+    function _withoutOwn(vpnsUp, ownProvider) {
+        const own = _string(ownProvider, 64);
+        const list = Array.isArray(vpnsUp) ? vpnsUp
+            : (vpnsUp !== null && typeof vpnsUp === "object" && typeof vpnsUp.length === "number" ? Array.from(vpnsUp) : []);
+        return list.filter(vpn => !(_isObject(vpn) && own !== "" && vpn.provider === own));
+    }
+
+    // [{ name, route (the other VPN's, canonical) }]: the first route of each other VPN that
+    // overlaps the tailnet's ranges or `routes` (Tailscale's, more than a /1 each)
+    function _overlaps(others, routes) {
+        const specific = list => list.map(text => Api.address.parseCidr(text)).filter(cidr => cidr !== null && cidr.bits > 1);
+        const ours = specific(tailscaleRanges.concat(Array.isArray(routes) ? routes.slice(0, maxTrafficRoutes) : []));
+        const found = [];
+        for (const vpn of others) {
+            const hit = specific(vpn.routes ?? []).find(theirs => ours.some(own => Api.address.overlap(own, theirs)));
+            if (hit !== undefined)
+                found.push({ name: vpn.name, route: hit.network });
+        }
+        return found;
+    }
+
+    // At most 8 rows { name, fullTunnel, setsDns, routes } of Api.vpnsUp's (true / false / null
+    // each; routes a list of at most 256 texts, else null), named. A list handed through an
+    // element's context may come as a list-like object rather than an array
     function _otherVpns(rows) {
         const tri = value => value === true || value === false ? value : null;
-        const list = Array.isArray(rows) ? rows : (rows !== null && typeof rows === "object" && typeof rows.length === "number" ? Array.from(rows) : []);
+        const asList = value => Array.isArray(value) ? value
+            : (value !== null && typeof value === "object" && typeof value.length === "number" ? Array.from(value) : null);
+        const list = asList(rows) ?? [];
         return list.slice(0, 64).filter(row => _isObject(row))
-            .map(row => ({ name: plainText(row.name, 64), fullTunnel: tri(row.fullTunnel), setsDns: tri(row.setsDns) }))
+            .map(row => {
+                const routes = asList(row.routes);
+                return { name: plainText(row.name, 64), fullTunnel: tri(row.fullTunnel), setsDns: tri(row.setsDns),
+                         routes: routes === null ? null : routes.slice(0, maxTrafficRoutes).filter(route => typeof route === "string") };
+            })
             .filter(row => row.name !== "").slice(0, 8);
     }
+
+    // At most this many routes on the entry, as the shell takes them (Api.vpnsUp's routes:
+    // null rather than more than 256)
+    readonly property int maxTrafficRoutes: 256
 
     // What Tailscale does with the traffic while it is up, for the shell's Api.vpnsUp (the
     // provider entry's fullTunnel, setsDns, routes; module API 1.16): traffic(status, prefs,
     // view) → { fullTunnel, setsDns, routes }, each null where it is not known (not running,
-    // prefs not read). fullTunnel: an exit node is in use. setsDns: Tailscale's DNS is accepted
-    // and MagicDNS on. routes: the tailnet's own ranges, the subnet routes of peers while routes
-    // are accepted, and all of both families through an exit node.
+    // prefs not read). fullTunnel: an exit node is in use. setsDns: false with Tailscale's DNS
+    // not accepted, true with it accepted and MagicDNS on; otherwise null — with MagicDNS off
+    // the tailnet may still push nameservers or split DNS, which status does not show. routes:
+    // the tailnet's own ranges, the subnet routes of peers while routes are accepted, and all
+    // of both families through an exit node; null while the peers are not read whole (none
+    // yet, or more than maxPeers) or when there would be more than maxTrafficRoutes.
     function traffic(status, prefs, view) {
         const unknown = { fullTunnel: null, setsDns: null, routes: null };
         if (_get(view, "phase") !== "running" || !_isObject(status) || !_isObject(prefs) || prefs.ok !== true)
             return unknown;
         const exitNode = _get(view, "exitNode") !== null && _get(view, "exitNode") !== undefined;
-        const routes = tailscaleRanges.slice();
+        let routes = tailscaleRanges.slice();
         if (_get(prefs, "acceptRoutes") === true) {
-            for (const node of _peersOf(status)) {
+            if (status.peersRead !== true || status.peersCut === true)
+                routes = null;
+            for (const node of routes === null ? [] : _peersOf(status)) {
+                // A peer's list is read up to 256 (_strings): one that long may have been cut
+                if (node.primaryRoutes.length >= 256) {
+                    routes = null;
+                    break;
+                }
                 for (const route of node.primaryRoutes) {
                     const cidr = Api.address.parseCidr(route);
-                    if (cidr !== null && cidr.bits > 0 && !routes.includes(cidr.network) && routes.length < 254)
+                    if (cidr !== null && cidr.bits > 0 && !routes.includes(cidr.network))
                         routes.push(cidr.network);
+                }
+                if (routes.length > maxTrafficRoutes) {
+                    routes = null;
+                    break;
                 }
             }
         }
-        if (exitNode)
+        if (exitNode && routes !== null)
             routes.push("0.0.0.0/0", "::/0");
+        const acceptDns = _get(prefs, "acceptDns");
         return {
             fullTunnel: exitNode,
-            setsDns: _get(prefs, "acceptDns") !== false && status?.tailnet?.magicDnsEnabled !== false,
-            routes: routes
+            setsDns: acceptDns === false ? false
+                : acceptDns === true && status?.tailnet?.magicDnsEnabled === true ? true : null,
+            routes: routes !== null && routes.length <= maxTrafficRoutes ? routes : null
         };
     }
 }

@@ -171,7 +171,8 @@ forwarding (`readIpForwarding()`). The networks this computer is on are
 saved networks `Api.networks`, and `Api.networksReady` says they are read whole (the exit
 node per network waits until then); the VPNs up `Api.vpnsUp`, with what each does with the
 traffic (`fullTunnel`, `setsDns`, `routes`: "another VPN is also on" only beside one that
-may take all traffic). The module's own VPN reports the same on its entry
+may take all traffic, or whose routes overlap the tailnet or the subnet routes Tailscale
+carries). The module's own VPN reports the same on its entry
 (`TailscaleRules.traffic`). Sizes, "ago" and addresses use `Api.format` and `Api.address`.
 
 Certificates are kept in `<module.dataDirectory>/certs` (module API 1.13).

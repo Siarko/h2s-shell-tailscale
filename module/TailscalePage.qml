@@ -483,11 +483,14 @@ ColumnLayout {
         onToggled: root._free && root.client.setAllowLan(!checked)
     }
     // Another VPN up beside the exit node that takes all traffic too, or may (both want it;
-    // Tailscale's wins) — a split one does not count (Api.vpnsUp's fullTunnel, module API 1.16)
+    // Tailscale's wins), or one whose routes overlap the tailnet or the subnet routes Tailscale
+    // carries (Api.vpnsUp's fullTunnel and routes, module API 1.16). A split one beside them
+    // does not count.
     Hint {
         objectName: "tailscaleOtherVpnHint"
-        visible: root._running && root.view?.exitNode !== null
-            && TailscaleRules.fullTunnelVpns(Api.vpnsUp, root.module?.moduleId ?? "tailscale").length > 0
+        visible: root._running && ((root.view?.exitNode !== null
+                && TailscaleRules.fullTunnelVpns(Api.vpnsUp, root.module?.moduleId ?? "tailscale").length > 0)
+            || TailscaleRules.overlappingVpns(Api.vpnsUp, root.module?.moduleId ?? "tailscale", root.client?.entry.routes ?? null).length > 0)
         text: "Another VPN is also on"
     }
     NetworkExitTable {

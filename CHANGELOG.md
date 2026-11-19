@@ -62,10 +62,10 @@ Needs h2s-shell with module API 1.23.
 - The popup shows as many devices as the preset of the bar entry that opened it, as the shell tells it.
 - Certificates are kept in the module's data folder (`…/h2s-shell/module-data/tailscale/certs`). Certificates got before stay in `…/h2s-shell/tailscale/certs`; they are not moved.
 - A notification for received files lists the names on one line, separated by commas, as plain text.
-- "Another VPN is also on" and the card's note about two VPNs count only VPNs that take all traffic (for the exit node) or bring their own DNS (for Tailscale's DNS). A split VPN without its own DNS no longer gets a warning.
+- "Another VPN is also on" and the card's note about two VPNs count only VPNs that take all traffic (for the exit node) or bring their own DNS (for Tailscale's DNS). A split VPN without its own DNS gets a warning only when its routes overlap the tailnet or the subnet routes Tailscale carries.
 - The user, the host name, the local networks and the home folder come from the shell's facts; the module runs no `id`, `ip addr` or read of `/proc` of its own.
 - The exit node per network waits until the shell has read the networks whole, not merely until it lists one.
-- Tailscale's entry tells the shell what it does with the traffic: a full tunnel through an exit node, its DNS, the networks it carries.
+- Tailscale's entry tells the shell what it does with the traffic: a full tunnel through an exit node, its DNS, the networks it carries. What it cannot know whole (the peers not read yet, more than 256 routes, DNS with MagicDNS off) it leaves unknown.
 - Log lines through the shell's module log: a changed reason reads "failed: <reason>" again rather than "still failing, now: <reason>".
 - Its row in the network popup and its part of the VPN card are the manifest's `anchors` (the places under its row and in its opened card) instead of `slots`; the shell no longer lists them as deprecated.
 - Sizes, times ("5 min ago") and addresses use the shell's helpers; the state follows the shell's minute clock, and an exit node's offline grace ends on time.

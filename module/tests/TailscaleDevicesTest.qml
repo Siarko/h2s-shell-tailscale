@@ -215,6 +215,29 @@ TestCase {
             same(rules.fullTunnelVpns([split], "tailscale"), [], "another VPN: a split one alone — none");
             same(rules.fullTunnelVpns(null, "tailscale"), [], "another VPN: nothing up");
             assertEqual(rules.twoVpnsNote(null), "", "two VPNs: nothing given");
+            // A split VPN whose routes overlap the tailnet or the subnet routes Tailscale carries
+            const tailscaleRoutes = ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "192.168.99.0/24"];
+            const lab = { name: "Lab", type: "wireguard", provider: "", fullTunnel: false, setsDns: false, routes: ["10.1.0.0/16", "192.168.99.128/25"] };
+            const overTailnet = { name: "Mesh", type: "wireguard", provider: "", fullTunnel: false, setsDns: false, routes: ["100.100.0.0/16"] };
+            const overSix = { name: "Six", type: "wireguard", provider: "", fullTunnel: false, setsDns: false, routes: ["fd7a:115c:a1e0:ab12::/64"] };
+            const labNote = rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [lab], routes: tailscaleRoutes, acceptDns: true });
+            assertEqual(labNote, "Lab and Tailscale both route 192.168.99.128/25: some devices may be out of reach.",
+                        "two VPNs: a split VPN over an accepted subnet route — said, with its route");
+            assert(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [overTailnet], routes: null, acceptDns: false }).includes("100.100.0.0/16"),
+                   "two VPNs: over the tailnet's own range — said, even with Tailscale's routes not known");
+            assert(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [overSix], routes: tailscaleRoutes, acceptDns: false }).includes("Six"),
+                   "two VPNs: over the tailnet's IPv6 range — said");
+            assertEqual(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [lab], routes: null, acceptDns: false }), "",
+                        "two VPNs: Tailscale's routes not known — only the tailnet's ranges compared");
+            assertEqual(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [split], routes: tailscaleRoutes.concat(["0.0.0.0/0", "::/0"]), exitNode: "Stockholm, Sweden", acceptDns: false }), "",
+                        "two VPNs: Tailscale's exit node (all of both families) is no overlap with a split VPN");
+            assertEqual(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [Object.assign({}, work, { setsDns: false })], routes: tailscaleRoutes, acceptDns: true }), "",
+                        "two VPNs: a full tunnel's /0 is not an overlap (that is the exit node's case)");
+            const unknownNote = rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [unknown], routes: tailscaleRoutes, exitNode: "Stockholm, Sweden", acceptDns: true });
+            assert(!unknownNote.includes("both route") && unknownNote.includes("exit node"), "two VPNs: routes not known — the generic note as before, no overlap claimed");
+            same(rules.overlappingVpns([lab, split, unknown, overTailnet, { name: "Tailscale · home", type: "provider", provider: "tailscale", routes: tailscaleRoutes }], "tailscale", tailscaleRoutes),
+                 ["Lab", "Mesh"], "another VPN: those that overlap Tailscale's routes; a split one, an unknown one and Tailscale's own row left out");
+            same(rules.overlappingVpns([lab], "tailscale", null), [], "another VPN: Tailscale's routes not known — only the tailnet's ranges");
         }
 
         // --- formatting and addresses: the shell's helpers (module API 1.12), no copies ---

@@ -82,7 +82,7 @@ On the status line and in notifications, IP addresses show as `[address]`.
 - Offline nodes are shown but cannot be chosen.
 - A filter appears when the list is long.
 - "Allow the local network" keeps the LAN reachable while an exit node is in use.
-- A line appears when another VPN that takes all traffic (or may) is up beside the exit node. A split VPN does not count.
+- A line appears when another VPN that takes all traffic (or may) is up beside the exit node, or one whose routes overlap the tailnet or the subnet routes in use. Any other split VPN does not count.
 
 ### By network
 
