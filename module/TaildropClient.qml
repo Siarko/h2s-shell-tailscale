@@ -353,6 +353,7 @@ QtObject {
         const actions = canSave && !autoSave ? [{ id: "save", label: "Save", onTriggered: () => root.save("user") }] : [];
         notices = notices.concat([{ names: names, actions: actions.map(action => action.id) }]).slice(-20);
         module?.notify(names.length === 1 ? "File received" : names.length + " files received", {
+            // One name per line again once the module asks for module API 1.28 (a plain body keeps its line breaks)
             body: names.map(name => String(name)).join(", "),
             actions: actions,
             format: "plain"

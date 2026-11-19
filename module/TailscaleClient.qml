@@ -320,6 +320,9 @@ QtObject {
         _loginTimer.stop();
         _recheckTimer.stop();
         _graceTimer.stop();
+        // Its timer is stopped: an offline moment kept would leave the next start's grace
+        // without one (_followExitNode starts it only for a new moment)
+        exitNodeOfflineSince = 0;
         _recheckAttempts = 0;
         _probing = false;
         _startedAt = 0;

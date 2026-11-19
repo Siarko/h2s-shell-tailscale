@@ -151,7 +151,10 @@ TestCase {
         ModuleTestKit.setNow(later);
         assertEqual(client.now, Date.UTC(2030, 0, 2, 3, 4, 0), "the time the state is derived at follows Api.minuteNow");
         ModuleTestKit.setNow(0);
-        assert(client.now <= Date.now() + 60000, "… the real clock again");
+        // Back on the real clock: within the current minute (the shell's minute start, or the
+        // last read since), not the 2030 one set above
+        const realNow = Date.now();
+        assert(client.now <= realNow && client.now > realNow - 61000, "… the real clock again: " + new Date(client.now).toISOString());
     }
 
     function runAsync() {

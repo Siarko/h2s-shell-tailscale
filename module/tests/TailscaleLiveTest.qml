@@ -518,6 +518,14 @@ TestCase {
         });
         then(graceClock, "the timer fired", () => !graceClock.client._graceTimer.running, () => {
             assert(graceClock.client.now > graceClock.momentBefore, "… firing, it moves the time the state is derived at on");
+            graceClock.client._graceTimer.interval = TailscaleRules.exitNodeOfflineGraceMs + 250;
+            graceClock.client.running = false;
+            same([graceClock.client.exitNodeOfflineSince, graceClock.client._graceTimer.running], [0, false],
+                 "stopped: the offline moment forgotten with its timer (a restart counts the grace afresh)");
+            graceClock.client.running = true;
+        });
+        then(graceClock, "read again", () => graceClock.client.exitNodeOfflineSince > 0, () => {
+            assert(graceClock.client._graceTimer.running, "started again, the exit node still offline: the grace timer runs again, never a grace without its timer");
         });
 
         // ---- daemon down → Start → up ----
