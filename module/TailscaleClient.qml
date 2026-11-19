@@ -1921,8 +1921,13 @@ QtObject {
         const description = TailscaleRules.commandFor(_loginCommand, {}).description;
         // The login's own words are what it printed, read as it came
         const outcome = TailscaleRules.privilegedOutcome(Object.assign({}, answer, { stderr: _loginText }), _loginCommand, _loginSeconds);
-        if (outcome.kind === "cancelled")
+        // Cancelled: the client's own cancel changed the token (above), so this is one it did
+        // not make — the login ends quietly, as when dismissed
+        if (outcome.kind === "cancelled") {
+            _loginGaveUp();
+            _loginDone();
             return;
+        }
         if (outcome.kind === "ok" || TailscaleRules.parseLoginOutput(_loginText).success) {
             _loginFrom = null;
             _failureEvent("succeeded");

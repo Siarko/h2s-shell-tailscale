@@ -618,6 +618,21 @@ TestCase {
             same(whats(cancelAsking), ["Log in"], "… one run as administrator, \"Log in\"");
         });
 
+        // The shell answers "cancelled" for the login's run as administrator while the client
+        // still waits for it (a cancel the client did not make itself): the login ends, not
+        // busy, nothing said — never a login left waiting until its time limit
+        const cancelledAnswer = scenario("login-cancelled-answer", { state: "needs-login", env: { TS_FAKE_PKEXEC: "ask" } });
+        then(cancelledAnswer, "read", () => cancelledAnswer.client.status !== null, () => assert(cancelledAnswer.client.attend(), "attend: the login starts"));
+        thenShellUntil(cancelledAnswer, "its run as administrator asks", "grep -c '^pkexec' \"$1/pkexec.log\"", "asking", "1", () => {
+            assert(cancelledAnswer.client._opPrivileged !== null, "the run as administrator started");
+            cancelledAnswer.client._opPrivileged.cancel();
+        });
+        then(cancelledAnswer, "the login ended", () => !cancelledAnswer.client.busy, () => {
+            assertEqual(cancelledAnswer.client.operation + "|" + cancelledAnswer.client.loginNote, "|", "answered cancelled: the login ends, nothing said");
+            assert(!cancelledAnswer.client._loginTimer.running, "… its time limit stopped");
+            assertEqual(cancelledAnswer.failures.length, 0, "… no failure");
+        });
+
         // ---- A2: a bare `up` that waits (offline, captive portal): its URL, Disconnect ends it ----
         const slowUp = scenario("slow-up-disconnect", { state: "stopped", env: { TS_FAKE_OPERATOR: "1", TS_FAKE_UP_DELAY: "30", TS_FAKE_UP_URL: "1" } });
         then(slowUp, "read", () => slowUp.client.status !== null, () => assert(slowUp.client.connect("user"), "connect starts"));
