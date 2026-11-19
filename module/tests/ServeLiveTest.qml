@@ -298,7 +298,38 @@ TestCase {
             same(race.module.privileged.calls.map(call => call.what), ["Turn on Funnel", "Turn off Funnel"], "… said: Funnel on, then off");
         });
 
-        then(race, "next", () => true, () => lockScenario());
+        then(race, "next", () => true, () => dismissedScenario());
+    }
+
+    function dismissedScenario() {
+        const serveScenario = "printf 'serve\\n' > \"$1/state/scenario\"";
+        const proxyOnly = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"}}}}}";
+        const withPath = "{\"TCP\":{\"443\":{\"HTTPS\":true}},\"Web\":{\"self.example-tailnet.ts.net:443\":{\"Handlers\":{\"/\":{\"Proxy\":\"http://127.0.0.1:3000\"},\"/files\":{\"Path\":\"/srv/share\"}}}}}";
+        // ---- The race again, and the password prompt for turning Funnel off right after the
+        // click is dismissed → nothing told (a dismissed prompt is silent), "Turn off Funnel"
+        // offered on the page ----
+        const dismissed = scenario("dismissed", { setup: [serveScenario, "printf '%s\\n' '" + proxyOnly + "' > \"$1/state/serve.json\"",
+                                                          "printf '%s\\n' '" + withPath + "' > \"$1/state/serve-next.json\""] });
+        then(dismissed, "status read", () => busReady(dismissed) && dismissed.client.serve.ready.canFunnel, () => assert(dismissed.client.serve.read(), "the config is read"));
+        then(dismissed, "config read", () => dismissed.client.serve.config !== null && !dismissed.client.serve.reading, () => {
+            // Funnel on goes through; the prompt for turning it off again is dismissed
+            dismissed.client.serve.checkingChanged.connect(() => {
+                if (dismissed.client.serve.checking)
+                    dismissed.client.environment = Object.assign({}, dismissed.env, { TS_FAKE_PKEXEC: "dismiss" });
+            });
+            assert(dismissed.client.serve.setFunnel(dismissed.client.serve.entries[0].key, true), "Funnel on");
+        });
+        then(dismissed, "checked, the prompt dismissed", () => dismissed.client.serve.funnelOffNeeded !== null && !dismissed.client.serve.checking && !dismissed.client.busy, () => {
+            assertEqual(dismissed.client.serve.message, "", "dismissed: nothing on the page");
+            same(dismissed.failures, [], "… no notification");
+            same(dismissed.client.serve.funnelOffNeeded, { port: 443 }, "… \"Turn off Funnel\" offered");
+        });
+        logs(dismissed, "what ran", () => {
+            const order = dismissed.pkexecLines.map(line => /\tfunnel\t/.test(line) ? "funnel" : /\tserve\t/.test(line) ? "serve" : line);
+            same(order, ["funnel", "serve"], "Funnel on, then Funnel off asked right after the click (dismissed)");
+        });
+
+        then(dismissed, "next", () => true, () => lockScenario());
     }
 
     function lockScenario() {
@@ -325,13 +356,42 @@ TestCase {
         then(lock, "the check started, another change took the lock", () => lock.grabbed === true, () => {
             same([lock.busyAtCheck, lock.grabbedOk], [false, true], "the lock was free and the other change took it");
         });
-        then(lock, "checked and turned off", () => /^Funnel off|^Couldn.t/.test(lock.client.serve.message) && !lock.client.serve.checking && !lock.client.busy && !lock.client.serve.reading, () => {
-            assertEqual(lock.client.serve.message, "Funnel off. Something else is on port 443.", "turned off after the other change ended");
+        // The click is over once the check waited: it may not ask for a password any more, so
+        // it tries without one (refused: not the operator) and says so, with a button
+        then(lock, "checked, needs the user", () => lock.client.serve.message !== "" && !lock.client.serve.checking && !lock.client.busy && !lock.client.serve.reading, () => {
+            assertEqual(lock.client.serve.message, "Port 443 is public with something else on it. Turn Funnel off on Tailscale's page.",
+                        "the check after the other change: no password asked, the user told what to do");
+            same(lock.client.serve.funnelOffNeeded, { port: 443 }, "… \"Turn off Funnel\" offered on the page");
+            assert(ServeRules.portPublic(lock.client.serve.config, 443, lock.client.status), "… Funnel still on for 443");
+            same(lock.failures.map(failure => failure.reason).filter(reason => /443/.test(reason)),
+                 ["Port 443 is public with something else on it. Turn Funnel off on Tailscale's page."], "… and a notification says it");
+        });
+        logs(lock, "no prompt after the wait", () => {
+            const order = lock.pkexecLines.map(line => /\tfunnel\t/.test(line) ? "funnel" : /\tset\t/.test(line) ? "set" : /\tserve\t/.test(line) ? "serve" : line);
+            same(order, ["funnel", "set"], "Funnel on (failed after its write), the other change — and no password asked for Funnel off");
+            assertEqual(count(lock.logLines, /^serve --bg --yes --https=443 http:\/\/127\.0\.0\.1:3000$/), 1, "… tried once without one");
+            // A dismissed prompt at the user's click: silent, the button stays
+            lock.client.environment = Object.assign({}, lock.env, { TS_FAKE_PKEXEC: "dismiss" });
+            lock.failuresBefore = lock.failures.length;
+            assert(lock.client.serve.turnFunnelOff(), "\"Turn off Funnel\" clicked");
+            assertEqual(lock.client.serve.funnelOffNeeded, null, "… the offer taken");
+        });
+        then(lock, "the click's prompt dismissed", () => !lock.client.serve.checking && !lock.client.busy && lock.client.serve.funnelOffNeeded !== null, () => {
+            assertEqual(lock.client.serve.message, "", "dismissed: nothing on the page");
+            assertEqual(lock.failures.length, lock.failuresBefore, "… no notification");
+            same(lock.client.serve.funnelOffNeeded, { port: 443 }, "… the button stays");
+            lock.client.environment = lock.env;
+            assert(lock.client.serve.turnFunnelOff(), "clicked again");
+        });
+        then(lock, "turned off at the click", () => lock.client.serve.message !== "" && !lock.client.serve.checking && !lock.client.busy && !lock.client.serve.reading, () => {
+            assertEqual(lock.client.serve.message, "Funnel off. Something else is on port 443.", "the click's password: Funnel off");
+            assertEqual(lock.client.serve.funnelOffNeeded, null, "… nothing offered any more");
             assert(!ServeRules.portPublic(lock.client.serve.config, 443, lock.client.status), "… Funnel off for 443");
         });
         logs(lock, "what ran", () => {
             const order = lock.pkexecLines.map(line => /\tfunnel\t/.test(line) ? "funnel" : /\tset\t/.test(line) ? "set" : /\tserve\t/.test(line) ? "serve" : line);
-            same(order, ["funnel", "set", "serve"], "Funnel on (failed after its write), the other change, then Funnel off");
+            same(order, ["funnel", "set", "serve", "serve"], "… then Funnel off at each click (the first dismissed)");
+            same(lock.module.privileged.calls.map(call => call.what).slice(-2), ["Turn off Funnel", "Turn off Funnel"], "… each said what for");
         });
 
         then(lock, "next", () => true, () => plainScenario());

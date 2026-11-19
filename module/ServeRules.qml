@@ -521,19 +521,41 @@ Singleton {
     readonly property string funnelNoticeTitle: "Funnel"
 
     // What the check after a Funnel tells, naming the port: "off" (turned off again),
-    // "failed" (turning it off failed), "unchecked" (the config could not be read), "public"
-    // (still public, nothing the module could send to turn it off)
+    // "failed" (turning it off failed), "password" (turning it off needs a password, which only
+    // the user's click may ask for: the page offers it), "unchecked" (the config could not be
+    // read), "public" (still public, nothing the module could send to turn it off)
     function funnelNotice(kind, port) {
         switch (kind) {
         case "off":
             return "Funnel off. Something else is on port " + port + ".";
         case "failed":
             return "Couldn't turn Funnel off on port " + port + ".";
+        case "password":
+            return "Port " + port + " is public with something else on it. Turn Funnel off on Tailscale's page.";
         case "unchecked":
             return "Couldn't check port " + port + ". Funnel may still be on.";
         default:
             return "Port " + port + " is public. Turn Funnel off in a terminal.";
         }
+    }
+
+    // How turning Funnel off after the check ended (the client's onEnd outcome: { ok,
+    // dismissed, elevated, code, error }), and whether the user's click asked for it right then
+    // (`byClick`; otherwise it never asks for a password) → { notice: a funnelNotice kind, ""
+    // telling nothing; offer: "Turn off Funnel" stays offered on the page }:
+    //   ok           told "off"
+    //   dismissed    nothing told (a dismissed prompt is silent), still offered
+    //   refused for want of a password, not by a click: "password", offered — the user's click
+    //                on the offer may ask for it
+    //   anything else  told "failed", offered
+    function funnelOffOutcome(outcome, byClick) {
+        if (outcome?.ok === true)
+            return { notice: "off", offer: false };
+        if (outcome?.dismissed === true)
+            return { notice: "", offer: true };
+        if (byClick !== true && outcome?.elevated !== true && TailscaleRules.errorKind(outcome?.code, outcome?.error).kind === "denied")
+            return { notice: "password", offer: true };
+        return { notice: "failed", offer: true };
     }
 
     // Everything off: `serve reset` (empties the whole config, Funnel included)

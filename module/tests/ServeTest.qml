@@ -302,9 +302,22 @@ TestCase {
         assert(!ServeRules.portPublic(fgFunnel, 8443, serveStatus), "… a false one is not");
         same(ServeRules.parseConfig({ Foreground: { a: { AllowFunnel: 1 }, b: null } }).funnelHosts, [], "a malformed session: no Funnel");
         // The notices name the port
-        same(["off", "failed", "unchecked", "public"].map(kind => ServeRules.funnelNotice(kind, 8443)),
-             ["Funnel off. Something else is on port 8443.", "Couldn't turn Funnel off on port 8443.", "Couldn't check port 8443. Funnel may still be on.",
-              "Port 8443 is public. Turn Funnel off in a terminal."], "the notices");
+        same(["off", "failed", "password", "unchecked", "public"].map(kind => ServeRules.funnelNotice(kind, 8443)),
+             ["Funnel off. Something else is on port 8443.", "Couldn't turn Funnel off on port 8443.",
+              "Port 8443 is public with something else on it. Turn Funnel off on Tailscale's page.",
+              "Couldn't check port 8443. Funnel may still be on.", "Port 8443 is public. Turn Funnel off in a terminal."], "the notices");
+        // How turning Funnel off after the check ended: told, offered on the page, or silent
+        const ended = extra => Object.assign({ ok: false, dismissed: false, elevated: false, code: 1, message: "", error: "" }, extra);
+        const denied = "Access denied: serve config denied";
+        same(ServeRules.funnelOffOutcome(ended({ ok: true, code: 0 }), true), { notice: "off", offer: false }, "funnel off: done — told, nothing offered");
+        same(ServeRules.funnelOffOutcome(ended({ dismissed: true, elevated: true }), true), { notice: "", offer: true },
+             "funnel off: the click's prompt dismissed — nothing told, the button stays");
+        same(ServeRules.funnelOffOutcome(ended({ error: denied }), false), { notice: "password", offer: true },
+             "funnel off: no click (the check waited), refused for want of a password — the user told to click, the button offered");
+        same(ServeRules.funnelOffOutcome(ended({ error: denied, elevated: true }), true), { notice: "failed", offer: true },
+             "funnel off: refused as administrator at the click — failed, offered again");
+        same(ServeRules.funnelOffOutcome(ended({ error: "something broke" }), false), { notice: "failed", offer: true }, "funnel off: another failure — failed, offered");
+        same(ServeRules.funnelOffOutcome(null, false), { notice: "failed", offer: true }, "funnel off: no outcome — failed, never \"off\"");
     }
 
     function certificates() {

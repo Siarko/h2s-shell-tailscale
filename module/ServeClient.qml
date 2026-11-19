@@ -19,7 +19,9 @@ import qs.api
 // The CLI still does its own read-modify-write after the plan (through pkexec: after the
 // password dialog), so after Funnel went on the config is read once more and, when the port now
 // holds more than the plan allowed, Funnel is turned off again at once and the user told
-// (ServeRules.publicCheck). Writing the config through the LocalAPI with If-Match would close
+// (ServeRules.publicCheck) — asking for a password only right after the click's own change;
+// a check that had to wait for another change never asks, and when it would need to, the
+// page offers "Turn off Funnel" (funnelOffNeeded, turnFunnelOff()). Writing the config through the LocalAPI with If-Match would close
 // that gap, but POST serve-config needs root or the operator: everyone else would have to run a
 // whole config, composed here, through pkexec.
 QtObject {
@@ -37,6 +39,10 @@ QtObject {
     property int reads: 0
     // The last change's outcome, for the page ("" none): one short line
     property string message: ""
+    // Funnel found on a port holding more than planned, and not turned off (it needed a
+    // password the check may not ask for, the prompt was dismissed, or it failed): { port },
+    // null none. The page offers "Turn off Funnel" (turnFunnelOff)
+    property var funnelOffNeeded: null
     readonly property var ready: ServeRules.preconditions(client?.status ?? null, client?.prefs ?? null)
     readonly property var entries: config !== null ? ServeRules.entriesFor(config, client?.status ?? null) : []
 
@@ -125,6 +131,19 @@ QtObject {
         return _change({ action: "reset" }, origin);
     }
 
+    // The page's "Turn off Funnel" for funnelOffNeeded: the check again, at the user's click —
+    // which may ask for the password
+    function turnFunnelOff() {
+        const pending = funnelOffNeeded;
+        if (!running || client.busy || checking || pending === null)
+            return false;
+        funnelOffNeeded = null;
+        message = "";
+        // No waiting for another change: the password is asked now or not at all
+        _checkPublic(pending.port, "user", funnelCheckTries);
+        return true;
+    }
+
     function _change(intent, origin) {
         if (!running || client.busy || checking)
             return false;
@@ -164,15 +183,17 @@ QtObject {
 
     // How often the check after a Funnel waits for another change to end before it gives up
     property int funnelCheckTries: 5
-    // The check waiting for the change lock: { port, origin, tries }, null none
+    // The check waiting for the change lock: { port, tries }, null none
     property var _checkWaiting: null
 
     // After Funnel went on for `port`: the config read again and checked (ServeRules.publicCheck);
     // a port that now holds more than the plan allowed has Funnel turned off at once, with the
     // click's origin (a user's click may ask for the password again; anything else never does),
-    // and the user is told either way. No change of this page starts meanwhile (`checking`); a
-    // change from elsewhere holding the lock is waited for, and the check is made again once it
-    // ended, at most funnelCheckTries times
+    // and the user is told (ServeRules.funnelOffOutcome; a dismissed prompt tells nothing). No
+    // change of this page starts meanwhile (`checking`); a change from elsewhere holding the lock
+    // is waited for, and the check is made again once it ended, at most funnelCheckTries times —
+    // never asking for a password then: the click is over, and when one is needed the page
+    // offers "Turn off Funnel" (funnelOffNeeded)
     function _checkPublic(port, origin, tries) {
         checking = true;
         _readConfig(parsed => {
@@ -191,10 +212,11 @@ QtObject {
             if (client.busy) {
                 if (tries >= funnelCheckTries) {
                     checking = false;
+                    funnelOffNeeded = { port: port };
                     _tell(ServeRules.funnelNotice("failed", port));
                     return;
                 }
-                _checkWaiting = { port: port, origin: origin, tries: tries + 1 };
+                _checkWaiting = { port: port, tries: tries + 1 };
                 return;
             }
             const prepare = (token, go) => _readFresh(token, (fresh, again) => {
@@ -212,7 +234,10 @@ QtObject {
             // through onEnd
             client._runChange(_command(check), origin, "serve", null, prepare, outcome => {
                 checking = false;
-                _tell(ServeRules.funnelNotice(outcome.ok ? "off" : "failed", port));
+                const result = ServeRules.funnelOffOutcome(outcome, origin === "user");
+                funnelOffNeeded = result.offer ? { port: port } : null;
+                if (result.notice !== "")
+                    _tell(ServeRules.funnelNotice(result.notice, port));
                 read();
             });
         });
@@ -230,7 +255,8 @@ QtObject {
             if (root.client.busy || waiting === null)
                 return;
             root._checkWaiting = null;
-            root._checkPublic(waiting.port, waiting.origin, waiting.tries);
+            // Not the click's any more: never a password prompt from here
+            root._checkPublic(waiting.port, "network", waiting.tries);
         }
     }
     function _reset() {
@@ -239,6 +265,7 @@ QtObject {
         reading = false;
         checking = false;
         _checkWaiting = null;
+        funnelOffNeeded = null;
         message = "";
     }
 

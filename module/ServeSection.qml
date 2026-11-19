@@ -55,6 +55,34 @@ ColumnLayout {
         }
     }
 
+    // Funnel found on a port with more on it than planned and still on (it needed a password
+    // that only a click may ask for): shown open or not, a click turns it off
+    RowLayout {
+        objectName: "tailscaleServeFunnelOff"
+        visible: (root.serve?.funnelOffNeeded ?? null) !== null
+        Layout.fillWidth: true
+        spacing: 8
+        Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            text: "Port " + (root.serve?.funnelOffNeeded?.port ?? "") + " is public with something else on it."
+            font.family: Api.theme.fontFamily
+            font.pixelSize: Api.theme.fontSizeSmall
+            color: Api.theme.warning
+        }
+        SmallButton {
+            objectName: "tailscaleServeFunnelOffButton"
+            label: "Turn off Funnel"
+            available: root._free
+            onClicked: root.serve.turnFunnelOff()
+        }
+        PrivilegedMark {
+            visible: root.need !== ""
+            need: root.need
+        }
+    }
+
     ColumnLayout {
         objectName: "tailscaleServe"
         visible: root.open

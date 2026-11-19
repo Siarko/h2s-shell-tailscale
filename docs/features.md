@@ -221,13 +221,17 @@ If the port then holds something the module would not make public, it turns Funn
 |---|---|
 | turned off | Funnel off. Something else is on port N. |
 | turning off failed | Couldn't turn Funnel off on port N. |
+| turning off needs a password, and the click is over | Port N is public with something else on it. Turn Funnel off on Tailscale's page. |
 | the config could not be read | Couldn't check port N. Funnel may still be on. |
 | nothing the module can send turns it off | Port N is public. Turn Funnel off in a terminal. |
 
 - The message shows on the page and as a notification titled "Funnel".
-- Turning Funnel off uses the click's origin. A click may ask for the password again.
+- Right after the click, turning Funnel off uses the click's origin. A click may ask for the password again.
 - No other serve change starts during the check.
 - If another change holds the lock, the check waits for it and tries again. After 5 tries it gives up with "Couldn't turn Funnel off".
+- A check that waited never asks for a password. When turning Funnel off needs one, it says so.
+- While Funnel is still on, the Serve section shows "Turn off Funnel". The password is asked at that click.
+- A dismissed password prompt shows nothing; the button stays.
 
 ## Certificates
 

@@ -39,7 +39,7 @@ Needs h2s-shell with module API 1.14.
 - Tailscale installed or started later is found without a restart. "Check again" and IPC `recheck`.
 - A failed Connect, Disconnect, Log in or Start shows its reason on the entry's status line.
 - A daemon fresh from the package offers Log in.
-- Funnel turned off again when something else landed on its port. A notification says so.
+- Funnel turned off again when something else landed on its port. A notification says so. When that needs a password after the click is over, "Turn off Funnel" asks for it on the page.
 - Exit node by network: an open choice is applied once its node is back or you become the operator.
 - Exit node by network: one notification per change. A pick by hand while a choice is open stays.
 - IPC `state` fields `failure`, `backendState`, `haveNodeKey`, `wantRunning`, `loggedOut`, `tools`.
