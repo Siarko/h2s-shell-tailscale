@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // The page's "Taildrop" (step 4). Taildrop needs this user to be Tailscale's operator (the
 // LocalAPI's write access; nothing of it runs through pkexec): not the operator, the section
@@ -86,6 +85,7 @@ ColumnLayout {
             Pill {
                 required property var modelData
                 objectName: "taildropTarget"
+                size: "s"
                 label: modelData.name + (modelData.note !== "" ? " · " + modelData.note : "")
                 picked: root.taildrop?.targetId === modelData.id
                 enabled: modelData.available

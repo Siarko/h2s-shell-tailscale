@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // Texts to copy with a click (addresses, a MagicDNS name): each a small chip that says
 // "Copied" after the click — the device rows' and the page's "This device". Shown as plain

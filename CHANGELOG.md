@@ -74,6 +74,8 @@ Needs h2s-shell with module API 1.31.
 - The exit node per network is set on the network's own card (Settings → System → Network, a saved Wi-Fi or Ethernet network, opened): "Tailscale exit node". While the network routes through an exit node (a node or "Automatic", not "No exit node"), the card's name line shows the exit-node mark, with the choice in the shell's tooltip. The table on the Tailscale page is gone. Choices made before are kept.
 - A choice in the exit node chooser is for now, once Tailscale made the change (not when it failed or the password prompt was dismissed): it wins over the networks' choices until "Default", a wake from sleep or a restart, and the network's choice then applies again; with no network's choice up, no exit node is used. The chooser shows "Default" while a choice is for now, with what it brings back, and its header says "for now" or "for <network>" (only while that network's exit node is still the one in use).
 - Exit node names from other devices show on one line: line breaks and invisible direction marks are dropped.
+- The views use the shell's public elements instead of its internal ones, except the bar widget's preset pane.
+- The lock beside an account's "Switch" no longer shows for the operator, who switches without a password.
 
 ### Removed
 

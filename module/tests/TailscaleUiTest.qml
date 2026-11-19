@@ -137,5 +137,42 @@ TestCase {
         // The exit node per network is on the network cards now (NetworkExitCard): no table here
         assertEqual(textsWith(page, "By network").length + textsWith(page, "Add a network").length, 0, "page: no per-network exit node table");
         page.destroy();
+        // The lock beside "Switch": on the accounts not in use, and only for a user who is not
+        // the operator (the operator switches without a password). The module is set after the
+        // page is made: given to createObject, its lists would arrive as lists of the engine's
+        // own, not arrays, and no account row would be built
+        const markOf = (canChange, id) => {
+            const accountsPage = _page.createObject(null);
+            accountsPage.module = { main: { client: Object.assign({}, pageClient, { canChange: canChange }) }, value: key => undefined, setValue: (key, value) => {} };
+            const shownNow = [shown(named(accountsPage, "tailscaleAccount-" + id)), shown(named(accountsPage, "tailscaleAccountMark-" + id))];
+            accountsPage.destroy();
+            return shownNow;
+        };
+        same([markOf(false, "a1"), markOf(false, "b2")], [[true, false], [true, true]], "page, not the operator: the lock beside the other account's Switch only");
+        same([markOf(true, "a1"), markOf(true, "b2")], [[true, false], [true, false]], "page, the operator: no lock beside Switch");
+    }
+
+    function named(item, name) {
+        if (!item)
+            return null;
+        if (item.objectName === name)
+            return item;
+        for (const child of item.children ?? []) {
+            const found = named(child, name);
+            if (found)
+                return found;
+        }
+        return null;
+    }
+
+    function shown(item) {
+        for (let node = item; node; node = node.parent)
+            if (node.visible === false)
+                return false;
+        return item !== null;
+    }
+
+    function same(actual, expected, message) {
+        assertEqual(JSON.stringify(actual), JSON.stringify(expected), message);
     }
 }

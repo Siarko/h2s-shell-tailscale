@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // One device of the tailnet on the page's list (TailscaleRules.peers' entry): its name, owner
 // and system, online or last seen, how traffic goes (direct, relayed), its addresses with
@@ -79,7 +78,7 @@ Rectangle {
                 objectName: "taildropDeviceSend"
                 visible: root.client !== null && TailscaleWidgetRules.canSendTo(root.device, root.client.view?.phase, root.client.taildrop?.isOperator)
                 label: "Send file…"
-                fontSize: Api.theme.fontSizeXSmall
+                size: "xs"
                 onClicked: root.client.taildrop.chooseFor(root.device.id)
             }
             // `tailscale ping --c=1 --timeout=3s`: how a packet gets there now (direct or relayed)
@@ -87,7 +86,7 @@ Rectangle {
                 objectName: "tailscalePing"
                 visible: root.client !== null && root.device?.online === true
                 label: "Ping"
-                fontSize: Api.theme.fontSizeXSmall
+                size: "xs"
                 available: !(root._ping?.running ?? false)
                 onClicked: root.client.ping(root.device)
             }

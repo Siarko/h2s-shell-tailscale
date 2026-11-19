@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // Tailscale's own page: the settings page "tailscale" under System → Network (its manifest's
 // settingsPages), where its VPN card's "Settings…" leads (the provider's settingsPage) — the
@@ -97,14 +96,14 @@ ColumnLayout {
             visible: root.view !== null && ["stopped", "unknown"].includes(root.view.phase)
                      && (root.client?.entry.attention?.action ?? "") === ""
             label: "Connect"
-            kind: "save"
+            kind: "primary"
             available: root._free
             onClicked: root.client.connect("user")
         }
         SmallButton {
             visible: root.view !== null && ["running", "starting"].includes(root.view.phase)
             label: "Disconnect"
-            kind: "delete"
+            kind: "danger"
             available: root._free
             onClicked: root.client.disconnect("user")
         }
@@ -124,13 +123,16 @@ ColumnLayout {
             available: root._free
             onClicked: root.client.recheck()
         }
-        DeleteButton {
+        SmallButton {
+            kind: "danger"
+            confirm: true
+            size: "s"
             visible: root._loggedIn
             label: "Log out"
             confirmLabel: "Log out?"
             cancelTip: "Cancel — stay logged in"
             available: root._free
-            onConfirmed: root.client.logout()
+            onClicked: root.client.logout()
         }
     }
     // The account in use and its tailnet (TailscaleRules.tailnetName: a personal tailnet by
@@ -196,7 +198,7 @@ ColumnLayout {
         SmallButton {
             visible: root.client?.operation === "login" || root.client?.operation === "connect"
             label: "Cancel"
-            kind: "cancel"
+            kind: "secondary"
             onClicked: root.client.cancelLogin()
         }
     }
@@ -309,8 +311,9 @@ ColumnLayout {
                 color: Api.theme.accent
             }
             PrivilegedMark {
-                visible: !_account.modelData.selected
-                need: root.need
+                objectName: "tailscaleAccountMark-" + _account.modelData.id
+                // The account in use is not switched to: nothing to mark
+                need: _account.modelData.selected ? "" : root.need
             }
             SmallButton {
                 objectName: "tailscaleSwitch-" + _account.modelData.id
@@ -319,13 +322,16 @@ ColumnLayout {
                 available: root._free
                 onClicked: root.client.switchAccount(_account.modelData.id)
             }
-            DeleteButton {
+            SmallButton {
+                kind: "danger"
+                confirm: true
+                size: "s"
                 visible: _account.modelData.removable
                 label: "Remove"
                 confirmLabel: "Remove?"
                 cancelTip: "Cancel — keep the account"
                 available: root._free
-                onConfirmed: root.client.removeAccount(_account.modelData.id)
+                onClicked: root.client.removeAccount(_account.modelData.id)
             }
         }
     }

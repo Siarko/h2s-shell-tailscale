@@ -1,7 +1,6 @@
 import QtQuick
 import Quickshell.Io
 import qs.api
-import qs.components
 
 // Created by the module host while the module is enabled. Everything of the module that acts
 // lives here: the live client (its stream, timers and commands), the VPN provider (it leaves

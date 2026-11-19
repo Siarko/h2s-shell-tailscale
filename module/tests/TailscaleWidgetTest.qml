@@ -328,7 +328,14 @@ TestCase {
 
         const stopped = _popup.createObject(null, { client: client("stopped", "", { entry: { state: "", status: "Off", attention: null } }) });
         assert(shown(find(stopped, "tailscalePopupConnect")), "popup, off: Connect");
+        assert(shown(find(stopped, "tailscalePopupMark")), "… not the operator: the lock beside it");
         stopped.destroy();
+        // The lock only beside a button: none shown, nothing to mark, no room taken
+        const waiting = _popup.createObject(null, { client: client("needs-approval", "", { entry: { state: "", status: "Waiting", attention: null } }) });
+        assert(!shown(find(waiting, "tailscalePopupConnect")) && !shown(find(waiting, "tailscalePopupDisconnect")) && !shown(find(waiting, "tailscalePopupAttend")),
+               "popup, waiting for approval: no button");
+        same([shown(find(waiting, "tailscalePopupMark")), find(waiting, "tailscalePopupMark").implicitWidth], [false, 0], "… and no lock");
+        waiting.destroy();
 
         // Connected, with crafted names everywhere the tailnet names something
         const peer = { id: "p1", name: crafted, online: true, ipv4: "100.64.0.9", canReceiveFiles: true };
@@ -346,6 +353,7 @@ TestCase {
         const popup = _popup.createObject(null, { client: live, _ready: true });
         assert(shown(find(popup, "tailscalePopupDisconnect")), "popup, connected: Disconnect");
         assert(!shown(find(popup, "tailscalePopupConnect")), "… no Connect");
+        assert(!shown(find(popup, "tailscalePopupMark")), "… the operator: no lock beside it");
         assert(shown(find(popup, "tailscaleExitNodeChooser")), "… the exit-node chooser (the row's own)");
         assert(shown(find(popup, "tailscalePopupSelf")), "… this device's addresses");
         assert(shown(find(popup, "tailscalePopupSave")), "… Save for the operator");

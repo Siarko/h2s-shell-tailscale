@@ -167,9 +167,11 @@ TestCase {
         assert(!/pkexec|PrivilegedAction|elevate|stand-in/i.test(deprecations),
                "… not in the transitional test-mode gate any more (no stand-in pkexec outside testPrograms): " + deprecations);
         // Its row and card through anchors (module API 1.23): no slot among its deprecations;
-        // what is left is the shell's internal elements (until the module moves off them)
+        // what is left is the shell's internal elements in the one file whose pills want the
+        // body text size, which the public Pill does not offer yet
         assert(!/slots|network\.vpn\.(row|card)/.test(deprecations), "… no slot deprecation: its row and card are anchors: " + deprecations);
-        same((module.status?.deprecations ?? []).map(text => text.split(" (")[0]), ["import qs.components"], "… its deprecations: only qs.components");
+        same((module.status?.deprecations ?? []).map(text => text.split(":")[0]), ["import qs.components (in TailscaleWidgetSettings.qml)"],
+             "… its deprecations: only qs.components, in the widget's settings alone");
         same(module.status?.errors ?? [], [], "… no error (its anchors are offered and take its placements)");
         // Its programs: the stand-ins of its testPrograms, handed over by the shell, trusted
         const standIns = module.directory + "/tests/stand-in";

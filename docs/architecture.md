@@ -12,6 +12,23 @@ Each feature has up to three files:
 
 The rules hold every decision, so the suites test them with plain objects.
 
+## Views
+
+The views are built from the shell's public elements (`qs.api`: `SmallButton`, `InputField`,
+`Dropdown`, `Pill`, `Checkbox`, `PrivilegedMark`, the settings blocks, the bar's base types).
+On them the module picks a meaning (`kind`, `size`), never a colour or a size in pixels. A
+button that asks first ("Remove", "Log out", "Stop all", "Funnel on") is a `danger` button
+with `confirm`. `PrivilegedMark` decides by itself whether it shows: a view that wants no
+lock somewhere gives it an empty `need`, never its own `visible`.
+
+What no public element fits is the module's own, from QtQuick items on `Api.theme`'s tokens:
+the copy chips (`CopyChips.qml`), the device rows, the exit node list's rows, the bar
+widget's glyph, mark and badge.
+
+The widget's preset pane (`TailscaleWidgetSettings.qml`) still imports `qs.components`: its
+pills show their text in the body size, which the public `Pill` does not offer. The
+module's status lists that import among its deprecations.
+
 ## File map
 
 ```

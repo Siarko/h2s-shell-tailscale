@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // The page's "SSH": Tailscale's SSH server on this computer (`tailscale set --ssh`), who may
 // log in (the tailnet's access rules, linked), Tailscale's own warnings about it; logging in to

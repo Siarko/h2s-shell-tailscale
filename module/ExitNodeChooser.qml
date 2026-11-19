@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // The exit-node chooser (the popup row's extras and the page's "Exit node" section): the
 // current node or "None", the suggested node as a one-tap choice, this tailnet's own exit
@@ -167,7 +166,7 @@ ColumnLayout {
         visible: root.expanded && root._choiceCount > root.filterFrom
         Layout.fillWidth: true
         placeholder: "Filter: a name, a country, a city"
-        fontSize: Api.theme.fontSizeSmall
+        size: "s"
         onTextEdited: root._filter = text
     }
 

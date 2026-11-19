@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.api
-import qs.components
 
 // At popup.network.connections.vpn.row ("after", own-provider; module API 1.23): under
 // Tailscale's row in the network popup — the exit-node chooser while connected, and the login
@@ -54,13 +53,13 @@ ColumnLayout {
         }
         SmallButton {
             label: "Copy link"
-            fontSize: Api.theme.fontSizeSmall
+            size: "s"
             onClicked: Api.copy(root.client.authUrl)
         }
         SmallButton {
             label: "Cancel"
-            kind: "cancel"
-            fontSize: Api.theme.fontSizeSmall
+            kind: "secondary"
+            size: "s"
             onClicked: root.client.cancelLogin()
         }
     }

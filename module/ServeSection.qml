@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // The page's "Serve" (delivery step 5), collapsed until opened: what this computer shares with
 // the tailnet or, with Funnel, the internet (ServeClient, ServeRules); add a local port, a TCP
@@ -78,7 +77,6 @@ ColumnLayout {
             onClicked: root.serve.turnFunnelOff()
         }
         PrivilegedMark {
-            visible: root.need !== ""
             need: root.need
         }
     }
@@ -165,24 +163,29 @@ ColumnLayout {
                     }
                     // On: asks first, the shell's two-step confirm — Funnel is per port, so the
                     // question names the other shares on the port that go public with it
-                    DeleteButton {
+                    SmallButton {
+                        kind: "danger"
+                        confirm: true
+                        size: "s"
                         objectName: "tailscaleServeFunnelOn"
                         visible: _entry.modelData.type === "https" && !_entry.modelData.funnel
                         label: "Funnel on"
                         confirmLabel: ServeRules.funnelQuestion(root.serve?.config ?? null, _entry.modelData)
                         cancelTip: "Cancel, keep it private"
                         available: root._free && (root.ready?.canFunnel ?? false)
-                        onConfirmed: root.serve.setFunnel(_entry.modelData.key, true)
+                        onClicked: root.serve.setFunnel(_entry.modelData.key, true)
                     }
                     PrivilegedMark {
-                        visible: root.need !== ""
                         need: root.need
                     }
-                    DeleteButton {
+                    SmallButton {
+                        kind: "danger"
+                        confirm: true
+                        size: "s"
                         label: "Remove"
                         confirmLabel: "Remove?"
                         available: root._free
-                        onConfirmed: root.serve.remove(_entry.modelData.key)
+                        onClicked: root.serve.remove(_entry.modelData.key)
                     }
                 }
                 CopyChips {
@@ -255,7 +258,6 @@ ColumnLayout {
                     : { kind: "proxy", port: root._port, localPort: _local.text, path: _path.text, funnel: root._funnel })
             }
             PrivilegedMark {
-                visible: root.need !== ""
                 need: root.need
             }
         }
@@ -279,11 +281,14 @@ ColumnLayout {
             visible: (root.serve?.entries.length ?? 0) > 0
             Layout.fillWidth: true
             Item { Layout.fillWidth: true }
-            DeleteButton {
+            SmallButton {
+                kind: "danger"
+                confirm: true
+                size: "s"
                 label: "Stop all"
                 confirmLabel: ServeRules.resetQuestion(root.serve?.config ?? null)
                 available: root._free
-                onConfirmed: root.serve.reset()
+                onClicked: root.serve.reset()
             }
         }
     }

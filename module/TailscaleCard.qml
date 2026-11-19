@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // At settings.network_vpn.vpns.card.settings ("prepend", own-provider; module API 1.23): in
 // Tailscale's opened card in Settings → System → Network → VPN — the tailnet and account, this

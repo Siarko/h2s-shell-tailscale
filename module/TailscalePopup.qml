@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // The bar widget's popup (step 6): what one does daily. The state and Connect / Disconnect
 // (or the attention's own action: Log in, Start…), the account; the exit node (the chooser
@@ -127,8 +126,9 @@ Item {
                     }
                 }
                 PrivilegedMark {
-                    visible: root.need !== "" && (_connect.visible || _disconnect.visible || _attend.visible)
-                    need: root.need
+                    objectName: "tailscalePopupMark"
+                    // Beside the buttons only: with none of them shown, nothing to mark (the mark hides itself)
+                    need: _connect.visible || _disconnect.visible || _attend.visible ? root.need : ""
                 }
                 SmallButton {
                     id: _connect
@@ -136,7 +136,7 @@ Item {
                     visible: root.view !== null && ["stopped", "unknown"].includes(root.view.phase) && root.client.cli === "present"
                              && (root.entry?.attention?.action ?? "") === ""
                     label: "Connect"
-                    kind: "save"
+                    kind: "primary"
                     available: root._free
                     onClicked: root.client.connect("user")
                 }
@@ -145,7 +145,7 @@ Item {
                     objectName: "tailscalePopupDisconnect"
                     visible: root.view !== null && ["running", "starting"].includes(root.view.phase)
                     label: "Disconnect"
-                    kind: "delete"
+                    kind: "danger"
                     available: root._free
                     onClicked: root.client.disconnect("user")
                 }
@@ -183,7 +183,7 @@ Item {
                 }
                 SmallButton {
                     label: "Copy link"
-                    fontSize: Api.theme.fontSizeSmall
+                    size: "s"
                     onClicked: Api.copy(root.client.authUrl)
                 }
             }
@@ -263,7 +263,7 @@ Item {
                                 objectName: "tailscalePopupSend"
                                 visible: TailscaleWidgetRules.canSendTo(_deviceRow.modelData, root.view?.phase, root.taildrop?.isOperator)
                                 label: "Send file…"
-                                fontSize: Api.theme.fontSizeXSmall
+                                size: "xs"
                                 // The shell's chooser; the files picked show in the row below
                                 onClicked: root.taildrop.chooseForPopup(_deviceRow.modelData.id)
                             }
@@ -282,7 +282,7 @@ Item {
                 objectName: "tailscalePopupAllDevices"
                 visible: root.deviceList.more > 0
                 label: "All devices…"
-                fontSize: Api.theme.fontSizeSmall
+                size: "s"
                 onClicked: root.module?.openSettings("")
             }
 
@@ -301,7 +301,7 @@ Item {
                     objectName: "tailscalePopupSave"
                     visible: root.taildrop?.canSave === true
                     label: "Save"
-                    fontSize: Api.theme.fontSizeSmall
+                    size: "s"
                     available: root._free && (root.taildrop?.waitingCount ?? 0) > 0
                     onClicked: root.taildrop.save("user")
                 }
@@ -326,7 +326,7 @@ Item {
                 SmallButton {
                     objectName: "tailscalePopupSettings"
                     label: "Settings…"
-                    fontSize: Api.theme.fontSizeSmall
+                    size: "s"
                     onClicked: root.module?.openSettings("")
                 }
                 Item {
@@ -336,7 +336,7 @@ Item {
                     objectName: "tailscalePopupAdmin"
                     visible: root._loggedIn
                     label: "Admin console"
-                    fontSize: Api.theme.fontSizeSmall
+                    size: "s"
                     onClicked: root.client.openUrl(TailscaleRules.adminMachinesUrl)
                 }
             }

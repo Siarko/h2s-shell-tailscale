@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // The page's "Sharing": what this computer offers to the tailnet — itself as an exit node, its
 // networks as subnet routes (each with an admin's approval), IP forwarding when it is off, the
@@ -138,12 +137,15 @@ ColumnLayout {
             PrivilegedMark {
                 need: root.need
             }
-            DeleteButton {
+            SmallButton {
+                kind: "danger"
+                confirm: true
+                size: "s"
                 label: "Remove"
                 confirmLabel: "Remove?"
                 cancelTip: "Cancel — keep offering it"
                 available: root._free
-                onConfirmed: root.client.removeRoute(_routeRow.modelData.route)
+                onClicked: root.client.removeRoute(_routeRow.modelData.route)
             }
         }
     }

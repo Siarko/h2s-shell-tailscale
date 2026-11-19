@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // The page's "Certificates" (delivery step 5), collapsed until opened: a TLS certificate for
 // this computer's MagicDNS name, got by the operator as the user into the module's own folder

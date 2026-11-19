@@ -1,6 +1,5 @@
 import QtQuick
 import qs.api
-import qs.components
 
 // Tailscale's bar widget (step 6): one glyph coloured by the client's state the way the
 // network widget colours its links (dim: nothing to use; plain: off; accent: connected; the

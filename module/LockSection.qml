@@ -2,7 +2,6 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import qs.api
-import qs.components
 
 // The page's "Tailnet lock" (delivery step 5): its state only (LockClient, LockRules) — one line
 // while off; on: whether this device is signed, its keys to copy, the trusted keys' count. A
