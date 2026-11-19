@@ -61,14 +61,8 @@ ColumnLayout {
         visible: (root.serve?.funnelOffNeeded ?? null) !== null
         Layout.fillWidth: true
         spacing: 8
-        Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
+        Notice {
             text: "Port " + (root.serve?.funnelOffNeeded?.port ?? "") + " is public with something else on it."
-            font.family: Api.theme.fontFamily
-            font.pixelSize: Api.theme.fontSizeSmall
-            color: Api.theme.warning
         }
         SmallButton {
             objectName: "tailscaleServeFunnelOffButton"
@@ -97,14 +91,8 @@ ColumnLayout {
                 required property var modelData
                 Layout.fillWidth: true
                 spacing: 8
-                Text {
-                    Layout.fillWidth: true
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WordWrap
+                Notice {
                     text: parent.modelData.text
-                    font.family: Api.theme.fontFamily
-                    font.pixelSize: Api.theme.fontSizeSmall
-                    color: Api.theme.warning
                 }
                 SmallButton {
                     visible: parent.modelData.url !== ""
@@ -163,11 +151,12 @@ ColumnLayout {
                     }
                     // On: asks first, the shell's two-step confirm — Funnel is per port, so the
                     // question names the other shares on the port that go public with it
-                    SmallButton {
-                        kind: "danger"
-                        confirm: true
+                    // "warning": it goes on, but think — the share becomes public on the internet
+                    ConfirmButton {
+                        kind: "warning"
                         size: "s"
                         objectName: "tailscaleServeFunnelOn"
+                        subject: _entry.modelData.key
                         visible: _entry.modelData.type === "https" && !_entry.modelData.funnel
                         label: "Funnel on"
                         confirmLabel: ServeRules.funnelQuestion(root.serve?.config ?? null, _entry.modelData)
@@ -178,10 +167,11 @@ ColumnLayout {
                     PrivilegedMark {
                         need: root.need
                     }
-                    SmallButton {
+                    ConfirmButton {
+                        objectName: "tailscaleServeRemove"
                         kind: "danger"
-                        confirm: true
                         size: "s"
+                        subject: _entry.modelData.key
                         label: "Remove"
                         confirmLabel: "Remove?"
                         available: root._free
@@ -266,25 +256,21 @@ ColumnLayout {
             visible: root._addPublic
             text: "Public on the internet"
         }
-        Text {
+        Notice {
             objectName: "tailscaleServeMessage"
             visible: text !== ""
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
             text: root.serve?.message || root.serve?.readError || ""
-            font.family: Api.theme.fontFamily
-            font.pixelSize: Api.theme.fontSizeSmall
-            color: Api.theme.warning
         }
         RowLayout {
             visible: (root.serve?.entries.length ?? 0) > 0
             Layout.fillWidth: true
             Item { Layout.fillWidth: true }
-            SmallButton {
+            ConfirmButton {
+                objectName: "tailscaleServeStopAll"
                 kind: "danger"
-                confirm: true
                 size: "s"
+                // Every share it stops: one more or less is another question
+                subject: (root.serve?.entries ?? []).map(entry => entry.key).join("\n")
                 label: "Stop all"
                 confirmLabel: ServeRules.resetQuestion(root.serve?.config ?? null)
                 available: root._free

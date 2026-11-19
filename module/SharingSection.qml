@@ -137,10 +137,11 @@ ColumnLayout {
             PrivilegedMark {
                 need: root.need
             }
-            SmallButton {
+            ConfirmButton {
+                objectName: "tailscaleRouteRemove"
                 kind: "danger"
-                confirm: true
                 size: "s"
+                subject: _routeRow.modelData.route
                 label: "Remove"
                 confirmLabel: "Remove?"
                 cancelTip: "Cancel — keep offering it"
@@ -172,15 +173,9 @@ ColumnLayout {
             }
         }
     }
-    Text {
-        textFormat: Text.PlainText
+    Notice {
         visible: _route.text.trim() !== "" && text !== ""
-        Layout.fillWidth: true
-        wrapMode: Text.WordWrap
         text: root._routeCheck.error !== "" ? root._routeCheck.error : root._routeCheck.warning
-        font.family: Api.theme.fontFamily
-        font.pixelSize: Api.theme.fontSizeSmall
-        color: Api.theme.warning
     }
     RowLayout {
         visible: (root.sharing?.pendingCount ?? 0) > 0 && (root.sharing?.adminUrl ?? "") !== ""
@@ -203,14 +198,8 @@ ColumnLayout {
         visible: root._warning !== null
         Layout.fillWidth: true
         spacing: 2
-        Text {
-            textFormat: Text.PlainText
-            Layout.fillWidth: true
-            wrapMode: Text.WordWrap
+        Notice {
             text: root._warning?.text ?? ""
-            font.family: Api.theme.fontFamily
-            font.pixelSize: Api.theme.fontSizeSmall
-            color: Api.theme.warning
         }
         Text {
             textFormat: Text.PlainText

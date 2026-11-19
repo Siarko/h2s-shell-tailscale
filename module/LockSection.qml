@@ -39,14 +39,8 @@ ColumnLayout {
         visible: root.lock?.lockedOut === true
         Layout.fillWidth: true
         spacing: 8
-        Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
+        Notice {
             text: "A trusted device must sign this one"
-            font.family: Api.theme.fontFamily
-            font.pixelSize: Api.theme.fontSizeSmall
-            color: Api.theme.warning
         }
         SmallButton {
             label: "Admin console"

@@ -3,6 +3,7 @@ TailscaleClient 1.0 TailscaleClient.qml
 ExitNodeChooser 1.0 ExitNodeChooser.qml
 DeviceRow 1.0 DeviceRow.qml
 CopyChips 1.0 CopyChips.qml
+ConfirmButton 1.0 ConfirmButton.qml
 SharingSection 1.0 SharingSection.qml
 SshSection 1.0 SshSection.qml
 singleton TaildropRules 1.0 TaildropRules.qml

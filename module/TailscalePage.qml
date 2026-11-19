@@ -123,11 +123,12 @@ ColumnLayout {
             available: root._free
             onClicked: root.client.recheck()
         }
-        SmallButton {
+        ConfirmButton {
+            objectName: "tailscaleLogout"
             kind: "danger"
-            confirm: true
             size: "s"
             visible: root._loggedIn
+            subject: root.client?.currentAccount?.loginName ?? ""
             label: "Log out"
             confirmLabel: "Log out?"
             cancelTip: "Cancel — stay logged in"
@@ -148,15 +149,9 @@ ColumnLayout {
         font.pixelSize: Api.theme.fontSizeSmall
         color: Api.theme.textMuted
     }
-    Text {
-        textFormat: Text.PlainText
+    Notice {
         visible: text !== ""
-        Layout.fillWidth: true
-        wrapMode: Text.WordWrap
         text: root.client?.entry.attention?.reason ?? ""
-        font.family: Api.theme.fontFamily
-        font.pixelSize: Api.theme.fontSizeSmall
-        color: Api.theme.warning
     }
     // Logging in with the same account merges into the old profile with login's defaults
     // (ipnlocal/profiles.go): said where the button is
@@ -225,17 +220,11 @@ ColumnLayout {
         visible: root._present
         text: "Accounts"
     }
-    Text {
-        textFormat: Text.PlainText
+    Notice {
         objectName: "tailscaleLoginInterrupted"
         visible: root.client?.loginInterrupted != null
-        Layout.fillWidth: true
-        wrapMode: Text.WordWrap
         text: "The login was not finished: Tailscale is now on a new, empty profile"
             + ((root.client?.loginInterrupted?.title ?? "") !== "" ? " (before: " + root.client.loginInterrupted.title + ")." : ".")
-        font.family: Api.theme.fontFamily
-        font.pixelSize: Api.theme.fontSizeSmall
-        color: Api.theme.warning
     }
     RowLayout {
         visible: root._present && (root.client.accounts === null || root.client.accountsOutdated || (root.client.loginInterrupted?.id ?? "") !== "")
@@ -322,11 +311,12 @@ ColumnLayout {
                 available: root._free
                 onClicked: root.client.switchAccount(_account.modelData.id)
             }
-            SmallButton {
+            ConfirmButton {
+                objectName: "tailscaleAccountRemove-" + _account.modelData.id
                 kind: "danger"
-                confirm: true
                 size: "s"
                 visible: _account.modelData.removable
+                subject: _account.modelData.id
                 label: "Remove"
                 confirmLabel: "Remove?"
                 cancelTip: "Cancel — keep the account"
@@ -428,15 +418,9 @@ ColumnLayout {
             onClicked: root.client.setHostname("")
         }
     }
-    Text {
-        textFormat: Text.PlainText
+    Notice {
         visible: text !== ""
-        Layout.fillWidth: true
-        wrapMode: Text.WordWrap
         text: TailscaleRules.hostnameProblem(_hostname.text.trim())
-        font.family: Api.theme.fontFamily
-        font.pixelSize: Api.theme.fontSizeSmall
-        color: Api.theme.warning
     }
     // The MagicDNS name only while it is the current one (else it is in the row above, marked)
     CopyChips {
@@ -657,15 +641,9 @@ ColumnLayout {
                 values: (root.client?.health ?? []).map(warning => ({ key: warning.title + "\n" + warning.text, title: warning.title, text: warning.text }))
                 objectProp: "key"
             }
-            Text {
+            Notice {
                 required property var modelData
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
-                wrapMode: Text.WordWrap
                 text: [modelData.title, modelData.text].filter(part => part !== "").join(": ")
-                font.family: Api.theme.fontFamily
-                font.pixelSize: Api.theme.fontSizeSmall
-                color: Api.theme.warning
             }
         }
         Text {
@@ -713,15 +691,9 @@ ColumnLayout {
                 values: (root.client?.diagnostics.errors ?? []).map(text => ({ text: text }))
                 objectProp: "text"
             }
-            Text {
+            Notice {
                 required property var modelData
-                textFormat: Text.PlainText
-                Layout.fillWidth: true
-                wrapMode: Text.WordWrap
                 text: modelData.text
-                font.family: Api.theme.fontFamily
-                font.pixelSize: Api.theme.fontSizeSmall
-                color: Api.theme.warning
             }
         }
         Hint {

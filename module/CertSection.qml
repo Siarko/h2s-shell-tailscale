@@ -103,15 +103,9 @@ ColumnLayout {
             visible: root.cert?.current?.present === true
             text: "Not renewed by itself"
         }
-        Text {
+        Notice {
             visible: text !== ""
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            wrapMode: Text.WordWrap
             text: root.cert?.message ?? ""
-            font.family: Api.theme.fontFamily
-            font.pixelSize: Api.theme.fontSizeSmall
-            color: Api.theme.warning
         }
     }
 }

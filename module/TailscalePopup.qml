@@ -166,10 +166,9 @@ Item {
                 wrapMode: Text.NoWrap
                 text: root.client ? [root.client.currentAccount.loginName, root.client.currentAccount.tailnet].filter(part => part !== "").join(" · ") : ""
             }
-            Line {
+            Notice {
                 visible: text !== ""
                 text: root.entry?.attention?.reason ?? ""
-                color: Api.theme.warning
             }
             // A login waiting for the browser: the link to copy (as the network popup's row)
             RowLayout {

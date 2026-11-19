@@ -153,11 +153,10 @@ ColumnLayout {
                     values: (root.taildrop?.inputProblems ?? []).map((item, index) => ({ key: index + "\n" + item.text + "\n" + item.problem, text: item.text, problem: item.problem }))
                     objectProp: "key"
                 }
-                Line {
+                Notice {
                     required property var modelData
                     objectName: "taildropInputProblem"
                     text: [modelData.text, modelData.problem].filter(part => part !== "").join(" · ")
-                    color: Api.theme.warning
                 }
             }
             Repeater {
@@ -280,10 +279,9 @@ ColumnLayout {
             onClicked: root.taildrop.openFolder()
         }
     }
-    Line {
+    Notice {
         visible: text !== ""
         text: root.taildrop?.saveError ?? ""
-        color: Api.theme.warning
     }
     Repeater {
         model: ScriptModel {
@@ -327,11 +325,10 @@ ColumnLayout {
             onClicked: root.taildrop.resetFolder()
         }
     }
-    Line {
+    Notice {
         objectName: "taildropFolderNote"
         visible: root._operator && text !== ""
         text: root.taildrop?.folderNote ?? ""
-        color: Api.theme.warning
     }
     RowLayout {
         visible: root._operator

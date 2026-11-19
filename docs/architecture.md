@@ -15,10 +15,14 @@ The rules hold every decision, so the suites test them with plain objects.
 ## Views
 
 The views are built from the shell's public elements (`qs.api`: `SmallButton`, `InputField`,
-`Dropdown`, `Pill`, `Checkbox`, `ToggleSwitch`, `PrivilegedMark`, the settings blocks, the bar's base types).
+`Dropdown`, `Pill`, `Checkbox`, `ToggleSwitch`, `PrivilegedMark`, `Notice`, the settings blocks, the bar's base types).
 On them the module picks a meaning (`kind`, `size`), never a colour or a size in pixels. A
-button that asks first ("Remove", "Log out", "Stop all", "Funnel on") is a `danger` button
-with `confirm`. `PrivilegedMark` decides by itself whether it shows: a view that wants no
+button that asks first is a `ConfirmButton` (`ConfirmButton.qml`: the public button with
+`confirm`), which takes its question back when it hides and when what it acts on, its
+`subject`, changes. "Remove", "Log out" and "Stop all" are `danger`; "Funnel on" is
+`warning` (it goes on, but makes the share public). A warning line is a `Notice`, except
+three that stand in one line: the "Public" mark on a share, the problem on a network's card
+and the note in the popup's send row, each cut to one line. `PrivilegedMark` decides by itself whether it shows: a view that wants no
 lock somewhere gives it an empty `need`, never its own `visible`.
 
 What no public element fits is the module's own, from QtQuick items on `Api.theme`'s tokens:
@@ -44,6 +48,7 @@ module/
   ExitNodeChooser.qml          exit node list (row, page, popup)
   DeviceRow.qml                one device on the page
   CopyChips.qml                addresses and names to copy with a click
+  ConfirmButton.qml            a button that asks first, its question taken back when it hides
   SharingSection.qml           exit node and route offers, forwarding, web interface, More
   SshSection.qml               SSH server
   Taildrop{Rules,Client,Section}.qml     Taildrop

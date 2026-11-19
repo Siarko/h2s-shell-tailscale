@@ -77,15 +77,9 @@ ColumnLayout {
             values: root._warnings.map(text => ({ text: text }))
             objectProp: "text"
         }
-        Text {
-            textFormat: Text.PlainText
+        Notice {
             required property var modelData
-            Layout.fillWidth: true
-            wrapMode: Text.WordWrap
             text: modelData.text
-            font.family: Api.theme.fontFamily
-            font.pixelSize: Api.theme.fontSizeSmall
-            color: Api.theme.warning
         }
     }
 

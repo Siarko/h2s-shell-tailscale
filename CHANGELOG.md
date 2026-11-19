@@ -77,7 +77,13 @@ Needs h2s-shell with module API 1.32.
 - Exit node names from other devices show on one line: line breaks and invisible direction marks are dropped.
 - The views use the shell's public elements instead of its internal ones; the shell lists no deprecations for the module.
 - The lock beside an account's "Switch" no longer shows for the operator, who switches without a password.
+- "Funnel on" is a warning button, not a danger one: it asks first as before.
+- Warning lines on the page, the card and the popup are the shell's notice line.
 
 ### Removed
 
 - The test seams `H2S_TAILSCALE_TOOLS`, `H2S_TAILSCALE_FORWARDING_DIR`, `H2S_TAILSCALE_DOWNLOAD_DIR`, `H2S_TAILSCALE_CERT_DIR`. Tests use the shell's module test mode; the stand-ins are in `module/tests/stand-in`.
+
+### Fixed
+
+- A button that asks first ("Log out", "Remove", "Funnel on", "Stop all") no longer keeps its question while hidden or after what it acts on changed: shown again, it asks again instead of acting on one click.

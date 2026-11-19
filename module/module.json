@@ -43,6 +43,7 @@
         "tests/TailscaleLiveTest.qml",
         "tests/TailscaleModuleTest.qml",
         "tests/TailscaleUiTest.qml",
+        "tests/TailscaleConfirmTest.qml",
         "tests/TailscaleAccountsTest.qml",
         "tests/TailscaleSharingTest.qml",
         "tests/TaildropTest.qml",

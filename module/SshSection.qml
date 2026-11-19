@@ -52,30 +52,18 @@ ColumnLayout {
             onClicked: root.client.openUrl(TailscaleRules.adminAclsUrl)
         }
     }
-    Text {
-        textFormat: Text.PlainText
+    Notice {
         visible: text !== "" && root.ssh?.on !== true
-        Layout.fillWidth: true
-        wrapMode: Text.WordWrap
         text: root.ssh?.problem ?? ""
-        font.family: Api.theme.fontFamily
-        font.pixelSize: Api.theme.fontSizeSmall
-        color: Api.theme.warning
     }
     Repeater {
         model: ScriptModel {
             values: root._sshHealth.map(warning => ({ key: warning.title + "\n" + warning.text, text: [warning.title, warning.text].filter(part => part !== "").join(": ") }))
             objectProp: "key"
         }
-        Text {
+        Notice {
             required property var modelData
-            textFormat: Text.PlainText
-            Layout.fillWidth: true
-            wrapMode: Text.WordWrap
             text: modelData.text
-            font.family: Api.theme.fontFamily
-            font.pixelSize: Api.theme.fontSizeSmall
-            color: Api.theme.warning
         }
     }
     Hint {
