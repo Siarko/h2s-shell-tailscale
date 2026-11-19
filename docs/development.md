@@ -42,10 +42,14 @@ The shell runs them in module test mode: every program the module names comes fr
 `module/tests/stand-in` (the manifest's `testPrograms`), a run as administrator goes through
 the stand-in `pkexec`, links are recorded (`ModuleTestKit.opened`), and `Api.system` gives
 made-up facts. The live suites run many scenarios at once, each with a client of its own: its
-handle is a `StandInModule` (`module/tests/StandInModule.qml`), which gives the stand-ins as its
-programs (or a scenario's: one missing, an untrusted one, one installed later) and records each
-run as administrator (`what`, argv, limit) before running it with the scenario's `TS_FAKE_*`
-environment. `TailscaleModuleTest` uses the module's real handle and the shell's own queue.
+handle is a `ScenarioHandle` (`module/tests/ScenarioHandle.qml`), which gives the stand-ins as
+its programs (or a scenario's: one missing, an untrusted one, one installed later) and passes
+each run as administrator to the module's real handle — the shell's one queue and the stand-in
+`pkexec` — recording it (`what`, argv, limit) on the way. The client hands its `TS_FAKE_*`
+environment to the run (module API 1.14: `options.environment`, taken in module test mode
+only), so each scenario's runs as root see its own stand-in state. `TailscaleModuleTest` uses
+the module's real handle directly; it turns the module off and on again only once the other
+suites are done, since that ends every run of the module in the shell's queue.
 
 #### NixOS
 

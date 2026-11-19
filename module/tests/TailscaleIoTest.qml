@@ -291,8 +291,20 @@ TestCase {
             const trusted = { path: ts, trusted: true, reason: "root's, and only root can change it" };
             const facts = extra => Object.assign({ program: trusted, available: true, unavailableReason: "", seconds: 60 }, extra ?? {});
             same(rules.privilegedRun(rules.commandFor("shieldsUp", { on: true }), facts()),
-                 { ok: true, error: "", argv: [ts, "set", "--shields-up=true"], what: "Block incoming connections", timeoutMs: 60000 },
-                 "privilegedRun: tailscale by its trusted path, the command's words, its limit in ms (the shell's timeout inside pkexec)");
+                 { ok: true, error: "", argv: [ts, "set", "--shields-up=true"], what: "Block incoming connections", timeoutMs: 60000, environment: null },
+                 "privilegedRun: tailscale by its trusted path, the command's words, its limit in ms (the shell's timeout inside pkexec), no environment");
+            // The environment: only what a suite gave its client (module API 1.14, test mode
+            // only); the client's empty one outside a suite gives none, so the shell never
+            // sees the option there
+            for (const given of [{}, undefined, null, "TS=1", ["A"], { "BAD NAME": "x" }, { A: 5 }])
+                assertEqual(rules.privilegedRun(rules.commandFor("connect", {}), facts({ environment: given })).environment, null,
+                            "privilegedRun: environment " + JSON.stringify(given) + " → none");
+            const scenarioEnvironment = { TS_FAKE_STATE_DIR: "/tmp/x", TS_FAKE_GONE: null };
+            const withEnvironment = rules.privilegedRun(rules.commandFor("connect", {}), facts({ environment: scenarioEnvironment }));
+            same(withEnvironment.environment, scenarioEnvironment, "privilegedRun: a suite's variables, a removal (null) among them, handed on");
+            assert(withEnvironment.environment !== scenarioEnvironment, "… as a copy");
+            assertEqual(rules.privilegedRun(rules.commandFor("connect", {}), facts({ available: false, environment: scenarioEnvironment })).environment, null,
+                        "privilegedRun: refused: no environment either");
             same(rules.privilegedRun(rules.commandFor("connect", {}), facts()).argv, [ts, "up"], "privilegedRun: connect stays bare (the limit is the shell's, never a flag)");
             same(rules.privilegedRun(rules.commandFor("login", {}), facts({ seconds: 600 })).timeoutMs, 600000, "privilegedRun: the login's 10 minutes");
             const untrusted = rules.privilegedRun(rules.commandFor("connect", {}), facts({ program: { path: "/home/u/bin/tailscale", trusted: false, reason: "others than root can change /home/u/bin/tailscale" } }));

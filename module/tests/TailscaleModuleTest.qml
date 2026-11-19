@@ -3,6 +3,7 @@ import Quickshell
 import qs.api
 import qs.tests
 import ".."
+import "liveSuites.js" as LiveSuites
 
 // The module as the shell's host loaded it (tests/run-modules.sh, module test mode): its main
 // made the live client and the VPN provider; its programs are the stand-ins of its manifest's
@@ -15,6 +16,11 @@ TestCase {
     id: suite
     suiteName: "tailscale: the module in the shell's host"
     asynchronous: true
+    // It waits for the live suites (below): up to the runner's cap
+    Component.onCompleted: {
+        if ("timeLimitMs" in suite)
+            suite["timeLimitMs"] = 60000;
+    }
 
     readonly property var module: Api.moduleAt(Qt.resolvedUrl("."))
     property var _steps: []
@@ -28,8 +34,9 @@ TestCase {
         return (ModuleTestKit.notified ?? []).slice(_notifiedBefore).filter(notice => notice.summary === "Module: Tailscale");
     }
 
-    function _then(description, condition, action) {
-        _steps.push({ description: description, condition: condition, action: action });
+    // timeoutMs: how long the step may wait for its condition (15 s when not given)
+    function _then(description, condition, action, timeoutMs) {
+        _steps.push({ description: description, condition: condition, action: action, timeoutMs: timeoutMs ?? 15000 });
     }
 
     property Timer _clock: Timer {
@@ -48,7 +55,7 @@ TestCase {
             try {
                 ready = step.condition();
             } catch (error) {}
-            if (!ready && waited < 15000)
+            if (!ready && waited < step.timeoutMs)
                 return;
             waited = 0;
             suite._steps.shift();
@@ -70,7 +77,7 @@ TestCase {
         assert(module !== null && module.active, "the module is loaded and active");
         assertEqual(module.status?.state, "loaded", "… state loaded");
         assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, qs.components, Quickshell)");
-        assertEqual(module.manifest.api, "1.13", "written for module API 1.13 (programs, test mode, running as administrator, the system's facts)");
+        assertEqual(module.manifest.api, "1.14", "written for module API 1.14 (programs, test mode, running as administrator with a suite's environment, the system's facts)");
         assert(Api.testMode, "the module test runner: module test mode");
         const deprecations = JSON.stringify(module.status?.deprecations ?? []);
         assert(!/pkexec|PrivilegedAction|elevate|stand-in/i.test(deprecations),
@@ -122,6 +129,11 @@ TestCase {
             if (typeof module.presetValue === "function")
                 assertEqual(module.presetValue("tailscale", "", "devices"), 5, "… its preset read through the handle (module API 1.3)");
             widget?.destroy();
+        });
+        // The shell's queue, its test polkit agent and the module's on/off state are shared with
+        // the live suites, which run beside this one through the same handle: another agent
+        // and the module turned off would change their runs (liveSuites.js)
+        _then("the live suites are done", () => LiveSuites.allDone() && ModuleTestKit.privilegedIdle, () => {
             // A change only root may make, asked by the user: through the shell's queue and
             // its stand-in pkexec. With another polkit agent the shell sends a notification
             // saying who and what for just before pkexec starts — the run's `what`, recorded
@@ -129,7 +141,7 @@ TestCase {
             ModuleTestKit.setPolkitAgent("other");
             assert(!Tailscale.client.canChange, "not the operator: a change needs an administrator");
             assert(Tailscale.client.setShieldsUp(true), "Block incoming connections: starts");
-        });
+        }, 55000);
         _then("run as administrator through the shell", () => Tailscale.client.prefs?.shieldsUp === true && !Tailscale.client.busy && ModuleTestKit.privilegedIdle, () => {
             const notices = suite._ownNotices();
             same(notices.map(notice => notice.body), ["Authorization: Block incoming connections"],

@@ -4,7 +4,7 @@ Current version: 0.6.0 (`module/module.json`).
 
 ## Unreleased
 
-Needs h2s-shell with module API 1.13.
+Needs h2s-shell with module API 1.14.
 
 ### Added
 

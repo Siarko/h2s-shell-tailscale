@@ -45,7 +45,7 @@ import qs.api
 // not; TailscaleRules.programsFound). A tailscale this user could change is not trusted, and
 // then nothing runs. In module test mode the shell hands over the stand-ins of the manifest's
 // testPrograms instead (tests/stand-in) — a module test never reaches the real tailscale. A
-// suite's own client is given a stand-in handle (tests/StandInModule.qml). Looking again
+// suite's own client is given a scenario's handle (tests/ScenarioHandle.qml). Looking again
 // (recheck(), wake(), the backoff) asks the shell to look the programs up again
 // (recheckPrograms), and the LocalAPI socket is looked for each time. Links open through
 // Api.openUrl (in module test mode it records them).
@@ -80,12 +80,13 @@ QtObject {
     // Acts only while true (Main binds it to module.active); false ends everything
     property bool running: false
     // The module's handle (its store, its settings, resumed(), its programs, running as
-    // administrator), or a suite's stand-in handle (tests/StandInModule.qml), or null
+    // administrator), or a suite's scenario handle (tests/ScenarioHandle.qml), or null
     property var module: null
     // The system's facts (module API 1.13; a suite may give its own): the data and download
     // folders, IP forwarding
     property var system: Api.system
-    // Added to every process's environment (the suites: the stand-ins' TS_FAKE_* variables)
+    // Added to every process's environment, and handed to the runs as administrator (the
+    // suites: the stand-ins' TS_FAKE_* variables; module API 1.14 takes them in test mode only)
     property var environment: ({})
     // The clock, for the suites (0: the real one)
     property real fixedNow: 0
@@ -1463,7 +1464,8 @@ QtObject {
     function _runPrivileged(command, seconds, handlers) {
         const plan = TailscaleRules.privilegedRun(command, {
             program: programs?.tailscale ?? null, available: privileged?.available === true,
-            unavailableReason: privileged ? String(privileged.unavailableReason ?? "") : "no way to run as administrator", seconds: seconds
+            unavailableReason: privileged ? String(privileged.unavailableReason ?? "") : "no way to run as administrator", seconds: seconds,
+            environment: environment
         });
         if (!plan.ok)
             return { ok: false, error: plan.error };
@@ -1474,8 +1476,11 @@ QtObject {
             if (_opPrivileged === run)
                 _opPrivileged = null;
         };
+        // The suites' stand-in state (module API 1.14, module test mode only); never given
+        // outside a suite (`environment` is empty there)
+        const environmentOption = plan.environment !== null ? { environment: plan.environment } : {};
         try {
-            run = privileged.start(plan.argv, {
+            run = privileged.start(plan.argv, Object.assign(environmentOption, {
                 what: plan.what, timeoutMs: plan.timeoutMs, notifyFailures: false,
                 onStdout: text => {
                     if (_alive(generation))
@@ -1490,7 +1495,7 @@ QtObject {
                     if (_alive(generation))
                         handlers?.done?.(result);
                 }
-            });
+            }));
         } catch (error) {
             return { ok: false, error: "It could not be run as administrator: " + String(error).slice(0, 200) };
         }

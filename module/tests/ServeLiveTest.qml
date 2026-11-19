@@ -3,6 +3,7 @@ import Quickshell
 import qs.api
 import qs.tests
 import ".."
+import "liveSuites.js" as LiveSuites
 
 // Delivery step 5 live (ServeClient, CertClient, LockClient, NetworkExitClient on the client's
 // runner) against the stand-ins: sharing a port through pkexec and seeing it with its link,
@@ -14,6 +15,7 @@ TestCase {
     suiteName: "tailscale: serve, certificates, lock, exit node per network against the stand-ins"
     asynchronous: true
     Component.onCompleted: {
+        LiveSuites.register(suite);
         if ("timeLimitMs" in suite)
             suite["timeLimitMs"] = 120000;
     }
@@ -33,7 +35,7 @@ TestCase {
     }
     property CommandAction _shell: CommandAction {}
     property Component _moduleComponent: Component {
-        StandInModule {}
+        ScenarioHandle {}
     }
 
     // options: { env {}, setup (sh lines, $1 the scenario's directory) }
@@ -54,12 +56,11 @@ TestCase {
             _shell.run(["sh", "-c", lines.join(" && "), "sh", dir], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
-                s.module = _moduleComponent.createObject(suite, { environment: s.env });
+                s.module = _moduleComponent.createObject(suite);
                 s.client = _clientComponent.createObject(suite, {
                     module: s.module, environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 5000,
                     readRetryMinMs: 300, readRetryMaxMs: 1200
                 });
-                s.module.environment = Qt.binding(() => s.client.environment);
                 s.client.cert.certDir = dir + "/certs";
                 s.client.tailnetLock.lockSettleMs = 1500;
                 s.client.failed.connect((what, reason) => s.failures.push({ what: what, reason: reason }));

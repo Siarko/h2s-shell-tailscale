@@ -39,7 +39,7 @@ module/
   TailscalePopup.qml           its popup
   TailscaleWidgetSettings.qml  its preset pane
   TailscaleWidgetRules.qml     icon state, text, badge, popup devices
-  tests/                       QML suites; StandInModule.qml, a handle for a suite's own client
+  tests/                       QML suites; ScenarioHandle.qml, a handle for a suite's own client
   tests/stand-in/              fake tailscale, pkexec, curl, timeout, systemctl, openssl: the
                                manifest's testPrograms
 fixtures/                      outputs of the tailscale CLI and local API
@@ -144,8 +144,9 @@ Under the shell's module test runner and in the lock bed the shell is in module 
 (`Api.testMode`). There every program comes from `module/tests/stand-in` (the manifest's
 `testPrograms`), runs as administrator go through the stand-in `pkexec`, `Api.openUrl` only
 records the link, and `Api.system` gives made-up facts. IPC calls count as a click there
-(the stand-in pkexec asks nobody). A suite's own client gets a `StandInModule` as its handle:
+(the stand-in pkexec asks nobody). A suite's own client gets a `ScenarioHandle` as its handle:
 the stand-ins as its programs (or a scenario's: one missing, an untrusted one, one found
-later), and runs as administrator recorded and run with the scenario's environment.
+later), and the runs as administrator recorded and handed to the module's real handle; the
+client gives them its scenario's environment (module API 1.14, module test mode only).
 
 Small helpers (`sh`, `find`, `stat`, `cat`, `id`, `ip`) are found through PATH.

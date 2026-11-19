@@ -3,9 +3,10 @@ import Quickshell
 import qs.api
 import qs.tests
 import ".."
+import "liveSuites.js" as LiveSuites
 
 // Taildrop's live side (TaildropClient, on TailscaleClient's runner) against the stand-ins
-// (tests/stand-in, each client's StandInModule): sending — the user-side check, `file cp --` plainly, denied → pkexec, the
+// (tests/stand-in, each client's ScenarioHandle): sending — the user-side check, `file cp --` plainly, denied → pkexec, the
 // bus's progress, cancel, a dismissed prompt, an offline device — and receiving — the bus's
 // arrivals for a user who is not the operator (a notice, no listing, no save), the operator's
 // listing and save with adversarial names into a real folder (sanitised, owned by the user,
@@ -16,6 +17,7 @@ TestCase {
     suiteName: "tailscale: Taildrop against the stand-ins"
     asynchronous: true
     Component.onCompleted: {
+        LiveSuites.register(suite);
         if ("timeLimitMs" in suite)
             suite["timeLimitMs"] = 30000;
     }
@@ -35,7 +37,7 @@ TestCase {
     }
     property CommandAction _shell: CommandAction {}
     property Component _moduleComponent: Component {
-        StandInModule {}
+        ScenarioHandle {}
     }
 
     // options: { env {}, setup (sh lines, $1 the scenario's directory) }
@@ -56,12 +58,11 @@ TestCase {
             _shell.run(["sh", "-c", lines.join(" && "), "sh", dir], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
-                s.module = _moduleComponent.createObject(suite, { environment: s.env });
+                s.module = _moduleComponent.createObject(suite);
                 s.client = _clientComponent.createObject(suite, {
                     module: s.module, environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 5000,
                     readRetryMinMs: 300, readRetryMaxMs: 1200
                 });
-                s.module.environment = Qt.binding(() => s.client.environment);
                 s.client.taildrop.defaultFolder = dir + "/downloads";
                 if (s.options.idleLimitMs)
                     s.client.taildrop.idleLimitMs = s.options.idleLimitMs;

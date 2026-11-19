@@ -3,14 +3,16 @@ import Quickshell
 import qs.api
 import qs.tests
 import ".."
+import "liveSuites.js" as LiveSuites
 
 // The live side (TailscaleClient) against the stand-ins (tests/stand-in): every scenario the
 // stand-in tailscale supports, each with a client, a state directory and logs of its own, side
 // by side. Asserts on what the client shows AND on what was run (the stand-ins log argv): `up`
 // never has a flag, every change is a `set`, nothing privileged and no browser on origin
 // "network"; every run as administrator with its `what` for the prompt. Nothing here reaches
-// a real tailscale: each client's handle is a StandInModule — the stand-ins as its programs,
-// as the shell hands them over in module test mode.
+// a real tailscale: each client's handle is a ScenarioHandle — the stand-ins as its programs,
+// as the shell hands them over in module test mode, and the shell's own runs as administrator
+// (its queue, the stand-in pkexec) with the scenario's environment.
 TestCase {
     id: suite
     suiteName: "tailscale: the live side against the stand-ins"
@@ -18,6 +20,7 @@ TestCase {
     // Many scenarios: more than the runner's 20 s default — the runner's cap. Set only where the
     // shell knows the property (TestCase.timeLimitMs), so the suite still compiles on an older one
     Component.onCompleted: {
+        LiveSuites.register(suite);
         if ("timeLimitMs" in suite)
             suite["timeLimitMs"] = 60000;
     }
@@ -47,7 +50,7 @@ TestCase {
     }
     property CommandAction _shell: CommandAction {}
     property Component _moduleComponent: Component {
-        StandInModule {}
+        ScenarioHandle {}
     }
 
     // ---- The scenario machinery ----
@@ -86,7 +89,7 @@ TestCase {
             _shell.run(["sh", "-c", lines.join(" && "), "sh", dir, s.options.state ?? ""], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
-                s.module = _moduleComponent.createObject(suite, { environment: s.env });
+                s.module = _moduleComponent.createObject(suite);
                 s.module.programs = s.module.programsIn({ missing: s.options.emptyTools === true || s.options.lateTools === true,
                                                           without: s.options.without, untrusted: s.options.untrusted });
                 // IP forwarding as the system's facts read it: "<ipv4> <ipv6>"
@@ -97,8 +100,6 @@ TestCase {
                     loginTimeoutMs: s.options.loginTimeoutMs ?? 60000, fixedNow: s.options.fixedNow ?? 0,
                     timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, recheckMinMs: s.options.recheckMinMs ?? 5000
                 });
-                // The runs as administrator take the client's environment as it is then
-                s.module.environment = Qt.binding(() => s.client.environment);
                 s.client.failed.connect((what, reason) => s.failures.push({ what: what, reason: reason }));
                 s.client.running = true;
                 s.ready = true;
@@ -149,11 +150,11 @@ TestCase {
         return (lines ?? []).filter(line => pattern.test(line)).length;
     }
 
-    // A pkexec log line's pattern: pkexec, the stand-in timeout with its limit, the stand-in
-    // tailscale, then `rest` (tab-separated)
+    // A pkexec log line's pattern: pkexec, the shell's timeout (by absolute path) with its
+    // limit, the stand-in tailscale, then `rest` (tab-separated)
     function elevatedLine(seconds, rest) {
         const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        return new RegExp("^pkexec\\t" + escape(standIns) + "/timeout\\t-k\\t3\\t" + seconds + "\\t" + escape(standIns) + "/tailscale\\t" + rest + "$");
+        return new RegExp("^pkexec\\t/[^\\t]*/timeout\\t-k\\t3\\t" + seconds + "\\t" + escape(standIns) + "/tailscale\\t" + rest + "$");
     }
 
     // Api.openUrl was asked to open `url` (in module test mode it records; any scenario's)
@@ -808,8 +809,8 @@ TestCase {
         // pkexec or timeout): said on the entry, nothing asked
         const noPrivileges = scenario("connect-no-privileges", { state: "stopped" });
         then(noPrivileges, "read", () => noPrivileges.client.status !== null, () => {
-            noPrivileges.module.privileged.available = false;
-            noPrivileges.module.privileged.unavailableReason = "no pkexec found";
+            noPrivileges.module.privilegedUnavailableReason = "no pkexec found";
+            noPrivileges.module.privilegedAvailable = false;
             assert(noPrivileges.client.warnings.some(warning => warning.kind === "no-elevation"
                                                      && warning.text === "Changes that need an administrator are not offered: no pkexec found."),
                    "the card says changes as administrator are not offered, and why");

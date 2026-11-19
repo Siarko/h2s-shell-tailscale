@@ -26,7 +26,7 @@ It works through the `tailscale` CLI and the daemon's local API.
 
 | What | Needed for |
 |---|---|
-| h2s-shell with module API 1.13 | everything |
+| h2s-shell with module API 1.14 | everything |
 | `tailscale` and a running `tailscaled` | everything |
 | `pkexec` and coreutils `timeout`, found by the shell | changes that need an administrator |
 | `curl` | live updates and saving received files |

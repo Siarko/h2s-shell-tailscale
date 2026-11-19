@@ -2566,9 +2566,9 @@ Singleton {
     }
 
     // A command as administrator, for module.privileged.start (module API 1.11):
-    // privilegedRun(command, facts) → { ok, error, argv, what, timeoutMs }. facts: { program
-    // (module.programs.tailscale), available (module.privileged.available), unavailableReason,
-    // seconds (the command's time limit) }.
+    // privilegedRun(command, facts) → { ok, error, argv, what, timeoutMs, environment }. facts:
+    // { program (module.programs.tailscale), available (module.privileged.available),
+    // unavailableReason, seconds (the command's time limit), environment (the client's) }.
     //   argv       [<tailscale by its absolute path>, args…] — only a TRUSTED tailscale: the
     //              shell does not judge what it is given to run as root, and a program this
     //              user could change would let any of the user's processes become root
@@ -2576,8 +2576,12 @@ Singleton {
     //   timeoutMs  the limit, 1 s to 1 h: the shell's own `timeout` inside pkexec ends the
     //              command there, as root, even when the shell is gone (a root process cannot
     //              be signalled from here)
+    //   environment  null — or, when the client was given variables (only a suite gives
+    //              them: the stand-ins' state), a copy of them for the stand-in pkexec
+    //              (module API 1.14, taken in module test mode only). Never a variable
+    //              otherwise: the shell refuses a run with an environment outside test mode
     function privilegedRun(command, facts) {
-        const refuse = error => ({ ok: false, error: error, argv: [], what: "", timeoutMs: 0 });
+        const refuse = error => ({ ok: false, error: error, argv: [], what: "", timeoutMs: 0, environment: null });
         const argv = _get(command, "argv");
         if (!Array.isArray(argv) || argv.length === 0 || argv[0] !== "tailscale" || !argv.every(item => typeof item === "string"))
             return refuse("not a tailscale command");
@@ -2595,7 +2599,21 @@ Singleton {
         const seconds = _get(facts, "seconds");
         if (!_validSeconds(seconds) || seconds > 3600)
             return refuse("not a time limit for a run as administrator");
-        return { ok: true, error: "", argv: [path].concat(argv.slice(1)), what: what, timeoutMs: seconds * 1000 };
+        return { ok: true, error: "", argv: [path].concat(argv.slice(1)), what: what, timeoutMs: seconds * 1000,
+                 environment: _environmentCopy(_get(facts, "environment")) };
+    }
+
+    // { NAME: "value" | null } with at least one name → a plain copy; anything else → null
+    function _environmentCopy(given) {
+        if (given === null || typeof given !== "object" || Array.isArray(given))
+            return null;
+        const copy = {};
+        for (const name of Object.keys(given)) {
+            const value = given[name];
+            if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && (typeof value === "string" || value === null))
+                copy[name] = value;
+        }
+        return Object.keys(copy).length > 0 ? copy : null;
     }
 
     // ---- Warnings ----
