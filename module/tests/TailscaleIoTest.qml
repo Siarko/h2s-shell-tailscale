@@ -399,6 +399,9 @@ TestCase {
             // The runner's result → the module's reading of it
             const result = changes => Object.assign({ ok: false, code: 1, stdout: "", stderr: "", timedOut: false, cancelled: false, failedToStart: false, error: "" }, changes);
             same(rules.runError(result({ ok: true, code: 0 })), { kind: "", message: "" }, "runError: ok");
+            same(rules.runError(result({ ok: true, code: 0, truncated: true })), { kind: "too-long", message: "The answer was too long." },
+                 "runError: output cut by the runner: a failure, though it exited 0");
+            assert(rules.maxAnswerChars >= 32 * 1024 * 1024, "the runner's cut: room for a large tailnet's status --json");
             same(rules.runError(result({ timedOut: true, code: -1 })), { kind: "timeout", message: rules.errorKind(124, "").message }, "runError: timed out, whatever the code");
             same(rules.runError(result({ code: -1, error: "argv is empty" })), { kind: "not-run", message: "It could not be run: argv is empty" }, "runError: refused by the runner, why");
             same(rules.runError(result({ code: 127, failedToStart: true, stderr: "timeout: failed to run command" })), { kind: "not-run", message: "The program could not be started." },

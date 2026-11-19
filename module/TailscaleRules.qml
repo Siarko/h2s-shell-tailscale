@@ -2243,16 +2243,24 @@ Singleton {
         return [curlPath, "-sN", "--unix-socket", socket, "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus?mask=" + watchMask];
     }
 
+    // Where the runner cuts what a run prints (its maxOutputBytes, in characters): room for
+    // `status --json` of a large tailnet (some 2 KB a device). A cut answer is a failed run
+    // (runError's "too-long"), never a partial one read as whole
+    readonly property int maxAnswerChars: 33554432
+
     // How a plain run ended — the runner's result ({ ok, code, stdout, stderr, timedOut,
-    // cancelled, failedToStart, error }) → { kind, message }: kind "" (ok), "timeout" (its time
-    // limit ended it), "not-run" (the runner refused it: `error`; or the program could not be
-    // started), else errorKind's of its exit status and its error output
+    // cancelled, failedToStart, truncated, error }) → { kind, message }: kind "" (ok),
+    // "timeout" (its time limit ended it), "too-long" (its output was cut: what was kept is not
+    // the whole answer, even with exit 0), "not-run" (the runner refused it: `error`; or the
+    // program could not be started), else errorKind's of its exit status and its error output
     function runError(result) {
         const field = key => _get(result, key);
-        if (field("ok") === true)
-            return { kind: "", message: "" };
         if (field("timedOut") === true)
             return { kind: "timeout", message: errorKind(124, "").message };
+        if (field("truncated") === true)
+            return { kind: "too-long", message: "The answer was too long." };
+        if (field("ok") === true)
+            return { kind: "", message: "" };
         const refusal = plainText(_string(field("error"), 300), 200);
         if (refusal !== "")
             return { kind: "not-run", message: "It could not be run: " + refusal };

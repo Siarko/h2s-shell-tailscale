@@ -300,7 +300,12 @@ QtObject {
         _readSystemHostname();
     }
 
+    // How many times the client stopped: a run's answer is dropped when it changed since the
+    // run started (_run)
+    property int _stops: 0
+
     function _stop() {
+        _stops++;
         loginInterrupted = null;
         _strandCheck = null;
         _loginFrom = null;
@@ -453,20 +458,26 @@ QtObject {
     // ---- Running a command (the shell's command runner) ----
 
     // `argv` by absolute path, under the time limit `limitMs` (TailscaleRules.runLimits; 0 none),
-    // with this client's environment. done(result) once with the runner's result ({ ok, code,
-    // stdout, stderr, timedOut, failedToStart, error, … }) — never for a run that was cancelled
-    // (the client stopped, the operation was given up): nobody waits for it any more.
+    // with this client's environment, its output cut at TailscaleRules.maxAnswerChars.
+    // done(result) once with the runner's result ({ ok, code, stdout, stderr, timedOut,
+    // failedToStart, truncated, error, … }) — a cut one with `ok` false (only part of the
+    // answer; runError says "too-long") — never for a run that was cancelled, nor for one
+    // started before the client stopped (its answer can still come after the stop: one the
+    // runner had refused, or could not start): nobody waits for it any more.
     // `onOutput(text)`: each line of both streams, with its line break, as it comes. → the
     // runner's handle ({ running, cancel() })
     function _run(argv, limitMs, done, onOutput) {
         const limits = TailscaleRules.runLimits(limitMs);
+        const stopsAtStart = _stops;
         return runner.start(argv, {
             timeoutMs: limits.ok ? limits.timeoutMs : TailscaleRules.timeLimits.read * 1000, killAfterMs: limits.killAfterMs,
             environment: Object.assign({}, environment ?? {}),
+            maxOutputBytes: TailscaleRules.maxAnswerChars,
             onStdout: onOutput ?? null, onStderr: onOutput ?? null,
             done: result => {
-                if (result.cancelled !== true)
-                    done?.(result);
+                if (result.cancelled === true || _stops !== stopsAtStart)
+                    return;
+                done?.(result.truncated === true && result.ok === true ? Object.freeze(Object.assign({}, result, { ok: false })) : result);
             }
         });
     }

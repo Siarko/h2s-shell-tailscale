@@ -57,17 +57,38 @@ TestCase {
     }
 
     // A scenario's runner that records what the client starts (s.runs: { argv, timeoutMs,
-    // killAfterMs, keepOutput, streamed (it reads the lines as they come), environment,
-    // cancelled, answered (times done came), result }) and hands every run to a real runner
+    // killAfterMs, maxOutputBytes, keepOutput, streamed (it reads the lines as they come),
+    // environment, cancelled, answered (times done came), result }) and hands every run to a
+    // real runner — or, where the scenario's `fakeRun(argv)` says so, answers it itself:
+    // { result } (that result, frozen, soon after start returned) or { hold: true } (no
+    // answer until the suite calls record.deliver(result), whatever happened since)
     function _recorder(s) {
         const real = _runnerComponent.createObject(suite);
         s.runs = [];
         return {
             start: (argv, options) => {
                 const record = { argv: Array.from(argv ?? []), timeoutMs: options?.timeoutMs, killAfterMs: options?.killAfterMs,
-                                 keepOutput: options?.keepOutput !== false, streamed: typeof options?.onStdout === "function",
+                                 maxOutputBytes: options?.maxOutputBytes, keepOutput: options?.keepOutput !== false,
+                                 streamed: typeof options?.onStdout === "function",
                                  environment: options?.environment ?? null, cancelled: false, answered: 0, result: null };
                 s.runs.push(record);
+                const fake = s.options.fakeRun?.(record.argv) ?? null;
+                if (fake !== null) {
+                    record.deliver = result => {
+                        record.answered++;
+                        record.result = Object.freeze(Object.assign({ ok: false, code: -1, stdout: "", stderr: "", timedOut: false, cancelled: false,
+                                                                      failedToStart: false, truncated: false, durationMs: 0, error: "" }, result));
+                        options?.done?.(record.result);
+                    };
+                    if (fake.result)
+                        Qt.callLater(() => record.deliver(fake.result));
+                    return {
+                        get running() {
+                            return record.answered === 0;
+                        },
+                        cancel: () => record.cancelled = true
+                    };
+                }
                 const handle = real.start(argv, Object.assign({}, options, { done: result => {
                     record.answered++;
                     record.result = result;
@@ -987,6 +1008,42 @@ TestCase {
         then(overLimit, "the read timed out", () => overLimit.client.stale, () => {
             const status = overLimit.runs.find(run => run.argv[1] === "status" && run.answered === 1);
             same(status ? [status.timeoutMs, status.result.timedOut, status.result.ok] : null, [1000, true, false], "status --json: 1 s, ended by the runner, timedOut");
+        });
+
+        // An answer cut by the runner (a large tailnet's status): a failed read, said as such,
+        // never parsed as a whole one
+        const cut = scenario("runner-cut", { state: "running", recordRuns: true,
+                                             fakeRun: argv => argv[1] === "status" ? { result: { ok: true, code: 0, stdout: "{\"Version\": \"1.10", truncated: true } } : null });
+        then(cut, "the read failed", () => cut.client._statusFailing && !cut.client._reading, () => {
+            const status = cut.runs.find(run => run.argv[1] === "status");
+            assertEqual(status?.maxOutputBytes, TailscaleRules.maxAnswerChars, "status --json: cut only past the module's cap, not the runner's 1 MB");
+            assert(cut.runs.filter(run => run.argv[0] === standIns + "/tailscale").every(run => run.maxOutputBytes === TailscaleRules.maxAnswerChars),
+                   "… and so every tailscale run");
+            assertEqual(cut.client._logKeys["status --json"], "The answer was too long.", "the cut answer: logged as too long");
+            assertEqual(cut.client.status, null, "… nothing of it taken");
+        });
+
+        // Answers that come after the client stopped (a run the runner refused, or could not
+        // start, is answered later and is not cancelled): none of them acts
+        const late = scenario("runner-late", { state: "running", recordRuns: true,
+                                               fakeRun: argv => argv[1] === "version" || argv[1] === "ping" ? { hold: true } : null });
+        then(late, "read", () => late.client.status !== null && !late.client._reading, () => {
+            const device = late.client.devices.find(device => device.online);
+            late.pinged = device.id;
+            assert(late.client.runDiagnostics(), "diagnostics: start");
+            assert(late.client.ping(device), "ping: starts");
+        });
+        then(late, "both held", () => late.runs.some(run => run.argv[1] === "version") && late.runs.some(run => run.argv[1] === "ping"), () => {
+            late.client.running = false;
+            late.runsAtStop = late.runs.length;
+            late.runs.find(run => run.argv[1] === "version").deliver({ ok: true, code: 0, stdout: "{\"long\": \"1.104.4-t1\", \"short\": \"1.104.4\"}" });
+            late.runs.find(run => run.argv[1] === "ping").deliver({ ok: true, code: 0, stdout: "pong from laptop (100.64.0.2) via 192.168.1.20:41641 in 4ms\n" });
+        });
+        // Delivered in place: whatever they would start or set is there already
+        then(late, "nothing acted", () => true, () => {
+            assertEqual(late.runs.length, late.runsAtStop, "the late diagnostics answer: no next step started");
+            assert(!late.client.diagnostics.running && late.client.diagnostics.clientVersion === "", "… diagnostics stay stopped, nothing taken");
+            same(late.client.pings, {}, "the late ping answer: no entry");
         });
 
         // ---- switched off: the stream process gone, nothing acts ----
