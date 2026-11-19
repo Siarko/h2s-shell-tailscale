@@ -169,7 +169,7 @@ move_pointer 700 175
 send_input "click left"
 sleep 1
 screenshot settings-vpn-card
-# The card's "Settings…" (the core's button, under Disconnect): it goes to the module's settings
+# The card's "Settings…" (the core's button, after Disconnect on the name line): it goes to the module's settings
 # page "tailscale" (the provider's settingsPage) — the list selects it; no framed copy
 check "… the card's extras built without an error" test "$(module_errors)" = "[]"
 check "before: the VPN page is the open one" test "$(shell_ipc settings currentPage)" = network_vpn
@@ -186,12 +186,13 @@ settings_button=$(settings_rect profileSettings)
 primary_button=$(settings_rect profilePrimary)
 window_at=$(settings_window_at)
 log "Settings… $settings_button, Disconnect $primary_button, window at $window_at"
-# Under the primary button (Disconnect), on its right edge
-check "… under Disconnect, right-aligned with it" python3 -I -c '
+# After the primary button (Disconnect), on its line: the same vertical centre, to its right
+check "… after Disconnect, on its line, to its right" python3 -I -c '
 import json, sys
 settings, primary = json.loads(sys.argv[1]), json.loads(sys.argv[2])
-sys.exit(0 if settings["y"] >= primary["y"] + primary["height"]
-         and abs((settings["x"] + settings["width"]) - (primary["x"] + primary["width"])) <= 1 else 1)' "$settings_button" "$primary_button"
+centre = lambda rect: rect["y"] + rect["height"] / 2
+sys.exit(0 if abs(centre(settings) - centre(primary)) <= 1
+         and settings["x"] >= primary["x"] + primary["width"] else 1)' "$settings_button" "$primary_button"
 read -r click_x click_y < <(python3 -I -c '
 import json, sys
 rect, at = json.loads(sys.argv[1]), json.loads(sys.argv[2])
