@@ -209,7 +209,7 @@ TestCase {
             assertEqual(s.follower.lastKey, "", "… the network not taken");
             s.fake.status = running;
         });
-        step(300, () => {
+        until("turned on later: applied", () => s.fake.ran.length === 1 && s.follower.decision.kind === "applied", () => {
             assertEqual(JSON.stringify(s.fake.ran), JSON.stringify([wanted]), "turned on later: the choice applied once");
             assertEqual(s.follower.lastKey, "cafe-uuid", "… the network taken");
             s.follower.follow();
@@ -228,7 +228,7 @@ TestCase {
             same([s.fake.ran.length, s.follower.decision.kind, s.follower.lastKey], [0, "", ""], "networks not read whole: nothing decided, nothing run");
             s.follower.networksReady = true;
         });
-        step(300, () => {
+        until("read whole: applied", () => s.fake.ran.length === 1 && s.follower.decision.kind === "applied", () => {
             same([s.fake.ran, s.follower.lastKey], [[wanted], "cafe-uuid"], "read whole: the choice applied once, the café taken");
             // A restart: no networks yet, and not read whole (the default while the list is empty)
             restart(s);
@@ -250,7 +250,8 @@ TestCase {
             s.fake.exitNodes = nodes;
             s.fake.status = running;
         });
-        step(300, () => assertEqual(JSON.stringify(s.fake.ran), JSON.stringify([wanted]), "peers read: applied once"));
+        until("peers read: applied", () => s.fake.ran.length === 1 && s.follower.decision.kind === "applied",
+              () => assertEqual(JSON.stringify(s.fake.ran), JSON.stringify([wanted]), "peers read: applied once"));
 
         // Another change running: deferred, applied when it ends
         step(1, () => s = make(running, nodes, { busy: true }));
@@ -260,13 +261,14 @@ TestCase {
             assertEqual(s.follower.lastKey, "", "… the network not taken");
             s.fake.busy = false;
         });
-        step(300, () => assertEqual(JSON.stringify(s.fake.ran), JSON.stringify([wanted]), "the other change ended: applied"));
+        until("the other change ended: applied", () => s.fake.ran.length === 1 && s.follower.decision.kind === "applied",
+              () => assertEqual(JSON.stringify(s.fake.ran), JSON.stringify([wanted]), "the other change ended: applied"));
 
         // A reconnect (a short pass through no marked network) after a manual change
         step(1, () => s = make(running, nodes));
         step(1, () => s.follower.networks = cafeUp);
-        step(300, () => {
-            assertEqual(s.fake.ran.length, 1, "applied on the network");
+        until("applied on the network", () => s.fake.ran.length === 1 && s.follower.decision.kind === "applied", () => {
+            assertEqual(s.follower.lastKey, "cafe-uuid", "applied on the network: taken");
             s.fake.prefs = Object.assign({}, prefs, { exitNodeId: "nManual" });
         });
         step(100, () => s.follower.networks = cafeDown);
@@ -281,7 +283,8 @@ TestCase {
             assertEqual(s.follower.decision.kind, "none-marked", "… as no marked network");
             s.follower.networks = cafeUp;
         });
-        step(300, () => assertEqual(s.fake.ran.length, 2, "back after that: applied again"));
+        until("back after that: applied again", () => s.fake.ran.length === 2 && s.follower.decision.kind === "applied",
+              () => assertEqual(s.follower.lastKey, "cafe-uuid", "back after that: applied again, taken"));
 
         // The chosen node offline when the network comes up: not taken, said once; applied when
         // it comes back
@@ -484,7 +487,7 @@ TestCase {
         settled("woken", () => {
             same([s.fake.ran.length, s.follower.overridden, s.follower._noneMarkedTimer.running], [1, false, true], "a wake, no marked network up: waits for the networks first");
         });
-        until("it lasted: turned off", () => s.fake.ran.length === 2, () => same([s.fake.ran[1], s.follower.decision.kind], [none, "applied"], "… then no exit node"));
+        until("it lasted: turned off", () => s.fake.ran.length === 2 && s.follower.decision.kind !== "", () => same([s.fake.ran[1], s.follower.decision.kind], [none, "applied"], "… then no exit node"));
         // A wake, then the network comes back with its choice: that choice, no "off" first
         step(1, () => {
             s.fake.prefs = usingPrefs;
@@ -492,7 +495,7 @@ TestCase {
             s.follower.dropOverride(true);
         });
         step(100, () => s.follower.networks = cafeUp);
-        until("the network back after the wake", () => s.fake.ran.length === 3, () => {
+        until("the network back after the wake", () => s.fake.ran.length === 3 && s.follower.decision.kind !== "", () => {
             same([s.fake.ran[2], s.follower.lastKey], [wanted, "cafe-uuid"], "a wake, the network back within the hold: its choice, never \"off\" first");
         });
         settled("past the hold", () => assertEqual(s.fake.ran.length, 3, "… and nothing more"));
