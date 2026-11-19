@@ -2,6 +2,7 @@ pragma Singleton
 
 import Quickshell
 import QtQuick
+import qs.api
 
 // The Tailscale module's decisions — pure, so module/tests/ check them on fixtures without a
 // daemon: what `tailscale status --json`, `tailscale debug prefs` and the IPN bus say,
@@ -726,6 +727,7 @@ Singleton {
             if (_get(prefs, "acceptDns") !== false && status?.tailnet?.magicDnsEnabled !== false)
                 detail.dns = [quadHundred];
         }
+        const carried = traffic(status, prefs, view);
         return {
             id: entryId,
             name: tailnet !== "" ? typeName + " · " + tailnet : typeName,
@@ -734,7 +736,10 @@ Singleton {
             detail: detail,
             active: view.state !== "",
             status: view.status,
-            busy: _string(_get(facts, "operation"), 32) !== ""
+            busy: _string(_get(facts, "operation"), 32) !== "",
+            fullTunnel: carried.fullTunnel,
+            setsDns: carried.setsDns,
+            routes: carried.routes
         };
     }
 
@@ -895,18 +900,15 @@ Singleton {
 
     // ---- Logging: once per change of outcome, not once per attempt ----
 
-    // `lastKey` what was logged last for `what` ("" = it was answering), `ok` this attempt's
-    // outcome, `reason` its failure → { key (to keep), line ("" = log nothing) }: the first
-    // failure with its reason, a change of reason, and the recovery
-    function logChange(lastKey, what, ok, reason) {
-        const last = _string(lastKey, 300);
-        const key = ok === true ? "" : (plainText(reason, 300) || "failed");
-        if (key === last)
-            return { key: key, line: "" };
+    // The line for one attempt at `what` (module.log keeps one per key: the same line again is
+    // not written): `ok` its outcome, `reason` its failure, `wasFailing` the last line written
+    // for it was a failure → null (nothing to say: answering, as before) | { level, text }:
+    // a failure with its reason (a new reason is a new line), the recovery once
+    function logLine(what, ok, reason, wasFailing) {
         const name = plainText(what, 80);
-        if (key === "")
-            return { key: key, line: "[tailscale] " + name + " answers again" };
-        return { key: key, line: "[tailscale] " + name + (last === "" ? " failed: " : " still failing, now: ") + key };
+        if (ok === true)
+            return wasFailing === true ? { level: "info", text: name + " answers again" } : null;
+        return { level: "warn", text: name + " failed: " + (plainText(reason, 300) || "failed") };
     }
 
     // ---- Looking again: Tailscale installed, started or fixed while the shell runs ----
@@ -992,11 +994,11 @@ Singleton {
             const taildrop = node.taildropTarget;
             list.push({
                 id: node.id, key: node.key, name: _shortName(node), hostName: node.hostName, dnsName: node.dnsName,
-                addresses: node.addresses, ipv4: node.addresses.find(address => _parseIpv4(address) !== null) ?? "",
+                addresses: node.addresses, ipv4: node.addresses.find(address => Api.address.isIpv4(address)) ?? "",
                 os: node.os, owner: user?.loginName ?? "", ownerName: user?.displayName ?? "",
                 tags: node.tags, online: node.online,
                 lastSeen: node.online ? 0 : node.lastSeen,
-                lastSeenText: node.online ? "online" : (node.lastSeen > 0 ? ago(node.lastSeen, now) : "never"),
+                lastSeenText: node.online ? "online" : (node.lastSeen > 0 ? Api.format.ago(node.lastSeen, now) : "never"),
                 connection: connectionOf(node), exitNodeOption: node.exitNodeOption, isExitNode: node.exitNode,
                 subnetRoutes: node.primaryRoutes.filter(route => route !== "0.0.0.0/0" && route !== "::/0"),
                 keyExpired: node.expired || (node.keyExpiry > 0 && now > 0 && node.keyExpiry <= now),
@@ -1036,7 +1038,7 @@ Singleton {
     function exitNodeArgument(node) {
         if (!node)
             return "";
-        const ipv4 = (node.addresses ?? []).find(address => _parseIpv4(address) !== null);
+        const ipv4 = (node.addresses ?? []).find(address => Api.address.isIpv4(address));
         return ipv4 ?? (node.addresses?.[0] ?? node.dnsName ?? "");
     }
 
@@ -1262,8 +1264,8 @@ Singleton {
             namePending: pending,
             nameNote: !pending ? "" : (running ? "updating" : "the tailnet shows it after connecting"),
             dnsName: self.dnsName,
-            ipv4: addresses.find(address => _parseIpv4(address) !== null) ?? "",
-            ipv6: addresses.find(address => _parseIpv6(address) !== null) ?? "",
+            ipv4: addresses.find(address => Api.address.isIpv4(address)) ?? "",
+            ipv6: addresses.find(address => Api.address.isIpv6(address)) ?? "",
             online: self.online,
             relay: self.relay,
             keyExpiry: self.keyExpiry,
@@ -1339,7 +1341,7 @@ Singleton {
         if (!_isDefaultControl(prefs))
             return "";
         const self = _isObject(status) && _isObject(status.self) ? status.self : null;
-        const ipv4 = self ? (self.addresses.find(address => _parseIpv4(address) !== null) ?? "") : "";
+        const ipv4 = self ? (self.addresses.find(address => Api.address.isIpv4(address)) ?? "") : "";
         return ipv4 !== "" ? adminMachinesUrl + "/" + ipv4 : adminMachinesUrl;
     }
 
@@ -1359,7 +1361,7 @@ Singleton {
             result.error = "Not a network: write it as address/prefix, e.g. 192.168.1.0/24.";
             return result;
         }
-        const cidr = parseCidr(value);
+        const cidr = Api.address.parseCidr(value);
         if (!cidr) {
             result.error = "Not a network: write it as address/prefix, e.g. 192.168.1.0/24.";
             return result;
@@ -1373,12 +1375,12 @@ Singleton {
             return result;
         }
         result.network = cidr.network;
-        const existing = (Array.isArray(offered) ? offered : []).map(parseCidr).filter(item => item !== null).map(item => item.network);
+        const existing = (Array.isArray(offered) ? offered : []).map(item => Api.address.parseCidr(item)).filter(item => item !== null).map(item => item.network);
         if (existing.includes(cidr.network)) {
             result.error = "Already offered.";
             return result;
         }
-        const range = tailscaleRanges.find(item => cidrOverlap(parseCidr(item), cidr));
+        const range = tailscaleRanges.find(item => Api.address.overlap(Api.address.parseCidr(item), cidr));
         if (range)
             result.warning = "It overlaps Tailscale's own addresses (" + range + ").";
         return result;
@@ -1386,17 +1388,17 @@ Singleton {
 
     // The subnet routes after adding or removing one (never the exit-node pair: see above)
     function routesWith(routes, network) {
-        const list = _strings(routes, 256).filter(route => { const cidr = parseCidr(route); return cidr !== null && cidr.bits > 0; });
-        const added = parseCidr(network);
-        if (!added || added.bits === 0 || list.some(route => parseCidr(route).network === added.network))
+        const list = _strings(routes, 256).filter(route => { const cidr = Api.address.parseCidr(route); return cidr !== null && cidr.bits > 0; });
+        const added = Api.address.parseCidr(network);
+        if (!added || added.bits === 0 || list.some(route => Api.address.parseCidr(route).network === added.network))
             return list;
         return list.concat([added.network]);
     }
 
     function routesWithout(routes, network) {
-        const removed = parseCidr(network);
+        const removed = Api.address.parseCidr(network);
         return _strings(routes, 256).filter(route => {
-            const cidr = parseCidr(route);
+            const cidr = Api.address.parseCidr(route);
             return cidr !== null && cidr.bits > 0 && (!removed || cidr.network !== removed.network);
         });
     }
@@ -1433,7 +1435,7 @@ Singleton {
         const removing = _isObject(intent) && typeof intent.remove === "string";
         if (adding === removing)
             return plan("refused", { error: "Not a route change." });
-        const offered = current.map(parseCidr).filter(item => item !== null).map(item => item.network);
+        const offered = current.map(item => Api.address.parseCidr(item)).filter(item => item !== null).map(item => item.network);
         let routes;
         if (adding) {
             const check = routeProblem(intent.add, []);
@@ -1443,7 +1445,7 @@ Singleton {
                 return plan("nothing");
             routes = routesWith(current, check.network);
         } else {
-            const removed = parseCidr(intent.remove);
+            const removed = Api.address.parseCidr(intent.remove);
             if (!removed)
                 return plan("refused", { error: "Not a network." });
             if (!offered.includes(removed.network))
@@ -1497,15 +1499,15 @@ Singleton {
         const known = _isObject(prefs) && prefs.ok !== false;
         const self = _isObject(status) && _isObject(status.self) ? status.self : null;
         const connected = _isObject(status) && status.backendState === "Running" && self !== null;
-        const allowed = self ? self.allowedIps.map(parseCidr).filter(item => item !== null).map(item => item.network) : [];
-        const primary = self ? self.primaryRoutes.map(parseCidr).filter(item => item !== null).map(item => item.network) : [];
+        const allowed = self ? self.allowedIps.map(item => Api.address.parseCidr(item)).filter(item => item !== null).map(item => item.network) : [];
+        const primary = self ? self.primaryRoutes.map(item => Api.address.parseCidr(item)).filter(item => item !== null).map(item => item.network) : [];
         const offeredExit = known && prefs.advertiseExitNode === true;
         const exitApproved = self !== null && (self.exitNodeOption === true || (allowed.includes("0.0.0.0/0") && allowed.includes("::/0")));
         const exitState = !offeredExit ? "off" : (!connected ? "unknown" : (exitApproved ? "approved" : "pending"));
         const stateText = { pending: "waiting for an admin's approval", approved: "approved", standby: "approved; another device serves it now",
             unknown: "approval shown when connected", off: "" };
         const routes = (known ? prefs.advertiseRoutes : []).map(route => {
-            const cidr = parseCidr(route);
+            const cidr = Api.address.parseCidr(route);
             if (!cidr)
                 return null;
             const state = !connected ? "unknown" : (!allowed.includes(cidr.network) ? "pending" : (primary.includes(cidr.network) ? "approved" : "standby"));
@@ -1517,7 +1519,7 @@ Singleton {
         for (const route of routes)
             if (!families.includes(route.family))
                 families.push(route.family);
-        const selfIpv4 = self ? (self.addresses.find(address => _parseIpv4(address) !== null) ?? "") : "";
+        const selfIpv4 = self ? (self.addresses.find(address => Api.address.isIpv4(address)) ?? "") : "";
         return {
             known: known, connected: connected,
             exitNode: { offered: offeredExit, state: exitState, text: stateText[exitState], problem: known ? exitNodeOfferProblem(prefs) : "" },
@@ -1590,9 +1592,9 @@ Singleton {
         if (!_isObject(device) || !(device.sshHostKeys > 0))
             return "";
         const name = _string(device.dnsName, 253);
-        if (name !== "" && validTarget(name) && _parseIpv4(name) === null)
+        if (name !== "" && validTarget(name) && !Api.address.isIpv4(name))
             return "ssh " + name;
-        const ipv4 = (device.addresses ?? []).find(address => _parseIpv4(address) !== null) ?? "";
+        const ipv4 = (device.addresses ?? []).find(address => Api.address.isIpv4(address)) ?? "";
         return ipv4 !== "" ? "ssh " + ipv4 : "";
     }
 
@@ -1768,7 +1770,7 @@ Singleton {
         if (Array.isArray(health) && health.length > 0) {
             lines.push("", "Health");
             for (const warning of health)
-                lines.push("  " + withoutAddresses(strip([warning.title, warning.text].filter(part => part).join(": "))));
+                lines.push("  " + Api.address.redact(strip([warning.title, warning.text].filter(part => part).join(": "))));
         }
         return lines.join("\n").slice(0, 8000);
     }
@@ -2152,14 +2154,6 @@ Singleton {
         return "Tailscale did not answer within " + limit + "; the change may not have been made.";
     }
 
-    // A failure's text without addresses (a notification may show on a shared screen): IPv4
-    // and IPv6 addresses (and prefixes) → "[address]" (no angle brackets: shown as plain text, never markup)
-    function withoutAddresses(text) {
-        return String(text ?? "").slice(0, 2000).replace(/[0-9A-Fa-f:.]{3,}(?:\/\d{1,3})?/g, match => {
-            const address = match.replace(/\/\d{1,3}$/, "").replace(/[.:]+$/, "");
-            return _parseIpv4(address) !== null || (address.indexOf(":") >= 0 && _parseIpv6(address) !== null) ? "[address]" : match;
-        });
-    }
 
     // ---- Which programs run ----
     //
@@ -2291,7 +2285,7 @@ Singleton {
     function validTarget(text) {
         if (typeof text !== "string" || text === "" || text.length > 253)
             return false;
-        if (_parseIpv4(text) !== null || _parseIpv6(text) !== null)
+        if (Api.address.isIp(text))
             return true;
         return /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))*\.?$/.test(text);
     }
@@ -2686,6 +2680,20 @@ Singleton {
         return { kind: "key-expiring", days: days, text: "This computer's Tailscale key expires " + when + ": renew it, or turn expiry off, in the admin console" };
     }
 
+    // The local networks for routeShadowsLan, from the shell's Api.localNetworks rows ({ device,
+    // kind, family, address, network }: VPN devices left out already) → their networks
+    // ("192.168.1.0/24"), each once; a row without a network (a lone /32 or /128 address) adds
+    // nothing
+    function lanSubnets(localNetworks) {
+        const result = [];
+        for (const row of Array.isArray(localNetworks) ? localNetworks.slice(0, 64) : []) {
+            const network = _isObject(row) && typeof row.network === "string" ? Api.address.parseCidr(row.network) : null;
+            if (network !== null && network.bits > 0 && !result.includes(network.network))
+                result.push(network.network);
+        }
+        return result;
+    }
+
     // Accepted subnet routes that cover the local network — a known trap: traffic for the
     // LAN goes into the tailnet. routeShadowsLan(status, lanSubnets, prefs) → [{ route,
     // lan, device, text }]; none while prefs say routes are not accepted. lanSubnets: the
@@ -2693,15 +2701,15 @@ Singleton {
     function routeShadowsLan(status, lanSubnets, prefs) {
         if (prefs && _get(prefs, "acceptRoutes") === false)
             return [];
-        const lans = (Array.isArray(lanSubnets) ? lanSubnets : []).slice(0, 64).map(parseCidr).filter(cidr => cidr !== null && cidr.bits > 0);
+        const lans = (Array.isArray(lanSubnets) ? lanSubnets : []).slice(0, 64).map(item => Api.address.parseCidr(item)).filter(cidr => cidr !== null && cidr.bits > 0);
         const found = [];
         for (const node of _peersOf(status)) {
             for (const route of node.primaryRoutes) {
-                const cidr = parseCidr(route);
+                const cidr = Api.address.parseCidr(route);
                 if (!cidr || cidr.bits === 0)
                     continue;
                 for (const lan of lans) {
-                    if (!cidrOverlap(cidr, lan))
+                    if (!Api.address.overlap(cidr, lan))
                         continue;
                     found.push({
                         route: cidr.network, lan: lan.network, device: _shortName(node),
@@ -2716,189 +2724,74 @@ Singleton {
         return found;
     }
 
-    // Tailscale beside another VPN: twoVpnsNote({ tailscaleUp, exitNode (name or ""),
-    // acceptDns, otherVpns [names] }) → a sentence, or "" when there is nothing to say
+    // Tailscale beside another VPN: twoVpnsNote({ tailscaleUp, exitNode (name or ""), acceptDns,
+    // otherVpns: the other VPNs up as the shell's Api.vpnsUp rows ({ name, fullTunnel, setsDns,
+    // routes }, module API 1.16) }) → a sentence, or "" when there is nothing to say. An exit
+    // node competes only with a VPN that takes all traffic, Tailscale's DNS only with one that
+    // brings its own servers; what the shell does not know (null) may compete. A split VPN that
+    // sets no DNS is no conflict.
     function twoVpnsNote(input) {
-        const others = _strings(_get(input, "otherVpns"), 8);
+        const others = _otherVpns(_get(input, "otherVpns"));
         if (_get(input, "tailscaleUp") !== true || others.length === 0)
             return "";
-        const names = others.join(", ");
         const exitNode = _string(_get(input, "exitNode"), 200);
         const parts = [];
-        if (exitNode !== "")
-            parts.push(names + " and Tailscale's exit node " + exitNode + " compete for internet traffic");
-        if (_get(input, "acceptDns") !== false)
-            parts.push("Tailscale's DNS (" + quadHundred + ") and " + names + "'s compete: some names may not resolve");
+        const traffic = others.filter(vpn => vpn.fullTunnel !== false).map(vpn => vpn.name);
+        if (exitNode !== "" && traffic.length > 0)
+            parts.push(traffic.join(", ") + " and Tailscale's exit node " + exitNode + " compete for internet traffic");
+        const dns = others.filter(vpn => vpn.setsDns !== false).map(vpn => vpn.name);
+        if (_get(input, "acceptDns") !== false && dns.length > 0)
+            parts.push("Tailscale's DNS (" + quadHundred + ") and " + dns.join(", ") + "'s compete: some names may not resolve");
         return parts.length > 0 ? parts.join(". ") + "." : "";
     }
 
-    // ---- Formatting (the shell's Format is a core singleton modules may not import) ----
-
-    // A size in binary units, as the shell's Format.bytes: "742 MB", "15.6 GB"
-    function bytes(value) {
-        const number = _number(value, 0);
-        const units = ["B", "KB", "MB", "GB", "TB"];
-        const decimals = [0, 0, 0, 1, 1];
-        let unit = 0;
-        while (unit < units.length - 1 && Math.abs(number) >= Math.pow(1024, unit + 1))
-            unit++;
-        return (number / Math.pow(1024, unit)).toFixed(decimals[unit]) + " " + units[unit];
+    // The other VPNs that may take all traffic (fullTunnel true, or not known), by name:
+    // fullTunnelVpns(vpnsUp (Api.vpnsUp's rows), ownProvider (this module's id: its own row
+    // left out)) — beside an exit node, "another VPN is also on"
+    function fullTunnelVpns(vpnsUp, ownProvider) {
+        const own = _string(ownProvider, 64);
+        return _otherVpns((Array.isArray(vpnsUp) ? vpnsUp : []).filter(vpn => !(_isObject(vpn) && own !== "" && vpn.provider === own)))
+            .filter(vpn => vpn.fullTunnel !== false).map(vpn => vpn.name);
     }
 
-    // How long ago, as the shell's Format.ago but in milliseconds: "just now", "5 min ago",
-    // "3 h ago", "yesterday", "4 days ago", "2 months ago"; "never" for 0
-    function ago(moment, now) {
-        const at = _number(moment, 0);
-        if (!(at > 0))
-            return "never";
-        const elapsed = Math.max(0, _number(now, at) - at) / 1000;
-        if (elapsed < 60)
-            return "just now";
-        if (elapsed < 3600)
-            return Math.floor(elapsed / 60) + " min ago";
-        if (elapsed < 86400)
-            return Math.floor(elapsed / 3600) + " h ago";
-        const days = Math.floor(elapsed / 86400);
-        if (days === 1)
-            return "yesterday";
-        if (days < 60)
-            return days + " days ago";
-        return Math.floor(days / 30) + " months ago";
+    // At most 8 rows { name, fullTunnel, setsDns } of Api.vpnsUp's (true / false / null each;
+    // anything else null), named. A list handed through an element's context may come as a
+    // list-like object rather than an array
+    function _otherVpns(rows) {
+        const tri = value => value === true || value === false ? value : null;
+        const list = Array.isArray(rows) ? rows : (rows !== null && typeof rows === "object" && typeof rows.length === "number" ? Array.from(rows) : []);
+        return list.slice(0, 64).filter(row => _isObject(row))
+            .map(row => ({ name: plainText(row.name, 64), fullTunnel: tri(row.fullTunnel), setsDns: tri(row.setsDns) }))
+            .filter(row => row.name !== "").slice(0, 8);
     }
 
-    // ---- Addresses ----
-
-    function _parseIpv4(text) {
-        if (typeof text !== "string")
-            return null;
-        const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(text);
-        if (!match)
-            return null;
-        const bytes = match.slice(1, 5).map(Number);
-        if (bytes.some(byte => byte > 255) || match.slice(1, 5).some(part => part.length > 1 && part[0] === "0"))
-            return null;
-        return bytes;
-    }
-
-    // IPv6 → 16 bytes, or null (zones refused)
-    function _parseIpv6(text) {
-        if (typeof text !== "string" || text.length > 45 || !/^[0-9A-Fa-f:.]+$/.test(text) || !text.includes(":"))
-            return null;
-        const halves = text.split("::");
-        if (halves.length > 2)
-            return null;
-        const groupsOf = part => part === "" ? [] : part.split(":");
-        const head = groupsOf(halves[0]);
-        const tail = halves.length === 2 ? groupsOf(halves[1]) : [];
-        const words = [];
-        const toWords = groups => {
-            const result = [];
-            for (let i = 0; i < groups.length; i++) {
-                const group = groups[i];
-                if (i === groups.length - 1 && group.includes(".")) {
-                    const ipv4 = _parseIpv4(group);
-                    if (!ipv4)
-                        return null;
-                    result.push(ipv4[0] * 256 + ipv4[1], ipv4[2] * 256 + ipv4[3]);
-                } else if (/^[0-9A-Fa-f]{1,4}$/.test(group)) {
-                    result.push(parseInt(group, 16));
-                } else {
-                    return null;
+    // What Tailscale does with the traffic while it is up, for the shell's Api.vpnsUp (the
+    // provider entry's fullTunnel, setsDns, routes; module API 1.16): traffic(status, prefs,
+    // view) → { fullTunnel, setsDns, routes }, each null where it is not known (not running,
+    // prefs not read). fullTunnel: an exit node is in use. setsDns: Tailscale's DNS is accepted
+    // and MagicDNS on. routes: the tailnet's own ranges, the subnet routes of peers while routes
+    // are accepted, and all of both families through an exit node.
+    function traffic(status, prefs, view) {
+        const unknown = { fullTunnel: null, setsDns: null, routes: null };
+        if (_get(view, "phase") !== "running" || !_isObject(status) || !_isObject(prefs) || prefs.ok !== true)
+            return unknown;
+        const exitNode = _get(view, "exitNode") !== null && _get(view, "exitNode") !== undefined;
+        const routes = tailscaleRanges.slice();
+        if (_get(prefs, "acceptRoutes") === true) {
+            for (const node of _peersOf(status)) {
+                for (const route of node.primaryRoutes) {
+                    const cidr = Api.address.parseCidr(route);
+                    if (cidr !== null && cidr.bits > 0 && !routes.includes(cidr.network) && routes.length < 254)
+                        routes.push(cidr.network);
                 }
             }
-            return result;
+        }
+        if (exitNode)
+            routes.push("0.0.0.0/0", "::/0");
+        return {
+            fullTunnel: exitNode,
+            setsDns: _get(prefs, "acceptDns") !== false && status?.tailnet?.magicDnsEnabled !== false,
+            routes: routes
         };
-        const headWords = toWords(head);
-        const tailWords = toWords(tail);
-        if (!headWords || !tailWords)
-            return null;
-        // An embedded IPv4 is allowed only in the last group of the whole address
-        if (halves.length === 2 && head.length > 0 && head[head.length - 1].includes("."))
-            return null;
-        const missing = 8 - headWords.length - tailWords.length;
-        if (halves.length === 1 ? missing !== 0 : missing < 1)
-            return null;
-        words.push(...headWords);
-        for (let i = 0; i < (halves.length === 2 ? missing : 0); i++)
-            words.push(0);
-        words.push(...tailWords);
-        const bytes = [];
-        for (const word of words)
-            bytes.push(word >> 8, word & 255);
-        return bytes;
-    }
-
-    function _formatIpv6(bytes) {
-        // IPv4-mapped (::ffff:a.b.c.d) as Go's netip prints it, the IPv4 part dotted
-        if (bytes.slice(0, 10).every(byte => byte === 0) && bytes[10] === 255 && bytes[11] === 255)
-            return "::ffff:" + bytes.slice(12, 16).join(".");
-        const words = [];
-        for (let i = 0; i < 16; i += 2)
-            words.push((bytes[i] << 8) | bytes[i + 1]);
-        // The longest run of zero words (two or more) becomes "::" (RFC 5952)
-        let bestStart = -1;
-        let bestLength = 0;
-        for (let i = 0; i < 8;) {
-            if (words[i] !== 0) {
-                i++;
-                continue;
-            }
-            let j = i;
-            while (j < 8 && words[j] === 0)
-                j++;
-            if (j - i > bestLength && j - i >= 2) {
-                bestStart = i;
-                bestLength = j - i;
-            }
-            i = j;
-        }
-        const hex = words.map(word => word.toString(16));
-        if (bestStart < 0)
-            return hex.join(":");
-        return hex.slice(0, bestStart).join(":") + "::" + hex.slice(bestStart + bestLength).join(":");
-    }
-
-    // "address/prefix" → { family 4 | 6, bytes, bits, network (canonical text), canonical
-    // (no host bits set) } or null. A bare address is a /32 or /128.
-    function parseCidr(text) {
-        if (typeof text !== "string" || text.length > 64)
-            return null;
-        const parts = text.split("/");
-        if (parts.length > 2)
-            return null;
-        const ipv4 = _parseIpv4(parts[0]);
-        const ipv6 = ipv4 ? null : _parseIpv6(parts[0]);
-        const bytes = ipv4 ?? ipv6;
-        if (!bytes)
-            return null;
-        const maxBits = ipv4 ? 32 : 128;
-        if (parts.length === 2 && !/^\d{1,3}$/.test(parts[1]))
-            return null;
-        const bits = parts.length === 2 ? Number(parts[1]) : maxBits;
-        if (bits > maxBits)
-            return null;
-        const masked = bytes.map((byte, index) => {
-            const keep = Math.max(0, Math.min(8, bits - index * 8));
-            return byte & (keep === 0 ? 0 : (0xff << (8 - keep)) & 0xff);
-        });
-        const canonical = masked.every((byte, index) => byte === bytes[index]);
-        const address = ipv4 ? masked.join(".") : _formatIpv6(masked);
-        return { family: ipv4 ? 4 : 6, bytes: masked, bits: bits, network: address + "/" + bits, canonical: canonical };
-    }
-
-    // Two networks share addresses (one contains the other)
-    function cidrOverlap(a, b) {
-        if (!a || !b || a.family !== b.family)
-            return false;
-        const bits = Math.min(a.bits, b.bits);
-        for (let i = 0; i < a.bytes.length; i++) {
-            const keep = Math.max(0, Math.min(8, bits - i * 8));
-            if (keep === 0)
-                break;
-            const mask = (0xff << (8 - keep)) & 0xff;
-            if ((a.bytes[i] & mask) !== (b.bytes[i] & mask))
-                return false;
-        }
-        return true;
     }
 }

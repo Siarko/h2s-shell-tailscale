@@ -417,8 +417,6 @@ TestCase {
             assert(/within 10 minutes/.test(rules.timeoutMessage("login", 600)), "timeout: login's sentence");
             const exitNode = rules.commandFor("exitNode", { node: "100.64.0.4" });
             assert(exitNode.description.indexOf("100.64") < 0, "commands: the exit node's description has no address: " + exitNode.description);
-            assertEqual(rules.withoutAddresses("invalid value \"100.64.0.4\" for --exit-node; fd7a:115c:a1e0::1 and 10.0.0.0/8 too, version 1.104.4 at 12:30"),
-                        "invalid value \"[address]\" for --exit-node; [address] and [address] too, version 1.104.4 at 12:30", "withoutAddresses: IPv4, IPv6, prefixes gone; versions and times kept");
         }
 
         // --- which programs run: module.programs (the shell's lookup and verdict) ---

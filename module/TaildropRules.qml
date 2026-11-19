@@ -2,6 +2,7 @@ pragma Singleton
 
 import QtQuick
 import Quickshell
+import qs.api
 
 // Taildrop's pure rules (delivery step 4): which devices can receive, the files to send
 // (paths checked before anything runs), the bus's file fields (FilesWaiting, IncomingFiles,
@@ -94,11 +95,11 @@ Singleton {
         return list;
     }
 
-    // What `tailscale file cp … <argument>:` gets for a device: its IPv4 address (never
-    // ambiguous, never an option), "" when it has none
+    // What `tailscale file cp … <argument>:` gets for a device: its IPv4 address in the
+    // tailnet's range (never ambiguous, never an option), "" when it has none
     function targetArgument(device) {
         const ipv4 = _string(device?.ipv4, 15);
-        return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(ipv4) ? ipv4 : "";
+        return Api.address.isIpv4(ipv4) && Api.address.contains("100.64.0.0/10", ipv4) ? ipv4 : "";
     }
 
     // ---- Files to send ----

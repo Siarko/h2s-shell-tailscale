@@ -189,6 +189,31 @@ TestCase {
         });
         step(200, () => assertEqual(s.fake.ran.length, 1, "… and not again"));
 
+        // The shell's networks not read whole yet (Api.networksReady false, module API 1.16):
+        // nothing decided, even with a network listed; read whole, the choice applies. Read
+        // whole and none up: decided ("none up"), the key taken — never taken as "not read"
+        step(1, () => {
+            s = make(running, nodes, { module: _moduleComponent.createObject(suite) });
+            s.follower.networksReady = false;
+            s.follower.networks = cafeUp;
+        });
+        step(300, () => {
+            same([s.fake.ran.length, s.follower.decision.kind, s.follower.lastKey], [0, "", ""], "networks not read whole: nothing decided, nothing run");
+            s.follower.networksReady = true;
+        });
+        step(300, () => {
+            same([s.fake.ran, s.follower.lastKey], [[wanted], "cafe-uuid"], "read whole: the choice applied once, the café taken");
+            // A restart: no networks yet, and not read whole (the default while the list is empty)
+            restart(s);
+        });
+        step(600, () => {
+            same([s.follower.networksReady, s.follower.lastKey, s.fake.ran.length], [false, "cafe-uuid", 1],
+                 "restarted, the networks not read yet: the café still taken, nothing done (not taken as \"none up\")");
+            s.follower.networksReady = true;
+        });
+        until("read whole, none up: the drop taken once it lasted", () => s.follower.lastKey === "",
+              () => assertEqual(s.fake.ran.length, 1, "… nothing run"));
+
         // Network up first, Tailscale Running but its peers not read yet
         step(1, () => s = make(noPeers, TailscaleRules.exitNodes(noPeers, prefs, "")));
         step(1, () => s.follower.networks = cafeUp);

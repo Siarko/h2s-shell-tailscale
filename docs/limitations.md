@@ -24,7 +24,7 @@ Also not offered: Funnel over TCP, `--relay-server-static-endpoints`, `--remote-
 - A user who is not the operator sees that files wait, not how many.
 - Taildrop addresses the target device by its IPv4 address.
 - Saving received files needs `curl`.
-- The "Another VPN is also on" line shows for any VPN. The shell does not say whether a VPN is a full tunnel.
+- "Another VPN is also on" and the card's note count a VPN whose traffic the shell does not know (a plugin VPN still activating) as one that may take all traffic.
 - The shell's blocking of traffic outside a VPN does not let Tailscale through. The VPN card says so.
 - The widget has no tooltip and no middle-click action.
 - Nothing of the module is on the lock screen.

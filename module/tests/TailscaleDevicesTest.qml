@@ -1,4 +1,5 @@
 import QtQuick
+import qs.api
 import qs.tests
 import ".."
 
@@ -188,51 +189,54 @@ TestCase {
             assertEqual(rules.routeShadowsLan(null, null, null).length, 0, "routes: nothing");
             assertEqual(rules.routeShadowsLan(running, ["192.168.99.0/24"], null)[0]?.device, "peer10", "routes: the real fixture's subnet router");
 
+            // Beside another VPN: the shell's rows (Api.vpnsUp, otherVpns: fullTunnel, setsDns, routes)
+            const work = { name: "Work", type: "wireguard", provider: "", fullTunnel: true, setsDns: true, routes: ["0.0.0.0/0"] };
+            const split = { name: "Office", type: "wireguard", provider: "", fullTunnel: false, setsDns: false, routes: ["10.20.0.0/16"] };
+            const unknown = { name: "Plugin", type: "vpn", provider: "", fullTunnel: null, setsDns: null, routes: null };
             assertEqual(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [] }), "", "two VPNs: alone, nothing");
-            assertEqual(rules.twoVpnsNote({ tailscaleUp: false, otherVpns: ["Work"] }), "", "two VPNs: Tailscale down, nothing");
-            const both = rules.twoVpnsNote({ tailscaleUp: true, otherVpns: ["Work"], exitNode: "Stockholm, Sweden", acceptDns: true });
-            assert(both.includes("Work") && both.includes("Stockholm, Sweden") && both.includes("100.100.100.100"), "two VPNs: routes and DNS");
-            const dnsOnly = rules.twoVpnsNote({ tailscaleUp: true, otherVpns: ["Work"], acceptDns: true });
+            assertEqual(rules.twoVpnsNote({ tailscaleUp: false, otherVpns: [work] }), "", "two VPNs: Tailscale down, nothing");
+            const both = rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [work], exitNode: "Stockholm, Sweden", acceptDns: true });
+            assert(both.includes("Work") && both.includes("Stockholm, Sweden") && both.includes("100.100.100.100"), "two VPNs: a full tunnel with DNS — routes and DNS");
+            const dnsOnly = rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [work], acceptDns: true });
             assert(dnsOnly.includes("DNS") && !dnsOnly.includes("exit node"), "two VPNs: without an exit node only DNS");
-            assertEqual(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: ["Work"], acceptDns: false }), "", "two VPNs: nothing shared");
+            assertEqual(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [work], acceptDns: false }), "", "two VPNs: nothing shared");
+            assertEqual(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [split], exitNode: "Stockholm, Sweden", acceptDns: true }), "",
+                        "two VPNs: a split VPN that brings no DNS — nothing to say, even beside an exit node");
+            const splitDns = rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [Object.assign({}, split, { setsDns: true })], exitNode: "Stockholm, Sweden", acceptDns: true });
+            assert(splitDns.includes("DNS") && !splitDns.includes("exit node"), "two VPNs: a split VPN with its own DNS — only DNS");
+            const notKnown = rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [unknown], exitNode: "Stockholm, Sweden", acceptDns: true });
+            assert(notKnown.includes("exit node") && notKnown.includes("DNS"), "two VPNs: what the shell does not know may compete");
+            const named = rules.twoVpnsNote({ tailscaleUp: true, otherVpns: [split, work], exitNode: "Stockholm, Sweden", acceptDns: true });
+            assert(named.startsWith("Work and Tailscale's exit node") && !named.includes("Office"), "two VPNs: only the VPNs that compete are named: " + named);
+            assertEqual(rules.twoVpnsNote({ tailscaleUp: true, otherVpns: ["Work", null, 5], acceptDns: true }), "", "two VPNs: rows only (names alone are not the shell's rows)");
+            // Beside an exit node, "another VPN is also on": the full tunnels, or not known, of others
+            same(rules.fullTunnelVpns([work, split, unknown, { name: "Tailscale · home", type: "provider", provider: "tailscale", fullTunnel: true }], "tailscale"),
+                 ["Work", "Plugin"], "another VPN: full tunnels and unknown ones; a split one and Tailscale's own row left out");
+            same(rules.fullTunnelVpns([split], "tailscale"), [], "another VPN: a split one alone — none");
+            same(rules.fullTunnelVpns(null, "tailscale"), [], "another VPN: nothing up");
             assertEqual(rules.twoVpnsNote(null), "", "two VPNs: nothing given");
         }
 
-        // --- formatting ---
+        // --- formatting and addresses: the shell's helpers (module API 1.12), no copies ---
         {
-            assertEqual(rules.bytes(0), "0 B", "bytes: zero");
-            assertEqual(rules.bytes(4560796), "4 MB", "bytes: megabytes whole");
-            assertEqual(rules.bytes(1610612736), "1.5 GB", "bytes: gigabytes to one decimal");
-            assertEqual(rules.bytes("x"), "0 B", "bytes: not a number");
-            assertEqual(rules.ago(0, now), "never", "ago: never");
-            assertEqual(rules.ago(now - 30000, now), "just now", "ago: just now");
-            assertEqual(rules.ago(now - 5 * 60000, now), "5 min ago", "ago: minutes");
-            assertEqual(rules.ago(now - 3 * 3600000, now), "3 h ago", "ago: hours");
-            assertEqual(rules.ago(now - 30 * 3600000, now), "yesterday", "ago: yesterday");
-            assertEqual(rules.ago(now - 90 * 86400000, now), "3 months ago", "ago: months");
-            assertEqual(rules.ago(now + 60000, now), "just now", "ago: a moment in the future is now");
-        }
-
-        // --- addresses ---
-        {
-            const cidr = rules.parseCidr("192.168.1.0/24");
-            assert(cidr && cidr.family === 4 && cidr.bits === 24 && cidr.canonical, "cidr: an IPv4 network");
-            const hostBits = rules.parseCidr("192.168.1.5/24");
-            assert(hostBits && !hostBits.canonical && hostBits.network === "192.168.1.0/24", "cidr: host bits → not canonical, the network named");
-            assertEqual(rules.parseCidr("fd00:99:0:0::/64")?.network, "fd00:99::/64", "cidr: IPv6 written canonically");
-            assertEqual(rules.parseCidr("fd7a:115c:a1e0::1")?.network, "fd7a:115c:a1e0::1/128", "cidr: a bare IPv6 address is a /128");
-            assertEqual(rules.parseCidr("::ffff:192.0.2.1/128")?.network, "::ffff:192.0.2.1/128", "cidr: an embedded IPv4, written as Go's netip prints it");
-            assertEqual(rules.parseCidr("::/0")?.bits, 0, "cidr: the IPv6 default route");
-            assertEqual(rules.parseCidr("2001:db8:0:1:1:1:1:1/64")?.network, "2001:db8:0:1::/64", "cidr: zeros compressed once, the longest run");
-            for (const bad of ["300.1.1.1/24", "1.2.3/24", "1.2.3.4/33", "fd00::/129", "1::2::3", "01.2.3.4/8", "1.2.3.4/", "1.2.3.4/x", "fe80::1%eth0",
-                               "::1.2.3.4:5", "1.2.3.4.5", "", null, 5, "1:2:3:4:5:6:7:8:9", "a".repeat(80)])
-                assertEqual(rules.parseCidr(bad), null, "cidr: " + JSON.stringify(bad) + " refused");
-            assert(rules.cidrOverlap(rules.parseCidr("10.0.0.0/8"), rules.parseCidr("10.20.0.0/16")), "overlap: contained");
-            assert(!rules.cidrOverlap(rules.parseCidr("10.0.0.0/8"), rules.parseCidr("11.0.0.0/8")), "overlap: beside");
-            assert(!rules.cidrOverlap(rules.parseCidr("10.0.0.0/8"), rules.parseCidr("fd00::/8")), "overlap: different families");
-            assert(rules.cidrOverlap(rules.parseCidr("fd00:99::/64"), rules.parseCidr("fd00:99::1")), "overlap: IPv6 host in network");
-            assert(!rules.cidrOverlap(null, cidr), "overlap: nothing");
-
+            for (const name of ["bytes", "ago", "parseCidr", "cidrOverlap", "withoutAddresses", "_parseIpv4", "_parseIpv6", "_formatIpv6"])
+                assertEqual(typeof rules[name], "undefined", "no copy of the shell's helpers: " + name);
+            const offline = rules.peers(rich, now).filter(device => !device.online && device.lastSeen > 0);
+            assert(offline.length > 0, "a device last seen a while ago");
+            same(offline.map(device => device.lastSeenText), offline.map(device => Api.format.ago(device.lastSeen, now)),
+                 "\"last seen\" as the shell says it (Api.format.ago)");
+            assertEqual(rules.peers(rich, now).find(device => device.ipv4 !== "")?.ipv4, rules.peers(rich, now).find(device => device.ipv4 !== "")?.addresses.find(address => Api.address.isIpv4(address)),
+                        "a device's IPv4 address picked with Api.address.isIpv4");
+            // The local networks from the shell's rows (Api.localNetworks)
+            same(rules.lanSubnets([{ device: "wlan0", kind: "wifi", family: 4, address: "192.168.1.37", network: "192.168.1.0/24" },
+                                   { device: "wlan0", kind: "wifi", family: 6, address: "fd00:99::5", network: "fd00:99::/64" },
+                                   { device: "eth0", kind: "ethernet", family: 4, address: "192.168.1.38", network: "192.168.1.0/24" },
+                                   { device: "wwan0", kind: "modem", family: 6, address: "2001:db8::7", network: null },
+                                   null, "10.0.0.0/8", { network: "garbage" }, { network: "0.0.0.0/0" }]),
+                 ["192.168.1.0/24", "fd00:99::/64"], "LAN: the rows' networks, each once; a lone address, odd rows and a /0 add nothing");
+            same(rules.lanSubnets(null), [], "LAN: nothing read");
+            assertEqual(rules.routeShadowsLan(rich, rules.lanSubnets([{ device: "wlan0", family: 4, address: "192.168.1.37", network: "192.168.1.0/24" }]), richPrefs).length, 1,
+                        "LAN: the shell's rows find the route that covers it");
             assert(rules.validTarget("peer4") && rules.validTarget("laptop.example-tailnet.ts.net.") && rules.validTarget("100.64.0.4")
                    && rules.validTarget("fd7a:115c:a1e0::4"), "target: names and addresses");
             for (const bad of ["-c", "--exit-node", "a b", "x;y", "", null, "a".repeat(254), "peer:", "ünï", "a..b"])

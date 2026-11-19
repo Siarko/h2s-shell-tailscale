@@ -363,8 +363,10 @@ show_item taildropWaiting
 screenshot settings-tailscale-taildrop-waiting
 
 # This user becomes the operator (as `set --operator=<user>` would leave it: the prefs name the
-# user, and the stand-ins grant the operator's access) — then saving needs no password
-user_name=$(id -un)
+# user, and the stand-ins grant the operator's access) — then saving needs no password. The
+# user is the one the shell's system facts name (module API 1.13, Api.system.userName): in
+# module test mode the test kit's made-up one, "tester"
+user_name=tester
 printf 'OperatorUser=%s\n' "$user_name" >> "$tools/state/prefs"
 printf '%s\n' "$user_name" > "$tools/state/user"
 arrive ".bashrc" "echo pwned"

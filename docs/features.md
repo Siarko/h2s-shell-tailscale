@@ -82,7 +82,7 @@ On the status line and in notifications, IP addresses show as `[address]`.
 - Offline nodes are shown but cannot be chosen.
 - A filter appears when the list is long.
 - "Allow the local network" keeps the LAN reachable while an exit node is in use.
-- A line appears when another VPN is up beside the exit node.
+- A line appears when another VPN that takes all traffic (or may) is up beside the exit node. A split VPN does not count.
 
 ### By network
 
@@ -184,7 +184,7 @@ Needs your user to be Tailscale's operator.
 - Send files to devices that can receive them. Choose files, paste absolute paths, or drop them.
 - Progress is shown per file. Cancel stops the send.
 - A send with no progress for 2 minutes is stopped. A send lasts 6 hours at most.
-- Received files raise a notification and show "Files received" on the entry.
+- Received files raise a notification (the names on one line, as plain text) and show "Files received" on the entry.
 - Save them by hand or automatically (off by default).
 - The folder defaults to `XDG_DOWNLOAD_DIR`, else `~/Downloads`.
 - If the name is taken: Keep both, Replace or Leave waiting. Automatic saving never replaces.
@@ -238,7 +238,8 @@ If the port then holds something the module would not make public, it turns Funn
 Needs the operator.
 
 - "Get certificate" for this device's MagicDNS name.
-- Files go to `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/tailscale/certs`.
+- Files go to `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/module-data/tailscale/certs`, in the module's data folder.
+- Certificates in the folder used before (`…/h2s-shell/tailscale/certs`) are moved there once. A newer file already there is never overwritten; the old one then stays where it was.
 - The folder is 700. The key is 600, the certificate 644.
 - The page shows the paths and, with `openssl`, the end date.
 - Certificates are not renewed automatically.

@@ -61,6 +61,12 @@ TestCase {
             problems.push("status");
         if (typeof entry.busy !== "boolean")
             problems.push("busy");
+        // What it does with the traffic (module API 1.16): true, false or null (unknown); routes a list or null
+        for (const name of ["fullTunnel", "setsDns"])
+            if (![true, false, null].includes(entry[name]))
+                problems.push(name);
+        if (entry.routes !== null && !(Array.isArray(entry.routes) && entry.routes.length <= 256 && entry.routes.every(route => typeof route === "string")))
+            problems.push("routes");
         return problems;
     }
 
@@ -296,6 +302,16 @@ TestCase {
             same(running.detail, { iface: "tailscale0", interfaceName: "tailscale0", addresses: ["100.64.0.1", "fd7a:115c:a1e0::1"],
                                    server: "controlplane.tailscale.com", dns: ["100.100.100.100"] }, "entry: detail while up");
             assertEqual(running.status, "Tailnet only", "entry: the status line");
+            // What Tailscale does with the traffic, for the shell's Api.vpnsUp (fullTunnel, setsDns, routes)
+            same([running.fullTunnel, running.setsDns, running.routes], [false, true, ["100.64.0.0/10", "fd7a:115c:a1e0::/48", "192.168.99.0/24"]],
+                 "entry: no exit node — not a full tunnel; Tailscale's DNS; its ranges and the accepted subnet route");
+            const throughExit = rules.entry(status("exit-node"), prefs("exit-node"), { now: now });
+            same([throughExit.fullTunnel, throughExit.routes.slice(-2)], [true, ["0.0.0.0/0", "::/0"]], "entry: through an exit node — a full tunnel, all of both families");
+            const noRoutes = rules.entry(status("running"), rules.parsePrefs(Object.assign(JSON.parse(fixture("prefs-running.json")), { RouteAll: false, CorpDNS: false })), { now: now });
+            same([noRoutes.setsDns, noRoutes.routes], [false, ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]], "entry: routes not accepted, DNS not used — its own ranges only, no DNS");
+            const down = rules.entry(status("stopped"), prefs("stopped"), { now: now });
+            same([down.fullTunnel, down.setsDns, down.routes], [null, null, null], "entry: not up — not known (null), never false");
+            same([rules.traffic(status("running"), null, rules.stateOf(status("running"), null, { now: now })).routes], [null], "traffic: prefs not read — unknown");
             assertEqual(running.busy, false, "entry: not busy");
             same(Object.keys(rules.entry(status("needs-login"), prefs("logged-out"), { now: now }).attention).sort(), ["action", "reason"],
                  "entry: attention is exactly { reason, action }");
@@ -491,7 +507,6 @@ TestCase {
             const marked = rules.failureText("<b>bad</b> & <address> &amp;", { error: "" });
             assert(!/[<>&]/.test(marked), "failure: no angle brackets or ampersands: " + marked);
             assertEqual(rules.plainText("a <i>b</i> & c\u0007d"), "a ‹i›b‹/i› ＆ c d", "plainText: look-alikes, no control characters");
-            assertEqual(rules.withoutAddresses("peer 100.64.0.4 gone"), "peer [address] gone", "withoutAddresses: a placeholder without angle brackets");
             assert(rules.healthList([{ title: "<x>", text: "a & b" }], null).every(item => !/[<>&]/.test(item.title + item.text)), "healthList: plain text");
 
             // Its life
@@ -518,15 +533,22 @@ TestCase {
             assertEqual(rules.planAttend(stoppedMeanwhile, false, "user").command?.argv.join(" "), "tailscale down", "attend \"Disconnect\" while the view says stopped: `down`, never `up`");
         }
 
-        // --- logging once per change of outcome (logChange) ---
+        // --- logging once per change of outcome (logLine; the shell's module.log keeps one line per key) ---
         {
-            let key = "";
+            let failing = false;
+            let last = "";
             const lines = [];
             const attempt = (ok, reason) => {
-                const decision = rules.logChange(key, "status --json", ok, reason);
-                key = decision.key;
-                if (decision.line !== "")
-                    lines.push(decision.line);
+                const line = rules.logLine("status --json", ok, reason, failing);
+                if (line === null)
+                    return;
+                // As module.log with a key: the same level and text again is not written
+                const memo = line.level + ":" + line.text;
+                if (memo === last)
+                    return;
+                last = memo;
+                failing = line.level !== "info";
+                lines.push(memo);
             };
             attempt(true, "");
             for (let i = 0; i < 14; i++)
@@ -535,11 +557,13 @@ TestCase {
             attempt(false, "Tailscale did not answer within 15 s.");
             attempt(true, "");
             attempt(true, "");
-            same(lines, ["[tailscale] status --json failed: The Tailscale service (tailscaled) is not running.",
-                         "[tailscale] status --json still failing, now: Tailscale did not answer within 15 s.",
-                         "[tailscale] status --json answers again"],
+            same(lines, ["warn:status --json failed: The Tailscale service (tailscaled) is not running.",
+                         "warn:status --json failed: Tailscale did not answer within 15 s.",
+                         "info:status --json answers again"],
                  "log: 14 failed attempts are one line; a new reason one more; the recovery one");
-            assertEqual(rules.logChange("", "x", false, "").line, "[tailscale] x failed: failed", "log: a failure without a reason still says so");
+            same(rules.logLine("x", false, "", false), { level: "warn", text: "x failed: failed" }, "log: a failure without a reason still says so");
+            assertEqual(rules.logLine("x", true, "", false), null, "log: answering as before — nothing");
+            assert(!rules.logLine("x", false, "a\nb <c>", false).text.includes("\n"), "log: one line, plain");
         }
 
         // --- looking again: recheckPlan, recheckDelayMs ---

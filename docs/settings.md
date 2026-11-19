@@ -48,7 +48,9 @@ In `exitByNetwork.held`:
 - `seen` is the exit node in use when it opened, as `<id>|<address>`. Another one in use later means a pick by hand.
 - A `failed` choice is tried once more after a restart of the shell.
 
-Certificates are written to `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/tailscale/certs`.
+Certificates are written to `${XDG_DATA_HOME:-~/.local/share}/h2s-shell/module-data/tailscale/certs`,
+the module's data folder the shell makes. Certificates in the folder used before,
+`${XDG_DATA_HOME:-~/.local/share}/h2s-shell/tailscale/certs`, are moved there once.
 
 The account list holds e-mail addresses. It is kept in memory only.
 

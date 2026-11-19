@@ -83,9 +83,12 @@ QtObject {
     // The module's handle (its store, its settings, resumed(), its programs, running as
     // administrator), or a suite's scenario handle (tests/ScenarioHandle.qml), or null
     property var module: null
-    // The system's facts (module API 1.13; a suite may give its own): the data and download
-    // folders, IP forwarding
+    // The system's facts (module API 1.13; a suite may give its own): the user, the host name,
+    // the home and download folders, IP forwarding
     property var system: Api.system
+    // The networks this computer is on (module API 1.16, Api.localNetworks; a suite may give
+    // its own): for "an accepted route covers the local network"
+    property var localNetworks: Api.localNetworks
     // Added to every command's environment, and handed to the runs as administrator (the
     // suites: the stand-ins' TS_FAKE_* variables; module API 1.14 takes them in test mode only)
     property var environment: ({})
@@ -110,9 +113,8 @@ QtObject {
     property real _startedAt: 0
     // Overrides of TailscaleRules.timeLimits (seconds), for the suites
     property var timeLimits: ({})
-    // The system's host name ("" = read at start from /proc/sys/kernel/hostname — outside
-    // module test mode; in it the name stays unknown unless the owner sets it)
-    property string systemHostname: ""
+    // The system's host name, as the shell read it ("" unknown)
+    readonly property string systemHostname: String(system?.hostName ?? "").slice(0, 253)
     // Open the login page in the browser (setting mod.tailscale.openLoginInBrowser)
     readonly property bool openLoginInBrowser: module ? module.value("openLoginInBrowser") !== false : true
 
@@ -164,13 +166,18 @@ QtObject {
     property string authUrl: ""
     property string busAuthUrl: ""
     property real exitNodeOfflineSince: 0
-    property real now: fixedNow > 0 ? fixedNow : Date.now()
-    property string userName: ""
-    property int uid: -1
+    // The moment the state is derived at: the last read's, moved on by the shell's minute clock
+    // (module API 1.12, Api.minuteNow: "last seen", the key's expiry) and by the one-shot timer
+    // that ends an offline exit node's grace; a suite's fixedNow instead
+    readonly property real now: fixedNow > 0 ? fixedNow : Math.max(Api.minuteNow, _moment)
+    property real _moment: Date.now()
+    // Who runs the shell, as the shell read it ("" and -1 unknown)
+    readonly property string userName: TailscaleRules.validUserName(String(system?.userName ?? "")) ? String(system.userName) : ""
+    readonly property int uid: typeof system?.uid === "number" && Number.isInteger(system.uid) && system.uid >= 0 ? system.uid : -1
     // The suggested exit node: an id from the bus, or a name from `exit-node suggest`
     property string suggestedId: ""
     property string suggestedName: ""
-    property var lanSubnets: []
+    readonly property var lanSubnets: TailscaleRules.lanSubnets(localNetworks)
     property bool streamUp: false
     // A lasting condition found by an action (origin "network" needing the user, a denied
     // change): attention until the user acts or the phase changes
@@ -295,9 +302,6 @@ QtObject {
         _probing = false;
         _lookAgain = false;
         _resolveTools();
-        _readIdentity();
-        _readLan();
-        _readSystemHostname();
     }
 
     // How many times the client stopped: a run's answer is dropped when it changed since the
@@ -315,6 +319,7 @@ QtObject {
         _streamRestart.stop();
         _loginTimer.stop();
         _recheckTimer.stop();
+        _graceTimer.stop();
         _recheckAttempts = 0;
         _probing = false;
         _startedAt = 0;
@@ -417,44 +422,6 @@ QtObject {
         _followRecheck();
     }
 
-    // The OS's name (outside module test mode, and only when the owner set none: systemHostname)
-    function _readSystemHostname() {
-        if (Api.testMode || (systemHostname !== "" && !_systemHostnameRead))
-            return;
-        _run(["cat", "/proc/sys/kernel/hostname"], _limitMs("read"), result => {
-            if (!result.ok)
-                return;
-            _systemHostnameRead = true;
-            systemHostname = String(result.stdout.split("\n")[0] ?? "").trim().slice(0, 253);
-        });
-    }
-    property bool _systemHostnameRead: false
-
-    function _readIdentity() {
-        _run(["sh", "-c", "id -u; id -un"], _limitMs("read"), result => {
-            if (!result.ok)
-                return;
-            const lines = result.stdout.split("\n");
-            uid = Number(lines[0] ?? -1);
-            const name = (lines[1] ?? "").trim();
-            userName = TailscaleRules.validUserName(name) ? name : "";
-        });
-    }
-
-    // The local networks (for "an accepted route covers the LAN"): global addresses of every
-    // interface but Tailscale's
-    function _readLan() {
-        _run(["sh", "-c", "ip -o addr show scope global 2> /dev/null; true"], _limitMs("read"), result => {
-            const subnets = [];
-            for (const line of result.stdout.split("\n")) {
-                const match = /^\d+:\s+(\S+)\s+inet6?\s+(\S+)/.exec(line);
-                if (match && !match[1].startsWith("tailscale") && !subnets.includes(match[2]))
-                    subnets.push(match[2]);
-            }
-            lanSubnets = subnets.slice(0, 32);
-        });
-    }
-
     // ---- Running a command (the shell's command runner) ----
 
     // `argv` by absolute path, under the time limit `limitMs` (TailscaleRules.runLimits; 0 none),
@@ -498,21 +465,21 @@ QtObject {
     // read again on the look-again backoff
     property bool _statusFailing: false
 
-    // ---- Logging: once per change of outcome (TailscaleRules.logChange) ----
-    // Per thing logged (status, prefs, the stream, the look for the programs): what was logged
-    // last; and how many lines each produced (for the suites)
-    property var _logKeys: ({})
+    // ---- Logging: once per change of outcome (TailscaleRules.logLine, the handle's module.log) ----
+    // Per thing logged (status, prefs, the stream, the look for the programs): whether the last
+    // line written was a failure; and how many lines each wrote (for the suites). The shell's
+    // module.log (module API 1.12) writes a line only when it differs from the last one written
+    // under the same key, the thing's name
+    property var _logFailing: ({})
     property var logCounts: ({})
     function _logOutcome(what, ok, reason) {
-        const decision = TailscaleRules.logChange(_logKeys[what] ?? "", what, ok, TailscaleRules.withoutAddresses(reason));
-        _logKeys[what] = decision.key;
-        if (decision.line === "")
+        const line = TailscaleRules.logLine(what, ok, Api.address.redact(String(reason ?? "")), _logFailing[what] === true);
+        if (line === null || typeof module?.log !== "function")
             return;
+        if (module.log(line.level, line.text, what) !== true)
+            return;
+        _logFailing[what] = line.level !== "info";
         logCounts[what] = (logCounts[what] ?? 0) + 1;
-        if (ok)
-            console.info(decision.line);
-        else
-            console.warn(decision.line);
     }
 
     property bool _reading: false
@@ -670,8 +637,7 @@ QtObject {
     }
 
     function _applyRead(statusResult, prefsResult) {
-        if (fixedNow <= 0)
-            now = Date.now();
+        _moment = Date.now();
         if (statusResult.ok) {
             const parsed = TailscaleRules.parseStatus(statusResult.stdout);
             if (parsed.ok) {
@@ -719,10 +685,13 @@ QtObject {
     function _followExitNode() {
         const current = TailscaleRules.currentExitNode(status, prefs);
         if (current && status?.backendState === "Running" && !current.online) {
-            if (exitNodeOfflineSince <= 0)
+            if (exitNodeOfflineSince <= 0) {
                 exitNodeOfflineSince = now;
+                _graceTimer.restart();
+            }
         } else {
             exitNodeOfflineSince = 0;
+            _graceTimer.stop();
         }
     }
 
@@ -883,12 +852,12 @@ QtObject {
     function _noteFailure(reason, settleAfter) {
         if (!running)
             return;
-        const health = (Array.isArray(busHealth) ? busHealth : []).map(item => Object.assign({}, item, { text: TailscaleRules.withoutAddresses(item?.text),
-                                                                                                      title: TailscaleRules.withoutAddresses(item?.title) }));
+        const health = (Array.isArray(busHealth) ? busHealth : []).map(item => Object.assign({}, item, { text: Api.address.redact(item?.text),
+                                                                                                      title: Api.address.redact(item?.title) }));
         // The long sentence stays on the card's warnings; the status line gets the short one
         if (reason === elevationProblem && elevationProblem !== "")
             reason = "Can't ask for the password.";
-        const text = TailscaleRules.failureText(TailscaleRules.withoutAddresses(reason), { error: TailscaleRules.withoutAddresses(busError), health: health });
+        const text = TailscaleRules.failureText(Api.address.redact(String(reason ?? "")), { error: Api.address.redact(busError), health: health });
         failure = TailscaleRules.failureAfter(failure, "failed", view.phase, text);
         _failureAfterRead = typeof settleAfter === "number" ? settleAfter : reads;
     }
@@ -1190,7 +1159,7 @@ QtObject {
     // The exit node and the routes share one preference (AdvertiseRoutes): the exit node is
     // changed with --advertise-exit-node alone, the routes with --advertise-routes alone (the
     // whole list of subnet routes each time) — set.go keeps the other half (TailscaleRules,
-    // "Sharing this computer"). IP forwarding is read from /proc (any user may) only when asked:
+    // "Sharing this computer"). IP forwarding is read through the shell (Api.system.readIpForwarding: /proc, any user may) only when asked:
     // the page's Sharing section on screen, and after a change that offers something.
 
     readonly property var sharing: TailscaleRules.sharing(status, prefs)
@@ -1266,8 +1235,8 @@ QtObject {
     }
 
     function removeRoute(route, origin) {
-        const removed = TailscaleRules.parseCidr(String(route ?? ""));
-        if (prefs?.ok === true && (!removed || !(prefs.advertiseRoutes ?? []).some(item => TailscaleRules.parseCidr(item)?.network === removed.network))) {
+        const removed = Api.address.parseCidr(String(route ?? ""));
+        if (prefs?.ok === true && (!removed || !(prefs.advertiseRoutes ?? []).some(item => Api.address.parseCidr(item)?.network === removed.network))) {
             failed("Removing a route", "That network is not offered.");
             return false;
         }
@@ -1982,10 +1951,10 @@ QtObject {
         if (!running)
             return;
         tailnetLock.read();
-        if (fixedNow <= 0)
-            now = Date.now();
-        _readLan();
-        _readSystemHostname();
+        _moment = Date.now();
+        // The host name may have changed meanwhile (the shell reads it again)
+        if (typeof system?.refresh === "function")
+            system.refresh();
         refresh();
         if (_streamRun !== null)
             _restartStream();
@@ -2063,11 +2032,11 @@ QtObject {
         onTriggered: root._scheduleRead()
     }
 
-    // The clock: `now`, every 5 s, for the grace of an offline exit node and "last seen"
-    property Timer _clock: Timer {
-        interval: 5000
-        repeat: true
-        running: root.running && root.fixedNow <= 0
-        onTriggered: root.now = Date.now()
+    // An offline exit node's grace (TailscaleRules.exitNodeOfflineGraceMs) ends: the state is
+    // derived again then, not at the next minute or read
+    property Timer _graceTimer: Timer {
+        interval: TailscaleRules.exitNodeOfflineGraceMs + 250
+        repeat: false
+        onTriggered: root._moment = Date.now()
     }
 }

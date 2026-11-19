@@ -77,11 +77,59 @@ TestCase {
         assertEqual(JSON.stringify(actual), JSON.stringify(expected), message);
     }
 
+    // The shell's helpers and facts (module API 1.12–1.16) as the main's client takes them, set
+    // through the test kit — only once the live suites are done: the facts are the whole
+    // runner's, and the live suites read Api.system's user name
+    function _factsSeen() {
+        const client = _client();
+        // Who runs the shell and the host name: Api.system, no `id`, no /proc read of its own
+        assertEqual(ModuleTestKit.setSystem({ userName: "alice", uid: 1234, hostName: "box" }).length, 0, "system facts set");
+        same([client.userName, client.uid, client.systemHostname], ["alice", 1234, "box"], "the user, the uid and the host name: Api.system's");
+        assertEqual(client.device?.hostName, "box", "… this device named after the system's host name (no name set in Tailscale)");
+        ModuleTestKit.setSystem({ userName: "", uid: null, hostName: "" });
+        same([client.userName, client.uid, client.systemHostname], ["", -1, ""], "… not known: unknown here too, never a guess");
+        ModuleTestKit.setSystem(null);
+        assertEqual(client.userName, Api.system.userName, "… back to the test kit's");
+        // Its data folder: the shell's module.dataDirectory, the certificates in it
+        assert(module.dataDirectory !== "" && client.cert.dir === module.dataDirectory + "/certs",
+               "certificates: in the module's data directory (" + client.cert.dir + ")");
+        assertEqual(client.cert.oldDir, Api.system.dataHome + "/h2s-shell/tailscale/certs", "… the folder used before, under the system's data home");
+        assert(client.cert.moved?.done === true && client.cert.moveLogs === 0, "… nothing there to move at the start: done, nothing logged");
+        // The local networks: Api.localNetworks (no `ip addr` of its own); the stand-in's tailnet
+        // has a subnet router for 192.168.99.0/24, its routes accepted
+        assertEqual(ModuleTestKit.setNetworks({ localNetworks: [{ device: "wlan0", kind: "wifi", address: "192.168.99.5/24" },
+                                                                { device: "eth0", kind: "ethernet", address: "10.1.2.3/16" }] }).length, 0, "local networks set");
+        same(client.lanSubnets, ["192.168.99.0/24", "10.1.0.0/16"], "the local networks: Api.localNetworks'");
+        same(client.routeWarnings.map(found => found.lan), ["192.168.99.0/24"], "… an accepted route that covers one: warned");
+        ModuleTestKit.setNetworks({ localNetworksReady: false });
+        same([client.lanSubnets, client.routeWarnings.length], [[], 0], "… not read: none, no warning");
+        // The networks read whole, for the exit node per network: Api.networksReady
+        assertEqual(client.networkExit.networksReady, true, "networks read whole (the defaults): networksReady");
+        ModuleTestKit.setNetworks({ networksReady: false });
+        assertEqual(client.networkExit.networksReady, false, "… not read: the exit node per network waits");
+        // Other VPNs up: Api.vpnsUp's rows with what they do with the traffic
+        ModuleTestKit.setNetworks({ vpnsUp: [{ name: "Office", type: "wireguard", provider: "", fullTunnel: false, setsDns: false, routes: ["10.20.0.0/16"] }] });
+        same(TailscaleRules.fullTunnelVpns(Api.vpnsUp, module.moduleId), [], "another VPN, a split one: no \"another VPN is also on\"");
+        ModuleTestKit.setNetworks({ vpnsUp: [{ name: "Work", type: "wireguard", provider: "", fullTunnel: true, setsDns: true, routes: ["0.0.0.0/0"] }] });
+        same(TailscaleRules.fullTunnelVpns(Api.vpnsUp, module.moduleId), ["Work"], "… a full tunnel: said");
+        ModuleTestKit.setNetworks(null);
+        // Its own VPN's traffic, reported on the provider's entry (Api.vpnsUp's for it)
+        const entry = module.main.provider.entries[0];
+        same([entry.fullTunnel, entry.setsDns, entry.routes.slice(0, 2)], [false, true, ["100.64.0.0/10", "fd7a:115c:a1e0::/48"]],
+             "its entry: no exit node — not a full tunnel, Tailscale's DNS, its ranges first");
+        // The clock: the shell's minute (Api.minuteNow), no clock of its own
+        const later = Date.UTC(2030, 0, 2, 3, 4, 30);
+        ModuleTestKit.setNow(later);
+        assertEqual(client.now, Date.UTC(2030, 0, 2, 3, 4, 0), "the time the state is derived at follows Api.minuteNow");
+        ModuleTestKit.setNow(0);
+        assert(client.now <= Date.now() + 60000, "… the real clock again");
+    }
+
     function runAsync() {
         assert(module !== null && module.active, "the module is loaded and active");
         assertEqual(module.status?.state, "loaded", "… state loaded");
         assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, qs.components, Quickshell)");
-        assertEqual(module.manifest.api, "1.15", "written for module API 1.15 (programs, test mode, running as administrator with a suite's environment, the system's facts, the main's client and the popup's opener)");
+        assertEqual(module.manifest.api, "1.23", "written for module API 1.23 (the helpers, the system's and the networks' facts, its data directory, the VPN places as anchors)");
         assert(Api.testMode, "the module test runner: module test mode");
         const deprecations = JSON.stringify(module.status?.deprecations ?? []);
         assert(!/pkexec|PrivilegedAction|elevate|stand-in/i.test(deprecations),
@@ -180,6 +228,7 @@ TestCase {
         });
         _then("no environment reads", () => suite._envReads !== null, () => {
             same(suite._envReads, ["end"], "no QML file of the module reads H2S_TEST_MODULES or H2S_TAILSCALE_* any more");
+            suite._factsSeen();
             // Off: as `modules setEnabled` does
             assert(ModuleTestKit.setEnabled("tailscale", false), "turned off");
         });

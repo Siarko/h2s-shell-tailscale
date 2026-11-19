@@ -21,6 +21,9 @@ QtObject {
     property var client: null
     // The shell's networks (Main binds Api.networks; the suites set a list)
     property var networks: []
+    // They have been read whole (Main binds Api.networksReady, module API 1.16): an empty list
+    // then means none. A suite that sets only a list: read once it holds one
+    property bool networksReady: (networks ?? []).length > 0
     // How long "no marked network up" must hold before it counts (the key taken): a Wi-Fi
     // reconnect passes through it for a few seconds, and taking it then would make the return
     // to the same network a new set — applying the choice again over a manual change made
@@ -47,7 +50,7 @@ QtObject {
     // Everything decide reads, and busy: a switch deferred while another change runs is tried
     // again when that change ends; the wanted nodes' state, so one coming back is tried again;
     // why using an exit node is refused, so the end of that is noticed
-    readonly property string _inputs: running ? JSON.stringify([NetworkExitRules.activeKey(table, networks), client.prefs?.ok === true,
+    readonly property string _inputs: running ? JSON.stringify([networksReady, NetworkExitRules.activeKey(table, networks), client.prefs?.ok === true,
         client.prefs?.exitNodeId ?? "", client.prefs?.exitNodeIp ?? "", client.exitNodes.count, client.canChange, client.status?.backendState ?? "",
         client.status?.peersRead === true, client.busy, _serveChecking, NetworkExitRules.wanted(table, networks),
         NetworkExitRules.wantedNodes(table, networks, client.exitNodes), TailscaleRules.exitNodeUseProblem(client.prefs)]) : ""
@@ -91,9 +94,9 @@ QtObject {
 
     // `settled`: called by the hold timer — "no marked network up" has lasted
     function follow(settled) {
-        // No networks at all: the shell has not read them yet (a restart) — deciding now would
-        // take "none up" and act again once they arrive
-        if (!running || _inFlight || (networks ?? []).length === 0)
+        // The networks not read whole yet (a restart, NetworkManager not answering): deciding now
+        // would take "none up" and act again once they arrive
+        if (!running || _inFlight || !networksReady)
             return;
         const result = NetworkExitRules.decide({
             table: table, networks: networks, lastKey: lastKey, prefs: client.prefs, exitNodes: client.exitNodes,

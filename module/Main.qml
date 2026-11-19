@@ -44,18 +44,25 @@ QtObject {
         }
     }
 
-    // Never a text starting with "-" into a notification (notify-send would read it as an
-    // option), no addresses (a notification may show on a shared screen), and plain text
-    // (TailscaleRules.plainText: a notification daemon may read markup in the body)
+    // A failure's words for the shell's notification (the provider's failed(), which the shell
+    // sends with a markup body): no addresses (a notification may show on a shared screen),
+    // and plain text by the module's own cleaning (TailscaleRules.plainText) — the shell's
+    // plain format (module API 1.12) is not offered for a provider's failures
     function _plain(text) {
-        return TailscaleRules.plainText(TailscaleRules.withoutAddresses(String(text ?? "")), 1000).replace(/^[\s-]+/, "");
+        return TailscaleRules.plainText(Api.address.redact(String(text ?? "")), 1000);
     }
 
-    // The shell's networks (module API 1.3), for the exit node per network
+    // The shell's networks (module API 1.3) and whether they are read whole (1.16), for the
+    // exit node per network
     property Binding _networks: Binding {
         target: main.client.networkExit
         property: "networks"
         value: Api.networks ?? []
+    }
+    property Binding _networksReady: Binding {
+        target: main.client.networkExit
+        property: "networksReady"
+        value: Api.networksReady === true
     }
 
     property Connections _failures: Connections {

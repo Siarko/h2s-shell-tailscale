@@ -156,7 +156,9 @@ TestCase {
                 const forwarding = (s.options.forwarding ?? "1 1").split(" ").map(value => value === "1");
                 const recorded = s.options.recordRuns === true ? { runner: _recorder(s) } : {};
                 s.client = _clientComponent.createObject(suite, Object.assign(recorded, {
-                    module: s.module, system: Object.assign({}, Api.system, { readIpForwarding: () => ({ ipv4: forwarding[0], ipv6: forwarding[1] }) }),
+                    // The OS's host name: the fixtures' own device's (as on a machine Tailscale is named after)
+                    module: s.module, system: Object.assign({}, Api.system, { hostName: s.options.hostName ?? "self",
+                                                                             readIpForwarding: () => ({ ipv4: forwarding[0], ipv6: forwarding[1] }) }),
                     environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: s.options.pollMs ?? 2000,
                     loginTimeoutMs: s.options.loginTimeoutMs ?? 60000, fixedNow: s.options.fixedNow ?? 0,
                     timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, recheckMinMs: s.options.recheckMinMs ?? 5000
@@ -503,6 +505,21 @@ TestCase {
             assertEqual(_entry(offline).attention?.action, "Use none", "… \"Use none\"");
         });
 
+        // The real clock: the grace ends by the client's one-shot timer, not at the next minute
+        // of the shell's clock (Api.minuteNow) or the next read
+        const graceClock = scenario("exit-node-offline-clock", { state: "exit-node-offline" });
+        then(graceClock, "read", () => graceClock.client.status !== null && graceClock.client.exitNodeOfflineSince > 0, () => {
+            assert(graceClock.client._graceTimer.running, "offline exit node, real clock: the grace timer runs");
+            assert(graceClock.client._graceTimer.interval > TailscaleRules.exitNodeOfflineGraceMs, "… just past the grace");
+            graceClock.momentBefore = graceClock.client.now;
+            // Shortened here: what it does when it fires is what counts
+            graceClock.client._graceTimer.interval = 100;
+            graceClock.client._graceTimer.restart();
+        });
+        then(graceClock, "the timer fired", () => !graceClock.client._graceTimer.running, () => {
+            assert(graceClock.client.now > graceClock.momentBefore, "… firing, it moves the time the state is derived at on");
+        });
+
         // ---- daemon down → Start → up ----
         const daemon = scenario("daemon-down", { state: "running", daemonDown: true });
         then(daemon, "read", () => daemon.client.daemon === "not-running", () => {
@@ -569,7 +586,7 @@ TestCase {
             // This user made the operator elsewhere: a network's connect needs no password
             thenNetwork.client.environment = Object.assign({}, thenNetwork.env, { TS_FAKE_USER: thenNetwork.client.userName });
         });
-        thenShell(thenNetwork, "made the operator elsewhere", "printf 'OperatorUser=%s\\n' \"$(id -un)\" >> \"$1/state/prefs\" && echo ok", "operatorSet",
+        thenShell(thenNetwork, "made the operator elsewhere", "printf 'OperatorUser=%s\\n' '" + Api.system.userName + "' >> \"$1/state/prefs\" && echo ok", "operatorSet",
                   () => thenNetwork.client.refresh());
         then(thenNetwork, "the operator", () => thenNetwork.client.canChange && !thenNetwork.client._reading, () => {
             assertEqual(thenNetwork.client.failureText, "Not allowed.", "the failure text still there (same phase)");
@@ -1019,7 +1036,8 @@ TestCase {
             assertEqual(status?.maxOutputBytes, TailscaleRules.maxAnswerChars, "status --json: cut only past the module's cap, not the runner's 1 MB");
             assert(cut.runs.filter(run => run.argv[0] === standIns + "/tailscale").every(run => run.maxOutputBytes === TailscaleRules.maxAnswerChars),
                    "… and so every tailscale run");
-            assertEqual(cut.client._logKeys["status --json"], "The answer was too long.", "the cut answer: logged as too long");
+            same(cut.module.logged.filter(line => line.key === "status --json").map(line => line.level + ": " + line.text),
+                 ["warn: status --json failed: The answer was too long."], "the cut answer: logged as too long, once (module.log)");
             assertEqual(cut.client.status, null, "… nothing of it taken");
         });
 

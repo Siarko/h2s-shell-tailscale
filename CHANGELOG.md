@@ -4,7 +4,7 @@ Current version: 0.6.0 (`module/module.json`).
 
 ## Unreleased
 
-Needs h2s-shell with module API 1.15.
+Needs h2s-shell with module API 1.23.
 
 ### Added
 
@@ -60,6 +60,14 @@ Needs h2s-shell with module API 1.15.
 - IPC `state`: `testMode` in place of `toolsMode`; `tools` names `tailscale`, `timeout`, `curl`, `systemctl`.
 - Commands run through the shell's command runner, each with its time limit. The card no longer warns when coreutils `timeout` is missing: the shell then keeps the limits itself, but it can stop only the command it started, not what that command started in turn. Getting a certificate and saving Taildrop files keep their own `timeout` where it is found, so those end on time either way.
 - The popup shows as many devices as the preset of the bar entry that opened it, as the shell tells it.
+- Certificates are kept in the module's data folder (`…/h2s-shell/module-data/tailscale/certs`). Those in the old folder (`…/h2s-shell/tailscale/certs`) are moved there once, modes kept; a newer file already there is never overwritten, and the old folder stays while anything is left in it. The outcome is logged once.
+- A notification for received files lists the names on one line, separated by commas, as plain text.
+- "Another VPN is also on" and the card's note about two VPNs count only VPNs that take all traffic (for the exit node) or bring their own DNS (for Tailscale's DNS). A split VPN without its own DNS no longer gets a warning.
+- The user, the host name, the local networks and the home folder come from the shell's facts; the module runs no `id`, `ip addr` or read of `/proc` of its own.
+- The exit node per network waits until the shell has read the networks whole, not merely until it lists one.
+- Tailscale's entry tells the shell what it does with the traffic: a full tunnel through an exit node, its DNS, the networks it carries.
+- Log lines through the shell's module log: a changed reason reads "failed: <reason>" again rather than "still failing, now: <reason>".
+- Sizes, times ("5 min ago") and addresses use the shell's helpers; the state follows the shell's minute clock, and an exit node's offline grace ends on time.
 
 ### Removed
 

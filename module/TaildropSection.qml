@@ -238,7 +238,7 @@ ColumnLayout {
                 Layout.fillWidth: false
                 wrapMode: Text.NoWrap
                 text: modelData.problem !== "" ? modelData.problem
-                    : modelData.outcome === "sending" || modelData.outcome === "" ? (modelData.percent >= 0 ? modelData.percent + " %" : TailscaleRules.bytes(modelData.sent))
+                    : modelData.outcome === "sending" || modelData.outcome === "" ? (modelData.percent >= 0 ? modelData.percent + " %" : Api.format.bytes(modelData.sent))
                     : modelData.outcome
                 color: modelData.problem !== "" || modelData.outcome === "failed" || modelData.outcome === "not sent" ? Api.theme.warning
                     : modelData.outcome === "sent" ? Api.theme.success : Api.theme.textSecondary
@@ -392,13 +392,13 @@ ColumnLayout {
         id: _fileDialog
         title: "Files to send"
         fileMode: FileDialog.OpenFiles
-        currentFolder: TaildropRules.folderUrl(Quickshell.env("HOME") ?? "")
+        currentFolder: TaildropRules.folderUrl(String(root.client?.system?.home ?? ""))
         onAccepted: root.taildrop.addPaths(selectedFiles.map(url => String(url)))
     }
     FolderDialog {
         id: _folderDialog
         title: "Save received files to"
-        currentFolder: TaildropRules.folderUrl(root.taildrop?.folder ?? "") || TaildropRules.folderUrl(Quickshell.env("HOME") ?? "")
+        currentFolder: TaildropRules.folderUrl(root.taildrop?.folder ?? "") || TaildropRules.folderUrl(String(root.client?.system?.home ?? ""))
         onAccepted: {
             const match = /^file:\/\/(\/[^?#]*)$/.exec(String(selectedFolder));
             if (match)

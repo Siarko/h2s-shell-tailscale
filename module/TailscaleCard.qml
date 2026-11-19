@@ -23,7 +23,7 @@ ColumnLayout {
 
     readonly property string _twoVpns: TailscaleRules.twoVpnsNote({
         tailscaleUp: client?.entry.state === "activated", exitNode: client?.view.exitNode?.name ?? "",
-        acceptDns: client?.prefs?.acceptDns !== false, otherVpns: context?.otherVpnsUp ?? []
+        acceptDns: client?.prefs?.acceptDns !== false, otherVpns: context?.otherVpns ?? []
     })
     readonly property var _warnings: (client?.warnings ?? []).map(warning => warning.text).concat(_twoVpns !== "" ? [_twoVpns] : [])
 

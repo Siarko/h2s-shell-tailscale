@@ -16,7 +16,7 @@ The rules hold every decision, so the suites test them with plain objects.
 
 ```
 module/
-  module.json                  manifest: main, widget, two VPN slots, page, setting, facts, programs, tests
+  module.json                  manifest: main, widget, two VPN anchors, page, setting, facts, programs, tests
   qmldir                       types and singletons
   Main.qml                     created by the shell's module host: client, VPN provider, IPC, facts
   TailscaleRules.qml           state, entry, devices, exit nodes, event bus, errors, commands
@@ -109,14 +109,21 @@ Without `curl` there is no stream, only the poll.
 
 ### Logging
 
-The client logs reads only when their outcome changes (`TailscaleRules.logChange`):
+The client logs through the shell's `module.log` (module API 1.12), keyed by what it logs,
+so the same line is written once (`TailscaleRules.logLine` says the line):
 
-- "`<what>` failed: `<reason>`" on the first failure
-- "`<what>` still failing, now: `<reason>`" when the reason changes
+- "`<what>` failed: `<reason>`" on a failure, again when the reason changes
 - "`<what>` answers again" on recovery
 
 `<what>` is `status --json`, `debug prefs`, `the event stream` or `looking for tailscale`.
-Addresses in the reason show as `[address]`.
+Addresses in the reason show as `[address]` (`Api.address.redact`).
+
+### The time
+
+The state is derived at `now`: the moment of the last read, moved on by the shell's minute
+clock (`Api.minuteNow`, module API 1.12) for "last seen" and the key's expiry. When an exit
+node goes offline, a one-shot timer ends its grace (`exitNodeOfflineGraceMs`, 60 s); the
+module has no clock of its own.
 
 ## Actions
 
@@ -156,9 +163,23 @@ Links open through `Api.openUrl`. Runs as administrator go through the handle's
 (`TailscaleRules.privilegedRun`); the result is read by `TailscaleRules.privilegedOutcome`.
 See [privileges.md](privileges.md).
 
-The system's facts come from `Api.system` (module API 1.13): IP forwarding
-(`readIpForwarding()`), the download folder (Taildrop's default folder) and the data home
-(the certificate folder, `<data home>/h2s-shell/tailscale/certs`).
+The system's facts come from `Api.system` (module API 1.13): the user's name and uid (who may
+change Tailscale without a password), the host name (this device's name when none is set in
+Tailscale), the home and download folders (Taildrop's dialogs and default folder), IP
+forwarding (`readIpForwarding()`) and the data home. The networks this computer is on are
+`Api.localNetworks` (module API 1.16: "an accepted route covers the local network"); the
+saved networks `Api.networks`, and `Api.networksReady` says they are read whole (the exit
+node per network waits until then); the VPNs up `Api.vpnsUp`, with what each does with the
+traffic (`fullTunnel`, `setsDns`, `routes`: "another VPN is also on" only beside one that
+may take all traffic). The module's own VPN reports the same on its entry
+(`TailscaleRules.traffic`). Sizes, "ago" and addresses use `Api.format` and `Api.address`.
+
+Certificates are kept in `<module.dataDirectory>/certs` (module API 1.13). At the client's
+start, those in the folder used before (`<data home>/h2s-shell/tailscale/certs`) are moved
+there once (`CertRules.moveScript`, as the user): only `<domain>.crt` and `<domain>.key`,
+regular files of the user's, never a link; a domain's pair together, modes kept; a newer file
+already there is never overwritten (that pair stays). The old folder goes once empty; the
+outcome is logged once.
 
 ### Module test mode
 
@@ -171,4 +192,4 @@ the stand-ins as its programs (or a scenario's: one missing, an untrusted one, o
 later), and the runs as administrator recorded and handed to the module's real handle; the
 client gives them its scenario's environment (module API 1.14, module test mode only).
 
-Small helpers (`sh`, `find`, `stat`, `cat`, `id`, `ip`) are found through PATH.
+Small helpers (`sh`, `find`, `stat`, `cat`, `mv`, `grep`) are found through PATH.

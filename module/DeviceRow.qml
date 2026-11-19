@@ -111,7 +111,7 @@ Rectangle {
         Text {
             textFormat: Text.PlainText
             visible: root.showTraffic && root.device !== null && (root.device.rxBytes > 0 || root.device.txBytes > 0)
-            text: "Received " + TailscaleRules.bytes(root.device?.rxBytes ?? 0) + " · sent " + TailscaleRules.bytes(root.device?.txBytes ?? 0)
+            text: "Received " + Api.format.bytes(root.device?.rxBytes ?? 0) + " · sent " + Api.format.bytes(root.device?.txBytes ?? 0)
             font.family: Api.theme.fontFamily
             font.pixelSize: Api.theme.fontSizeXSmall
             color: Api.theme.textMuted

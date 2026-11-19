@@ -47,7 +47,13 @@ its programs (or a scenario's: one missing, an untrusted one, one installed late
 each run as administrator to the module's real handle — the shell's one queue and the stand-in
 `pkexec` — recording it (`what`, argv, limit) on the way. The client hands its `TS_FAKE_*`
 environment to the run (module API 1.14: `options.environment`, taken in module test mode
-only), so each scenario's runs as root see its own stand-in state. `TailscaleModuleTest` uses
+only), so each scenario's runs as root see its own stand-in state. The handle's `log` keeps
+`module.log`'s one line per key for its scenario alone and records the lines; `notify` goes
+through the shell (recorded: `ModuleTestKit.notified`); `dataDirectory` is the scenario's own
+folder. The system's and the networks' facts are the test kit's (`ModuleTestKit.setSystem`,
+`setNetworks`, `setNow`); `TailscaleModuleTest` sets them only once the live suites are done,
+since they are the whole runner's. `CertMoveTest` moves certificates on data homes of its own
+under the test kit's temporary home. `TailscaleModuleTest` uses
 the module's real handle directly; it turns the module off and on again only once the other
 suites are done, since that ends every run of the module in the shell's queue.
 

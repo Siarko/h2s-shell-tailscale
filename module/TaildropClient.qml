@@ -347,14 +347,15 @@ QtObject {
             refreshWaiting();
     }
 
-    // A notification per arrival batch (the body escaped: the shell reads it as markup)
+    // A notification per arrival batch: the names (other people's) as plain text (module API
+    // 1.12, format "plain": one line, never read as markup), separated by commas
     function _arrived(names) {
         const actions = canSave && !autoSave ? [{ id: "save", label: "Save", onTriggered: () => root.save("user") }] : [];
         notices = notices.concat([{ names: names, actions: actions.map(action => action.id) }]).slice(-20);
-        const escape = text => String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
         module?.notify(names.length === 1 ? "File received" : names.length + " files received", {
-            body: names.map(escape).join("\n"),
-            actions: actions
+            body: names.map(name => String(name)).join(", "),
+            actions: actions,
+            format: "plain"
         });
         // A new arrival: everything may be tried again
         _autoTried = [];

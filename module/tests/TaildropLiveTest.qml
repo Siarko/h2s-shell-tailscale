@@ -201,9 +201,9 @@ TestCase {
     }
 
     function runAsync() {
-        // This user as the profile's operator (the client compares with `id -un`); the stand-ins
+        // This user as the profile's operator (the client compares with the shell's Api.system.userName, the test kit's); the stand-ins
         // grant the operator's access through TS_FAKE_OPERATOR
-        const operatorPrefs = "printf 'OperatorUser=%s\\n' \"$(id -un)\" > \"$1/state/prefs\"";
+        const operatorPrefs = "printf 'OperatorUser=%s\\n' '" + Api.system.userName + "' > \"$1/state/prefs\"";
         const operator = { TS_FAKE_OPERATOR: "1" };
 
         // ---- Not the operator: nothing runs, never a prompt ----
@@ -346,6 +346,20 @@ TestCase {
             assertEqual(notOp.client.entry.attention, null, "… never attention");
             assert(!drop(notOp).save("user"), "save refused");
             assertEqual(drop(notOp).saveError, "Needs the operator", "… with the reason");
+        });
+        then(notOp, "two more at once, with markup in their names", () => true, () => {
+            const line = JSON.stringify({ IncomingFiles: [
+                { Name: "<b>bold</b>.txt", Started: "2026-11-16T10:01:00Z", DeclaredSize: 1, Received: 1, Done: true },
+                { Name: "fish & chips.txt", Started: "2026-11-16T10:01:00Z", DeclaredSize: 1, Received: 1, Done: true }], FilesWaiting: {} });
+            _shell.run(["sh", "-c", "printf '%s\\n' \"$2\" >> \"$1/bus.jsonl\"", "sh", notOp.dir, line], () => {});
+        });
+        then(notOp, "the second arrival", () => drop(notOp).notices.length === 2, () => {
+            // The notifications as the shell sends them (module API 1.12, format "plain")
+            const sent = (ModuleTestKit.notified ?? []).filter(notice => /^(File|\d+ files) received$/.test(notice.summary)
+                                                             && /photo\.jpg|bold|fish/.test(notice.body));
+            same(sent.map(notice => [notice.summary, notice.body, notice.format]),
+                 [["File received", "photo.jpg", "plain"], ["2 files received", "&lt;b&gt;bold&lt;/b&gt;.txt, fish &amp; chips.txt", "plain"]],
+                 "arrivals notified as plain text (the body as sent: \"<\", \">\" and \"&\" escaped by the shell, shown as written), on one line separated by commas");
         });
         logs(notOp, "no inbox access", () => {
             assertEqual(count(notOp.logLines, /localapi\/v0\/files\//), 0, "no files/ request as a non-operator");

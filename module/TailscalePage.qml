@@ -482,9 +482,12 @@ ColumnLayout {
         need: root.need
         onToggled: root._free && root.client.setAllowLan(!checked)
     }
-    // Step 5: another VPN up beside the exit node (both want all traffic; Tailscale's wins)
+    // Another VPN up beside the exit node that takes all traffic too, or may (both want it;
+    // Tailscale's wins) — a split one does not count (Api.vpnsUp's fullTunnel, module API 1.16)
     Hint {
-        visible: root._running && root.view?.exitNode !== null && (Api.vpnsUp ?? []).some(vpn => vpn.provider !== (root.module?.moduleId ?? "tailscale"))
+        objectName: "tailscaleOtherVpnHint"
+        visible: root._running && root.view?.exitNode !== null
+            && TailscaleRules.fullTunnelVpns(Api.vpnsUp, root.module?.moduleId ?? "tailscale").length > 0
         text: "Another VPN is also on"
     }
     NetworkExitTable {

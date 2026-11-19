@@ -165,7 +165,7 @@ TestCase {
     }
 
     function runAsync() {
-        const operatorPrefs = "printf 'OperatorUser=%s\\n' \"$(id -un)\" > \"$1/state/prefs\"";
+        const operatorPrefs = "printf 'OperatorUser=%s\\n' '" + Api.system.userName + "' > \"$1/state/prefs\"";
         const serveScenario = "printf 'serve\\n' > \"$1/state/scenario\"";
         const exitScenario = "printf 'exit-node\\n' > \"$1/state/scenario\"";
         const home = [{ id: "home-uuid", name: "Home", kind: "wifi", active: true }];
@@ -209,7 +209,7 @@ TestCase {
     }
 
     function operatorScenario() {
-        const operatorPrefs = "printf 'OperatorUser=%s\\n' \"$(id -un)\" > \"$1/state/prefs\"";
+        const operatorPrefs = "printf 'OperatorUser=%s\\n' '" + Api.system.userName + "' > \"$1/state/prefs\"";
         const exitScenario = "printf 'exit-node\\n' > \"$1/state/scenario\"";
         const home = [{ id: "home-uuid", name: "Home", kind: "wifi", active: true }];
         // ---- The operator: a certificate into a private folder; the exit node set for a network ----

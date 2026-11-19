@@ -11,7 +11,9 @@ import qs.api
 //     shell hands them over in module test mode — or what a scenario says (programsIn: one
 //     left out, an untrusted one, none yet); `installed` is what the next recheckPrograms()
 //     finds (a program installed meanwhile);
-//   - `privilegedAvailable` false: as if the shell had no way to run as administrator.
+//   - `privilegedAvailable` false: as if the shell had no way to run as administrator;
+//   - `dataDirectory`: the scenario's own folder ("" none); `log` keeps module.log's one line per
+//     key for the scenario alone, writes through the shell's handle, records each line (`logged`).
 QtObject {
     id: root
 
@@ -52,6 +54,34 @@ QtObject {
 
     signal resumed()
     readonly property var store: null
+    // A notification goes through the shell's handle (in module test mode it is recorded:
+    // ModuleTestKit.notified)
+    function notify(summary, options) {
+        root.shellHandle?.notify(summary, options);
+    }
+    // The module's data directory as a scenario gives it ("": none)
+    property string dataDirectory: ""
+
+    // module.log as the shell's handle has it (module API 1.12): with a key, a line only when
+    // its level or text differs from the last written under that key. Kept here per scenario
+    // (the shell's handle keeps a bounded number of keys for the whole module, and scenarios
+    // run side by side), then written through the shell's handle without a key; every line
+    // written is recorded ({ level, text, key })
+    property var _lastLogged: ({})
+    property var logged: []
+    function log(level, text, key) {
+        const memo = String(level) + ":" + String(text);
+        const named = key !== undefined && key !== null && String(key) !== "";
+        if (named && _lastLogged[String(key)] === memo)
+            return false;
+        const written = root.shellHandle?.log(level, text) === true;
+        if (!written)
+            return false;
+        if (named)
+            _lastLogged[String(key)] = memo;
+        logged = logged.concat([{ level: String(level), text: String(text), key: named ? String(key) : "" }]);
+        return true;
+    }
     function value(key) {
         return undefined;
     }
