@@ -49,6 +49,7 @@ Needs h2s-shell with module API 1.15.
 
 - Text from Tailscale shows as plain text. Addresses on the status line and in notifications show as `[address]`.
 - Read failures are logged once per change, not on every try.
+- Large tailnets are read: an answer up to 32 MB. A longer one counts as a failed read, logged as "The answer was too long."
 - Reads while Tailscale is missing or stopped follow a backoff from 5 s to 60 s.
 - Funnel is refused on ports of terminal sessions and Tailscale Services.
 - The programs it runs (`tailscale`, `timeout`, `curl`, `systemctl`, `openssl`) are the ones the shell finds and judges. Only `tailscale` must be one your user cannot replace: it is the one run as administrator.
@@ -57,7 +58,7 @@ Needs h2s-shell with module API 1.15.
 - Links and the Taildrop folder open through the shell.
 - IP forwarding, the download folder and the data folder come from the shell's system facts.
 - IPC `state`: `testMode` in place of `toolsMode`; `tools` names `tailscale`, `timeout`, `curl`, `systemctl`.
-- Commands run through the shell's command runner, each with its time limit. Without coreutils `timeout` they keep their limits, and the card no longer warns about it.
+- Commands run through the shell's command runner, each with its time limit. The card no longer warns when coreutils `timeout` is missing: the shell then keeps the limits itself, but it can stop only the command it started, not what that command started in turn. Getting a certificate and saving Taildrop files keep their own `timeout` where it is found, so those end on time either way.
 - The popup shows as many devices as the preset of the bar entry that opened it, as the shell tells it.
 
 ### Removed

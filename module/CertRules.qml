@@ -42,16 +42,20 @@ Singleton {
     }
 
     // The script that runs as the user: the folder made private (700, the user's own, not a
-    // link), then the CLI, then the certificate's end date (openssl, when the module found it:
-    // module.programs). Every program by the absolute path given ("": none). Its time limit is
-    // the runner's, around the whole script (timeLimits.cert).
-    // argv: ["sh", "-c", script, "sh", dir, domain, tailscale, openssl]
+    // link), then the CLI under coreutils' timeout (when the module found it), then the
+    // certificate's end date (openssl, when found). Every program by the absolute path given
+    // ("": none). The runner's limit (timeLimits.cert) is around the whole script, but where
+    // the runner keeps it with its own timer (no root-owned timeout and setpriv) only `sh` is
+    // signalled: the script's own timeout is what then ends `tailscale cert`, which would
+    // otherwise run on after the limit.
+    // argv: ["sh", "-c", script, "sh", dir, domain, timeout, seconds, tailscale, openssl]
     readonly property string script: [
-        "dir=$1; domain=$2; tailscale=$3; openssl=$4; umask 077",
+        "dir=$1; domain=$2; limit=$3; seconds=$4; tailscale=$5; openssl=$6; umask 077",
         "[ -L \"$dir\" ] && { echo 'h2s: the folder is a link' >&2; exit 3; }",
         "mkdir -p -- \"$dir\" && [ -d \"$dir\" ] && [ ! -L \"$dir\" ] && [ -O \"$dir\" ] || { echo 'h2s: the folder is not usable' >&2; exit 3; }",
         "chmod 700 -- \"$dir\" || exit 3",
-        "\"$tailscale\" cert --cert-file=\"$dir/$domain.crt\" --key-file=\"$dir/$domain.key\" \"$domain\" || exit $?",
+        "if [ -n \"$limit\" ]; then \"$limit\" -k 5 \"$seconds\" \"$tailscale\" cert --cert-file=\"$dir/$domain.crt\" --key-file=\"$dir/$domain.key\" \"$domain\" || exit $?",
+        "else \"$tailscale\" cert --cert-file=\"$dir/$domain.crt\" --key-file=\"$dir/$domain.key\" \"$domain\" || exit $?; fi",
         "[ -n \"$openssl\" ] && \"$openssl\" x509 -noout -enddate -in \"$dir/$domain.crt\" 2> /dev/null; true"
     ].join("\n")
 
@@ -63,11 +67,15 @@ Singleton {
         "[ -n \"$3\" ] && \"$3\" x509 -noout -enddate -in \"$1\" 2> /dev/null; true"
     ].join("\n")
 
-    function argv(dir, domain, tailscalePath, opensslPath) {
+    // The script's argv; timeout and openssl by absolute path, else "" (none); `seconds` the
+    // script's own limit on `tailscale cert` (1 to 86400)
+    function argv(dir, domain, timeoutPath, seconds, tailscalePath, opensslPath) {
         if (files(dir, domain) === null || typeof tailscalePath !== "string" || !tailscalePath.startsWith("/"))
             return [];
-        const openssl = typeof opensslPath === "string" && opensslPath.startsWith("/") ? opensslPath : "";
-        return ["sh", "-c", script, "sh", dir, domain, tailscalePath, openssl];
+        if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < 1 || seconds > 86400)
+            return [];
+        const absolute = path => typeof path === "string" && path.startsWith("/") ? path : "";
+        return ["sh", "-c", script, "sh", dir, domain, absolute(timeoutPath), String(seconds), tailscalePath, absolute(opensslPath)];
     }
 
     // The check's time limit (a look at two files and openssl)

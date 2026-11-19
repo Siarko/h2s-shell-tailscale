@@ -213,7 +213,7 @@ TestCase {
         const exitScenario = "printf 'exit-node\\n' > \"$1/state/scenario\"";
         const home = [{ id: "home-uuid", name: "Home", kind: "wifi", active: true }];
         // ---- The operator: a certificate into a private folder; the exit node set for a network ----
-        const operator = scenario("operator", { env: { TS_FAKE_OPERATOR: "1" }, setup: [exitScenario, operatorPrefs,
+        const operator = scenario("operator", { env: { TS_FAKE_OPERATOR: "1", TS_FAKE_TIMEOUT_LOG: base + "/operator/timeout.log" }, setup: [exitScenario, operatorPrefs,
             "printf 'self.example-tailnet.ts.net\\n' > \"$1/state/cert-domains\""] });
         then(operator, "status read", () => busReady(operator) && operator.client.canChange && operator.client.cert.problem === ""
              && (operator.client.prefs?.exitNodeId ?? "") !== "", () => {
@@ -228,6 +228,10 @@ TestCase {
         });
         thenShell(operator, "modes", "stat -c '%a' \"$1/certs\" \"$1/certs/self.example-tailnet.ts.net.crt\" \"$1/certs/self.example-tailnet.ts.net.key\"", "_modes", lines => {
             same(lines, ["700", "644", "600"], "folder 700, certificate 644, key 600");
+        });
+        thenShell(operator, "the script's timeout", "cat \"$1/timeout.log\"", "_timeouts", lines => {
+            assertEqual(lines.filter(line => /^timeout -k 5 180 \S+\/tailscale cert --cert-file=\S+ --key-file=\S+ self\.example-tailnet\.ts\.net$/.test(line)).length, 1,
+                        "`tailscale cert` under the module's timeout (its 180 s), not only the runner's around the script");
         });
         then(operator, "exit node cleared for the network", () => operator.client.networkExit.decision.kind === "applied" && !operator.client.busy, () => {
             assertEqual(operator.client.networkExit.runs, 1, "one change");

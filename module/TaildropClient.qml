@@ -460,6 +460,10 @@ QtObject {
             sentAs[file.saveAs] = file;
         if (automatic)
             autoRuns++;
+        // Two requests a file, each under the script's own limit, and the script's start. The
+        // runner's limit is at most a day (TailscaleRules.runLimits, maxRunMs): a save of more
+        // files than fit in a day (some 70 at the default 600 s each) is ended there, and the
+        // files it had not reached stay waiting in Tailscale's inbox for the next Save
         const limitMs = (files.length * 2 + 1) * (seconds + 10) * 1000;
         const started = client._runLocked("taildrop-save", prepared.argv, limitMs, result => {
             const parsed = TaildropRules.parseSave(result.stdout, target);

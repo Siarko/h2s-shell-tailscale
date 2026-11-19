@@ -142,7 +142,9 @@ that absolute path (`TailscaleRules.programsFound`).
   It is the one program handed to pkexec. Otherwise the module counts as "not trusted" and
   runs nothing.
 - `timeout`, `curl`, `systemctl` and `openssl` run as you only and are not judged. `timeout`
-  only limits each file of a Taildrop save; without it the save's own limit still holds.
+  limits each file of a Taildrop save and `tailscale cert` inside the certificate script:
+  where the shell keeps a run's limit with its own timer, it stops only the script, not what
+  the script started. Without `timeout` the scripts' overall limits still hold.
   Without `curl` there is no event stream; without `openssl` a certificate's end date is not
   shown.
 - `pkexec` is named only for module test mode. Outside it the shell uses its own.

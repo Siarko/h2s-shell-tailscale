@@ -42,7 +42,7 @@ QtObject {
             return false;
         }
         const seconds = client._limit("cert");
-        const argv = CertRules.argv(dir, domain, client.tailscalePath, client.opensslPath);
+        const argv = CertRules.argv(dir, domain, client.timeoutPath, seconds, client.tailscalePath, client.opensslPath);
         if (argv.length === 0) {
             message = "Not possible here";
             return false;
