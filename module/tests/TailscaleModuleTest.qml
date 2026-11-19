@@ -227,8 +227,7 @@ TestCase {
             const widget = widgetComponent.status === Component.Ready ? widgetComponent.createObject(null, { module: module }) : null;
             assert(widget !== null, "the widget builds in the shell (" + widgetComponent.errorString() + ")");
             assertEqual(widget?.summary.kind, "connected", "… showing the live client's state: connected");
-            if (typeof module.presetValue === "function")
-                assertEqual(module.presetValue("tailscale", "", "devices"), 5, "… its preset read through the handle (module API 1.3)");
+            assertEqual(module.presetValue("tailscale", "", "devices"), 5, "… its preset read through the handle (module API 1.3)");
             widget?.destroy();
             // Its popup panel, row and card, as the shell builds them: each reaches the live
             // client through the handle (module API 1.15: module.main.client)

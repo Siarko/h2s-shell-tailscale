@@ -22,10 +22,9 @@ PopupWidget {
     // The live client (a test gives its own)
     property var client: module?.main?.client ?? null
     readonly property var summary: TailscaleWidgetRules.summaryOf(client)
-    // Its preset's keys (module API 1.3: module.presetValue); on an older shell the defaults
-    readonly property bool _presets: typeof module?.presetValue === "function"
+    // Its preset's keys (module API 1.3: module.presetValue); the defaults while no handle is set
     function _preset(key, fallback) {
-        const value = _presets ? module.presetValue(widgetType, preset, key) : undefined;
+        const value = module?.presetValue(widgetType, preset, key);
         return value === undefined || value === null ? fallback : value;
     }
     readonly property string textMode: TailscaleWidgetRules.textMode(_preset("text", "none"))

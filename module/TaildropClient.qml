@@ -162,7 +162,7 @@ QtObject {
     // while the client still runs. Its own chooser still open: not asked again, done() gets
     // "busy" at once (→ false)
     function _choose(options, done) {
-        if (!running || typeof module?.chooseFiles !== "function")
+        if (!running || module === null)
             return false;
         if (_chooser !== null && _chooser.open === true) {
             done(_busyAnswer);
@@ -493,13 +493,13 @@ QtObject {
     }
 
     // A notification per arrival batch: the names (other people's) as plain text (module API
-    // 1.12, format "plain": one line, never read as markup), separated by commas
+    // 1.12, format "plain": never read as markup), one per line (a plain body keeps its line
+    // breaks, module API 1.28)
     function _arrived(names) {
         const actions = canSave && !autoSave ? [{ id: "save", label: "Save", onTriggered: () => root.save("user") }] : [];
         notices = notices.concat([{ names: names, actions: actions.map(action => action.id) }]).slice(-20);
         module?.notify(names.length === 1 ? "File received" : names.length + " files received", {
-            // One name per line again once the module asks for module API 1.28 (a plain body keeps its line breaks)
-            body: names.map(name => String(name)).join(", "),
+            body: names.map(name => String(name)).join("\n"),
             actions: actions,
             format: "plain"
         });

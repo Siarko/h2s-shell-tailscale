@@ -86,6 +86,10 @@ QtObject {
     function value(key) {
         return undefined;
     }
+    // The bar widget's presets (module API 1.3): none set, the manifest's defaults apply
+    function presetValue(type, preset, key) {
+        return undefined;
+    }
 
     // The shell's file chooser (module API 1.17) through the shell's handle: in module test
     // mode no dialog opens, the suite answers (ModuleTestKit.answerChooser / cancelChooser).

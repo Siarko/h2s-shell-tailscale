@@ -6,7 +6,7 @@ import qs.api
 // The bar widget's preset (the bar section editor's settings pane): the text beside the
 // icon, the Taildrop badge, how many devices the popup lists. Read and written through the
 // module's handle (module API 1.3: presetValue / setPresetValue — WidgetPresets, with the
-// manifest's presetDefaults); on an older shell the defaults are shown and nothing can change.
+// manifest's presetDefaults).
 Item {
     id: root
     objectName: "tailscaleWidgetSettings"
@@ -17,14 +17,13 @@ Item {
 
     implicitHeight: _column.implicitHeight
 
-    readonly property bool _presets: typeof module?.presetValue === "function"
     function _value(key, fallback) {
-        const value = _presets ? module.presetValue(widgetType, presetName, key) : undefined;
+        const value = module?.presetValue(widgetType, presetName, key);
         return value === undefined || value === null ? fallback : value;
     }
     function _set(key, value) {
-        if (_presets && presetName !== "")
-            module.setPresetValue(widgetType, presetName, key, value);
+        if (presetName !== "")
+            module?.setPresetValue(widgetType, presetName, key, value);
     }
     readonly property string _text: TailscaleWidgetRules.textMode(_value("text", "none"))
     readonly property bool _badge: _value("badge", true) !== false
@@ -60,7 +59,6 @@ Item {
                         objectName: "tailscaleWidgetText-" + modelData.value
                         label: modelData.label
                         picked: modelData.value === root._text
-                        enabled: root._presets
                         size: "m"
                         textSize: "body"
                         onClicked: root._set("text", modelData.value)
@@ -83,7 +81,6 @@ Item {
             ToggleSwitch {
                 objectName: "tailscaleWidgetBadgeSwitch"
                 checked: root._badge
-                enabled: root._presets
                 onToggled: root._set("badge", !root._badge)
             }
         }
@@ -104,7 +101,6 @@ Item {
                         objectName: "tailscaleWidgetDevices-" + modelData
                         label: String(modelData)
                         picked: modelData === root._devices
-                        enabled: root._presets
                         size: "m"
                         textSize: "body"
                         onClicked: root._set("devices", modelData)

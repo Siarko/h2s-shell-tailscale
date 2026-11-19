@@ -354,8 +354,8 @@ QtObject {
     // (installed or changed since); its answer comes as a change of `programs`, which applies
     // them again
     function _resolveTools(lookUp) {
-        if (lookUp === true && typeof module?.recheckPrograms === "function")
-            module.recheckPrograms();
+        if (lookUp === true)
+            module?.recheckPrograms();
         // One look at a time (a view and the timer may ask together); one asked meanwhile
         // follows it
         if (_probing) {
@@ -477,7 +477,7 @@ QtObject {
     property var logCounts: ({})
     function _logOutcome(what, ok, reason) {
         const line = TailscaleRules.logLine(what, ok, Api.address.redact(String(reason ?? "")), _logFailing[what] === true);
-        if (line === null || typeof module?.log !== "function")
+        if (line === null || module === null)
             return;
         if (module.log(line.level, line.text, what) !== true)
             return;
@@ -1191,7 +1191,7 @@ QtObject {
         _forwardingAskedAt = moment;
         let read = null;
         try {
-            read = typeof system?.readIpForwarding === "function" ? system.readIpForwarding() : null;
+            read = system?.readIpForwarding() ?? null;
         } catch (error) {
             read = null;
         }
@@ -1483,7 +1483,7 @@ QtObject {
         } catch (error) {
             return { ok: false, error: "It could not be run as administrator: " + String(error).slice(0, 200) };
         }
-        if (run !== null && typeof run?.cancel === "function" && run.running !== false)
+        if (run !== null && run.running !== false)
             _privilegedRuns = _privilegedRuns.concat([run]);
         _opPrivileged = run;
         return { ok: true, error: "" };
@@ -1963,8 +1963,7 @@ QtObject {
         tailnetLock.read();
         _moment = Date.now();
         // The host name may have changed meanwhile (the shell reads it again)
-        if (typeof system?.refresh === "function")
-            system.refresh();
+        system?.refresh();
         refresh();
         if (_streamRun !== null)
             _restartStream();

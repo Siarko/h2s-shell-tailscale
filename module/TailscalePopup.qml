@@ -34,7 +34,7 @@ Item {
 
     // The device cap of the widget that opened it (its preset; module API 1.3)
     readonly property int deviceCap: {
-        const value = typeof module?.presetValue === "function" ? module.presetValue("tailscale", String(opener?.preset ?? ""), "devices") : undefined;
+        const value = module?.presetValue("tailscale", String(opener?.preset ?? ""), "devices");
         return TailscaleWidgetRules.deviceCap(value);
     }
     // Past the cap too: a device with Taildrop's work in the popup (files picked, a send, its

@@ -412,8 +412,8 @@ TestCase {
             const sent = (ModuleTestKit.notified ?? []).filter(notice => /^(File|\d+ files) received$/.test(notice.summary)
                                                              && /photo\.jpg|bold|fish/.test(notice.body));
             same(sent.map(notice => [notice.summary, notice.body, notice.format]),
-                 [["File received", "photo.jpg", "plain"], ["2 files received", "&lt;b&gt;bold&lt;/b&gt;.txt, fish &amp; chips.txt", "plain"]],
-                 "arrivals notified as plain text (the body as sent: \"<\", \">\" and \"&\" escaped by the shell, shown as written), on one line separated by commas");
+                 [["File received", "photo.jpg", "plain"], ["2 files received", "&lt;b&gt;bold&lt;/b&gt;.txt\nfish &amp; chips.txt", "plain"]],
+                 "arrivals notified as plain text (the body as sent: \"<\", \">\" and \"&\" escaped by the shell, shown as written), one name per line");
         });
         logs(notOp, "no inbox access", () => {
             assertEqual(count(notOp.logLines, /localapi\/v0\/files\//), 0, "no files/ request as a non-operator");

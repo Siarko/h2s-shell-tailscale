@@ -392,7 +392,7 @@ TestCase {
             opened.opener = null;
             assertEqual(opened.deviceCap, 5, "… opened by no widget: the default");
             opened.destroy();
-            const off = _popup.createObject(null, { module: { main: null } });
+            const off = _popup.createObject(null, { module: { main: null, presetValue: (type, preset, key) => undefined } });
             assertEqual(off.client, null, "popup: the module off (no main): no client");
             assertEqual(find(off, "tailscalePopupStatus")?.text, "Not available", "… says so");
             off.destroy();

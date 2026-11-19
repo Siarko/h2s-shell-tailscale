@@ -58,6 +58,7 @@ Needs h2s-shell with module API 1.32.
 - A login cancelled while it waits for the password says "Login cancelled." Only one already running as administrator says it runs on until its time limit.
 - Links and the Taildrop folder open through the shell.
 - IP forwarding, the download folder and the data folder come from the shell's system facts.
+- The notification of received Taildrop files lists one name per line.
 - IPC `state`: `testMode` in place of `toolsMode`; `tools` names `tailscale`, `timeout`, `curl`, `systemctl`.
 - Commands run through the shell's command runner, each with its time limit. The card no longer warns when coreutils `timeout` is missing: the shell then keeps the limits itself, but it can stop only the command it started, not what that command started in turn. Getting a certificate and saving Taildrop files keep their own `timeout` where it is found, so those end on time either way.
 - The popup shows as many devices as the preset of the bar entry that opened it, as the shell tells it.
