@@ -120,13 +120,16 @@ Singleton {
     }
 
     // The popup's devices → { shown: [device], more (how many left out), online }: online ones
-    // first (the list's own order kept within each group), at most `cap`
-    function deviceList(devices, cap) {
+    // first (the list's own order kept within each group), at most `cap` — and past it the
+    // devices whose ids are in `kept` (Taildrop's work in the popup: TaildropRules.popupKept)
+    function deviceList(devices, cap, kept) {
         const list = Array.isArray(devices) ? devices.filter(device => device && typeof device === "object") : [];
         const online = list.filter(device => device.online === true);
         const ordered = online.concat(list.filter(device => device.online !== true));
         const most = deviceCap(cap);
-        return { shown: ordered.slice(0, most), more: Math.max(0, ordered.length - most), online: online.length };
+        const keep = Array.isArray(kept) ? kept.map(id => String(id)) : [];
+        const shown = ordered.filter((device, index) => index < most || keep.includes(String(device.id ?? "")));
+        return { shown: shown, more: ordered.length - shown.length, online: online.length };
     }
 
     // Whether "Send file…" is offered for a device: Taildrop sends only as the operator, while

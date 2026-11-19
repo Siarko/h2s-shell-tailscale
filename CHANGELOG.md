@@ -69,7 +69,7 @@ Needs h2s-shell with module API 1.23.
 - Log lines through the shell's module log: a changed reason reads "failed: <reason>" again rather than "still failing, now: <reason>".
 - Its row in the network popup and its part of the VPN card are the manifest's `anchors` (the places under its row and in its opened card) instead of `slots`; the shell no longer lists them as deprecated.
 - Sizes, times ("5 min ago") and addresses use the shell's helpers; the state follows the shell's minute clock, and an exit node's offline grace ends on time.
-- "Send file…" in the bar popup stays in the popup: the shell's file chooser, then a row under the device with the files, Send and "×", then a progress bar with Cancel and the result. The settings window no longer opens.
+- "Send file…" in the bar popup stays in the popup: the shell's file chooser, then a row under the device with the files, Send and "×", then a progress bar with Cancel and the result. Each device keeps its own files. The settings window no longer opens.
 - Taildrop's files and its folder for received files are chosen in the shell's file chooser instead of the module's own dialogs.
 
 ### Removed

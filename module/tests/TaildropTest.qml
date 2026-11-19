@@ -211,14 +211,14 @@ TestCase {
     }
 
     function popupRows() {
-        const choice = { targetId: "p1", paths: ["/home/u/report.pdf"] };
+        const choice = { p1: ["/home/u/report.pdf"] };
         const idle = { state: "", targetId: "", origin: "", files: [], message: "" };
-        same(rules.popupRow({ targetId: "", paths: [] }, idle, "p1", false), null, "nothing chosen, nothing sent: no row");
+        same(rules.popupRow({}, idle, "p1", false), null, "nothing chosen, nothing sent: no row");
         const picked = rules.popupRow(choice, idle, "p1", false);
         same([picked.kind, picked.label, picked.canSend, picked.canDrop, picked.canCancel], ["choice", "report.pdf", true, true, false], "one file picked: its name, Send and \"×\"");
         same(rules.popupRow(choice, idle, "p2", false), null, "… only under its own device");
         assertEqual(rules.popupRow(choice, idle, "p1", true).canSend, false, "… Send waits while another send runs");
-        const several = rules.popupRow({ targetId: "p1", paths: ["/a/one.txt", "/b/<two>.txt"] }, idle, "p1", false);
+        const several = rules.popupRow({ p1: ["/a/one.txt", "/b/<two>.txt"] }, idle, "p1", false);
         same([several.label, several.names], ["2 files", "one.txt, <two>.txt"], "several: \"2 files\", the names for the tooltip");
 
         const file = (name, changes) => Object.assign({ path: "/f/" + name, name: name, ok: true, size: 1000, sent: 0, outcome: "sending", problem: "" }, changes);
@@ -242,5 +242,28 @@ TestCase {
         same(rules.sendTotals([file("a", { outcome: "sent", sent: 0 }), file("b", { sent: 5000 })]), { sent: 2000, total: 2000, fraction: 1 },
              "totals: a sent file counts whole, no more than its size");
         same(rules.popupRow(choice, idle, "", false), null, "no device: no row");
+        const both = { p1: ["/a/one.txt"], p2: ["/b/two.txt"] };
+        same([rules.popupRow(both, idle, "p1", false).label, rules.popupRow(both, idle, "p2", false).label], ["one.txt", "two.txt"], "a choice per device");
+        same(ended("done", { popupCleared: true }), null, "a result the popup's \"×\" cleared: no row");
+        same(rules.popupRow(null, Object.assign({}, sending, { popupCleared: true }), "p1", true).kind, "sending", "… a running send always shows");
+
+        // The devices the popup keeps past its cap
+        same(rules.popupKept(both, {}, idle), ["p1", "p2"], "kept: devices with files picked");
+        same(rules.popupKept({ p1: [] }, { p3: "Another file chooser is open", p4: "" }, idle), ["p3"], "… or a note");
+        same(rules.popupKept({}, {}, sending), ["p1"], "… or the popup's send running");
+        same(rules.popupKept({}, {}, Object.assign({}, sending, { state: "failed" })), ["p1"], "… or its result");
+        same(rules.popupKept({}, {}, Object.assign({}, sending, { state: "failed", popupCleared: true })), [], "… until cleared there");
+        same(rules.popupKept({}, {}, Object.assign({}, sending, { origin: "page" })), [], "… not the page's send");
+        same(rules.popupKept(null, null, null), [], "… nothing: none");
+
+        // What the place that asked says about the chooser's answer
+        const answer = changes => Object.assign({ paths: [], cancelled: false, blocked: "", error: "" }, changes);
+        same(rules.chooserNote(answer({ paths: ["/a"] })), "", "chooser: a choice, nothing to say");
+        same(rules.chooserNote(answer({ cancelled: true })), "", "… closed: nothing");
+        same(rules.chooserNote(answer({ blocked: "locked" })), "", "… the screen locked: nothing");
+        same(rules.chooserNote(answer({ blocked: "busy" })), "Another file chooser is open", "… another open: said");
+        same(rules.chooserNote(answer({ error: "could not\n open\u202e it" })), "could not open it", "… an error: plain, one line");
+        assertEqual(rules.chooserNote(answer({ error: "x".repeat(500) })).length, 120, "… capped");
+        same(rules.chooserNote(null), "", "… no answer: nothing");
     }
 }

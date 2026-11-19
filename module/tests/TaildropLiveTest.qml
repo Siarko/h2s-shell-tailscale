@@ -560,14 +560,14 @@ TestCase {
             assertEqual(ModuleTestKit.cancelChooser("tailscale"), "", "the user closes the chooser");
         });
         then(pop, "closed: no row", () => !ModuleTestKit.chooserOpen, () => {
-            same(drop(pop).popupChoice.paths, [], "nothing chosen");
+            same(drop(pop).popupChoices[peer] ?? [], [], "nothing chosen");
             assert(!shown(sendRowOf(pop, peer)), "… no row");
             // The session locked: nothing opens, no row
             ModuleTestKit.setChooserLocked(true);
             assert(drop(pop).chooseForPopup(peer), "asked while locked");
         });
         then(pop, "locked: no row", () => !ModuleTestKit.chooserOpen, () => {
-            same(drop(pop).popupChoice.paths, [], "locked: nothing chosen");
+            same(drop(pop).popupChoices[peer] ?? [], [], "locked: nothing chosen");
             assert(!shown(sendRowOf(pop, peer)), "… no row");
             ModuleTestKit.setChooserLocked(false);
             assert(drop(pop).chooseForPopup(peer), "asked again");
@@ -576,13 +576,16 @@ TestCase {
             ModuleTestKit.setChooserLocked(true);
         });
         then(pop, "a lock closed it: no row", () => !ModuleTestKit.chooserOpen, () => {
-            same(drop(pop).popupChoice.paths, [], "closed by a lock: nothing chosen");
+            same(drop(pop).popupChoices[peer] ?? [], [], "closed by a lock: nothing chosen");
             assert(!shown(sendRowOf(pop, peer)), "… no row");
             ModuleTestKit.setChooserLocked(false);
+            pop.calls = chooserCalls().length;
             inRow(deviceRowOf(pop, peer), "tailscalePopupSend").clicked();
+            inRow(deviceRowOf(pop, peer), "tailscalePopupSend").clicked();
+            assertEqual(chooserCalls().length, pop.calls + 1, "two clicks before an answer: one chooser");
             assertEqual(ModuleTestKit.answerChooser("tailscale", [pop.dir + "/files/one.bin"]), "", "one file chosen");
         });
-        then(pop, "one file: its row", () => drop(pop).popupChoice.paths.length === 1 && shown(sendRowOf(pop, peer)), () => {
+        then(pop, "one file: its row", () => (drop(pop).popupChoices[peer] ?? []).length === 1 && shown(sendRowOf(pop, peer)), () => {
             const row = sendRowOf(pop, peer);
             assertEqual(inRow(row, "taildropPopupFiles").text, "one.bin", "the row names the file");
             assert(shown(inRow(row, "taildropPopupSend")) && inRow(row, "taildropPopupSend").available, "… Send offered");
@@ -591,17 +594,17 @@ TestCase {
             assertEqual(pop.module.settingsOpened, 0, "the settings window never opened");
             same(drop(pop).chosen, [], "the page's list untouched");
             inRow(row, "taildropPopupDrop").clicked();
-            same(drop(pop).popupChoice.paths, [], "\"×\": the choice dropped");
+            same(drop(pop).popupChoices[peer] ?? [], [], "\"×\": the choice dropped");
             assert(!shown(sendRowOf(pop, peer)), "… the row gone");
             inRow(deviceRowOf(pop, peer), "tailscalePopupSend").clicked();
             assertEqual(ModuleTestKit.answerChooser("tailscale", [pop.dir + "/files/one.bin", pop.dir + "/files/two.bin"]), "", "two files chosen");
         });
-        then(pop, "two files: one row", () => drop(pop).popupChoice.paths.length === 2 && shown(sendRowOf(pop, peer)), () => {
+        then(pop, "two files: one row", () => (drop(pop).popupChoices[peer] ?? []).length === 2 && shown(sendRowOf(pop, peer)), () => {
             const row = sendRowOf(pop, peer);
             assertEqual(inRow(row, "taildropPopupFiles").text, "2 files", "several: \"2 files\"");
             assertEqual(inRow(row, "taildropPopupSend").tooltip, "one.bin, two.bin", "… the names on the Send button's tooltip");
             inRow(row, "taildropPopupSend").clicked();
-            same(drop(pop).popupChoice.paths, [], "Send: the choice became the send");
+            same(drop(pop).popupChoices[peer] ?? [], [], "Send: the choice became the send");
             assertEqual(drop(pop).send.origin, "popup", "… the popup's send");
         });
         then(pop, "the bar moves", () => {
@@ -644,7 +647,7 @@ TestCase {
         // ---- The popup's send cancelled, and one that fails (the choice given directly: the chooser is the scenario above's) ----
         const popCancel = scenario("popup-cancel", { env: Object.assign({ TS_FAKE_SEND_DELAY: "3" }, operator), setup: [operatorPrefs, "printf 'abc' > \"$1/files/a.txt\""] });
         then(popCancel, "devices read", () => busReady(popCancel) && popCancel.client.canChange && deviceRowOf(popCancel, peer) !== null, () => {
-            drop(popCancel).popupChoice = { targetId: peer, paths: [popCancel.dir + "/files/a.txt"] };
+            drop(popCancel).popupChoices = { [peer]: [popCancel.dir + "/files/a.txt"] };
             inRow(sendRowOf(popCancel, peer), "taildropPopupSend").clicked();
         });
         then(popCancel, "sending", () => drop(popCancel).send.state === "sending" && shown(inRow(sendRowOf(popCancel, peer), "taildropPopupCancel")), () => {
@@ -655,14 +658,14 @@ TestCase {
         });
         const popFail = scenario("popup-fail", { env: Object.assign({ TS_FAKE_SEND_FAIL: "1" }, operator), setup: [operatorPrefs, "printf 'abc' > \"$1/files/a.txt\""] });
         then(popFail, "devices read", () => busReady(popFail) && popFail.client.canChange && deviceRowOf(popFail, peer) !== null, () => {
-            drop(popFail).popupChoice = { targetId: peer, paths: [popFail.dir + "/files/missing.txt"] };
+            drop(popFail).popupChoices = { [peer]: [popFail.dir + "/files/missing.txt"] };
             inRow(sendRowOf(popFail, peer), "taildropPopupSend").clicked();
         });
         then(popFail, "nothing to send", () => drop(popFail).send.state === "failed", () => {
             const row = sendRowOf(popFail, peer);
             assertEqual(inRow(row, "taildropPopupState").text, "Nothing to send · Not found", "a missing file: the row says why");
             assertEqual(inRow(row, "taildropPopupFiles").text, "missing.txt", "… naming it");
-            drop(popFail).popupChoice = { targetId: peer, paths: [popFail.dir + "/files/a.txt"] };
+            drop(popFail).popupChoices = { [peer]: [popFail.dir + "/files/a.txt"] };
             assertEqual(sendRowOf(popFail, peer).row.kind, "choice", "a new choice replaces the result");
             inRow(sendRowOf(popFail, peer), "taildropPopupSend").clicked();
         });

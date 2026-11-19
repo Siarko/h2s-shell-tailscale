@@ -182,7 +182,7 @@ Offering an exit node and using one exclude each other. The page says so and off
 Needs your user to be Tailscale's operator.
 
 - Send files to devices that can receive them. On the page: choose files, paste absolute paths, or drop them.
-- From the bar popup: a device's "Send file…" opens the shell's file chooser. The files chosen show in a row under that device ("2 files" for several, their names on Send's tooltip) with Send and "×" to drop them. After Send the row shows a progress bar and Cancel, then "Sent", why it failed, or "Cancelled". The settings window does not open.
+- From the bar popup: a device's "Send file…" opens the shell's file chooser. The files chosen show in a row under that device ("2 files" for several, their names on Send's tooltip) with Send and "×" to drop them. After Send the row shows a progress bar and Cancel, then "Sent", why it failed, or "Cancelled". The settings window does not open. Each device keeps its own files; a device with files, a send or its result stays in the popup's list past its limit until cleared. The popup and the page each clear a send's result for themselves. Another file chooser open: a note under the device (on the page, under the files or the folder).
 - On the page progress is shown per file. Cancel stops the send.
 - Files and the folder for received files are chosen in the shell's file chooser. A chooser closed by the lock screen chooses nothing.
 - A send with no progress for 2 minutes is stopped. A send lasts 6 hours at most.

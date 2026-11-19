@@ -347,6 +347,20 @@ Singleton {
         return folderProblem(folder) === "" ? folder : "";
     }
 
+    // What the place that asked says about a chooser's answer: "" for a choice, a close, or a
+    // lock (the screen is locked: nothing to say); another chooser open (any module's, one for
+    // the whole shell) → a short note; an error → its text, plain, on one line
+    function chooserNote(result) {
+        if (!_isObject(result))
+            return "";
+        const blocked = String(result.blocked ?? "");
+        if (blocked === "busy")
+            return "Another file chooser is open";
+        if (blocked !== "")
+            return "";
+        return _plain(String(result.error ?? "").replace(/\s+/g, " ").trim(), 120);
+    }
+
     // ---- The bar popup's send row ----
 
     // A send's bytes so far over the files it sends → { sent, total, fraction (0…1; -1 while
@@ -370,15 +384,16 @@ Singleton {
         return list.length === 1 ? displayName(baseName(list[0])) : list.length + " files";
     }
 
-    // The row under a device in the bar popup and what its buttons do. `choice` { targetId,
-    // paths }: the files picked there, not sent yet; `send`: TaildropClient's send (`origin`
-    // "popup" when the popup started it); `busy`: some send runs. → null (no row), or { kind,
-    // label, names, fraction, text, tone, canSend, canCancel, canDrop }:
+    // The row under a device in the bar popup and what its buttons do. `choices` { <device
+    // id>: paths }: the files picked there per device, not sent yet; `send`: TaildropClient's
+    // send (`origin` "popup" when the popup started it, `popupCleared` once the popup's "×"
+    // cleared its result); `busy`: some send runs. → null (no row), or { kind, label, names,
+    // fraction, text, tone, canSend, canCancel, canDrop }:
     //   "sending"  this device's send from the popup runs: the bar, Cancel
     //   "choice"   files picked for it: Send (while no send runs), "×" drops them
     //   "result"   its send from the popup ended (sent, failed and why, cancelled): "×" clears it
-    // A run outranks a choice made meanwhile; a choice outranks the last result.
-    function popupRow(choice, send, deviceId, busy) {
+    // A run outranks a choice; a choice outranks the last result.
+    function popupRow(choices, send, deviceId, busy) {
         const id = String(deviceId ?? "");
         if (id === "")
             return null;
@@ -392,11 +407,11 @@ Singleton {
                      text: checking ? "Checking…" : totals.fraction >= 0 ? Math.floor(totals.fraction * 100) + " %" : "Sending…",
                      tone: "normal", canSend: false, canCancel: true, canDrop: false };
         }
-        const paths = _isObject(choice) && String(choice.targetId ?? "") === id && Array.isArray(choice.paths) ? choice.paths : [];
+        const paths = popupPaths(choices, id);
         if (paths.length > 0)
             return { kind: "choice", label: filesLabel(paths), names: names(paths), fraction: -1, text: "", tone: "normal",
                      canSend: busy !== true, canCancel: false, canDrop: true };
-        if (!ours || !["done", "failed", "cancelled"].includes(send.state))
+        if (!ours || send.popupCleared === true || !["done", "failed", "cancelled"].includes(send.state))
             return null;
         const good = files.filter(file => file.ok === true);
         const refused = files.filter(file => file.ok !== true && String(file.problem ?? "") !== "");
@@ -408,6 +423,32 @@ Singleton {
                  fraction: send.state === "done" ? 1 : -1, text: text,
                  tone: send.state === "done" ? "success" : send.state === "failed" ? "warning" : "muted",
                  canSend: false, canCancel: false, canDrop: true };
+    }
+
+    // The files picked in the popup for one device ([] none)
+    function popupPaths(choices, deviceId) {
+        const paths = _isObject(choices) ? choices[String(deviceId ?? "")] : null;
+        return Array.isArray(paths) ? paths : [];
+    }
+
+    // The devices the popup keeps in its list past its cap: those with files picked, a note,
+    // or the popup's send (running, or its result not cleared there)
+    function popupKept(choices, notes, send) {
+        const kept = [];
+        const add = id => {
+            if (id !== "" && !kept.includes(id))
+                kept.push(id);
+        };
+        for (const id of Object.keys(_isObject(choices) ? choices : {}))
+            if (popupPaths(choices, id).length > 0)
+                add(id);
+        for (const id of Object.keys(_isObject(notes) ? notes : {}))
+            if (String(notes[id] ?? "") !== "")
+                add(id);
+        if (_isObject(send) && send.origin === "popup" && send.state !== ""
+                && (send.state === "checking" || send.state === "sending" || send.popupCleared !== true))
+            add(String(send.targetId ?? ""));
+        return kept;
     }
 
     // ---- Receiving ----

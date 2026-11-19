@@ -160,8 +160,9 @@ that absolute path (`TailscaleRules.programsFound`).
   (`module.recheckPrograms()`); the shell also does after the machine wakes.
 
 Links open through `Api.openUrl`. Taildrop's files and folder are chosen through the handle's
-`module.chooseFiles` (module API 1.17: the shell's one chooser); an answer after the client
-stopped, or to an older ask, is dropped. Runs as administrator go through the handle's
+`module.chooseFiles` (module API 1.17: the shell's one chooser). While the client's own
+chooser is open a new ask does not replace it; an answer after the client stopped is dropped.
+"busy" or an error is said where the chooser was asked for (`TaildropRules.chooserNote`). Runs as administrator go through the handle's
 `module.privileged.start`, with the command's `what` and its time limit
 (`TailscaleRules.privilegedRun`); the result is read by `TailscaleRules.privilegedOutcome`.
 See [privileges.md](privileges.md).

@@ -38,7 +38,9 @@ Item {
         const value = typeof module?.presetValue === "function" ? module.presetValue("tailscale", String(opener?.preset ?? ""), "devices") : undefined;
         return TailscaleWidgetRules.deviceCap(value);
     }
-    readonly property var deviceList: TailscaleWidgetRules.deviceList(_loggedIn ? (client?.devices ?? []) : [], deviceCap)
+    // Past the cap too: a device with Taildrop's work in the popup (files picked, a send, its
+    // result), until that is cleared
+    readonly property var deviceList: TailscaleWidgetRules.deviceList(_loggedIn ? (client?.devices ?? []) : [], deviceCap, taildrop?.popupKept ?? [])
 
     implicitWidth: Api.theme.popupWidth("tailscale", 320)
     // The most height the panel may take before it must scroll (module API 1.15, kept current

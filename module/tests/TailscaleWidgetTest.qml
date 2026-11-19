@@ -46,7 +46,8 @@ TestCase {
         return Qt.createQmlObject("import QtQuick\nQtObject { property bool running: false; property string cli: \"present\"; "
             + "property bool canChange: " + operator + "; property string curlPath: \"\"; property bool busy: false; property string operation: \"\"; "
             + "property bool streamUp: false; property var module: null; property var taildrop: null; property string userName: \"tester\"; property var view: ({ phase: \"running\" }); "
-            + "property var devices: [{ id: \"p1\", name: \"peer\", online: true, canReceiveFiles: true, ipv4: \"100.64.0.9\", addresses: [\"100.64.0.9\"], fileSharingNote: \"\" }] }",
+            + "property var devices: [{ id: \"p1\", name: \"peer\", online: true, canReceiveFiles: true, ipv4: \"100.64.0.9\", addresses: [\"100.64.0.9\"], fileSharingNote: \"\" }, "
+            + "{ id: \"p2\", name: \"other\", online: true, canReceiveFiles: true, ipv4: \"100.64.0.10\", addresses: [\"100.64.0.10\"], fileSharingNote: \"\" }] }",
             suite, "fakeClient");
     }
 
@@ -164,6 +165,8 @@ TestCase {
         same([listed.more, listed.online], [2, 3], "… two left out, three online");
         same(rules.deviceList(devices, 10).shown.map(device => device.id), ["b", "d", "e", "a", "c"], "… offline ones after");
         same(rules.deviceList(null, 5), { shown: [], more: 0, online: 0 }, "… no list: nothing");
+        const keeping = rules.deviceList(devices, 1, ["c"]);
+        same([keeping.shown.map(device => device.id), keeping.more], [["b", "c"], 3], "… a device Taildrop works with in the popup: shown past the cap");
 
         // --- who may send ---
         assert(rules.canSendTo({ canReceiveFiles: true }, "running", true), "send: the operator, connected, a target");
@@ -171,39 +174,131 @@ TestCase {
         assert(!rules.canSendTo({ canReceiveFiles: true }, "stopped", true), "… not while off");
         assert(!rules.canSendTo({ canReceiveFiles: false }, "running", true), "… not to a device that cannot receive");
 
-        // --- Taildrop's choices go through the shell's chooser (a recording handle here) ---
+        // --- Taildrop's choices go through the shell's chooser (a stand-in that behaves like
+        // the shell's: one open at a time, a second ask answered "busy" after the call returns,
+        // a lock or an error answered the same way) ---
         {
             const fake = fakeClient(true);
             const asked = [];
+            const later = [];
+            const chooser = { open: null, refuse: "" };
+            const answer = changes => Object.assign({ paths: [], cancelled: false, blocked: "", error: "" }, changes);
             fake.module = { chooseFiles: (options, done) => {
-                asked.push({ options: options, done: done });
-                return { open: true, cancel: () => {} };
+                const call = { options: options, raw: done, open: false, cancelled: false };
+                asked.push(call);
+                const refusal = chooser.open !== null ? answer({ blocked: "busy" })
+                    : chooser.refuse === "locked" ? answer({ blocked: "locked" })
+                    : chooser.refuse !== "" ? answer({ error: chooser.refuse }) : null;
+                if (refusal !== null) {
+                    later.push(() => done(refusal));
+                    return { open: false, cancel: () => {} };
+                }
+                call.open = true;
+                chooser.open = call;
+                call.done = result => {
+                    if (!call.open)
+                        return;
+                    call.open = false;
+                    chooser.open = null;
+                    done(result);
+                };
+                return { get open() { return call.open; }, cancel: () => {
+                    call.cancelled = true;
+                    call.done(answer({ cancelled: true }));
+                } };
             } };
+            const deliver = () => {
+                while (later.length > 0)
+                    later.shift()();
+            };
             const drop = _taildrop.createObject(suite, { client: fake });
             fake.taildrop = drop;
             fake.running = true;
             const section = _section.createObject(null, { client: fake });
             find(section, "taildropChooseFiles").clicked();
             same([asked.length, asked[0].options.mode, asked[0].options.title], [1, "openMany", "Files to send"], "the page's \"Choose files…\": the shell's chooser, several files");
-            asked[0].done({ paths: ["/home/u/a.txt", "/home/u/b.txt"], cancelled: false, blocked: "", error: "" });
+            asked[0].done(answer({ paths: ["/home/u/a.txt", "/home/u/b.txt"] }));
             same(drop.chosen, ["/home/u/a.txt", "/home/u/b.txt"], "… the files join the page's list");
-            same(drop.popupChoice.paths, [], "… not the popup's choice");
+            same(drop.popupChoices, {}, "… not the popup's choice");
             find(section, "taildropChooseFolder").clicked();
             same([asked[1].options.mode, asked[1].options.title], ["folder", "Save received files to"], "the folder's \"Choose…\": the chooser, a folder");
-            asked[1].done({ paths: ["/home/u/Received"], cancelled: false, blocked: "", error: "" });
+            asked[1].done(answer({ paths: ["/home/u/Received"] }));
             assertEqual(drop.folder, "/home/u/Received", "… taken as the folder");
+
+            // Two clicks before an answer: the open chooser stays, its answer the user's
             assert(drop.chooseForPopup("p1"), "the popup's \"Send file…\"");
-            assert(drop.chooseForPopup("p1"), "… asked again before an answer");
-            asked[2].done({ paths: ["/home/u/old.txt"], cancelled: false, blocked: "", error: "" });
-            same(drop.popupChoice.paths, [], "an answer to the older ask is dropped");
-            asked[3].done({ paths: [], cancelled: true, blocked: "", error: "" });
-            same(drop.popupChoice.paths, [], "closed: nothing chosen");
+            assert(!drop.chooseForPopup("p1"), "… clicked again before an answer: not asked again");
+            assertEqual(asked.length, 3, "… the shell asked once");
+            assertEqual(drop.popupNotes.p1, "Another file chooser is open", "… the second click says why nothing opened");
+            asked[2].done(answer({ paths: ["/home/u/first.txt"] }));
+            same(drop.popupChoices.p1, ["/home/u/first.txt"], "the open chooser's answer is kept");
+            same(drop.popupNotes, {}, "… the note gone with the answer");
+
+            // One choice per device; none while that device's send from the popup runs
+            assert(drop.chooseForPopup("p2"), "another device's \"Send file…\"");
+            asked[3].done(answer({ paths: ["/home/u/second.txt"] }));
+            same([drop.popupChoices.p1, drop.popupChoices.p2], [["/home/u/first.txt"], ["/home/u/second.txt"]], "… each device keeps its own choice");
+            assert(drop.chooseForPopup("p1"), "p1 again");
+            asked[4].done(answer({ cancelled: true }));
+            same(drop.popupChoices.p1, ["/home/u/first.txt"], "… closed: its choice stays");
+            drop.send = { state: "sending", targetName: "peer", targetId: "p1", origin: "popup", files: [], message: "", startedAt: 0, pageCleared: false, popupCleared: false };
+            assert(!drop.chooseForPopup("p1"), "p1's send from the popup runs: not asked");
+            assertEqual(asked.length, 5, "… the chooser not opened");
+            assertEqual(drop.popupNotes.p1, "A send to this device is running", "… said under the device");
+            same(drop.popupKept, ["p1", "p2"], "the popup keeps both devices shown");
+            drop.dropPopupNote("p1");
+            drop.send = { state: "done", targetName: "peer", targetId: "p1", origin: "popup", files: [], message: "", startedAt: 0, pageCleared: false, popupCleared: false };
+
+            // The page and the popup clear the result for themselves
+            assertEqual(find(section, "taildropSendState").text, "Sent to peer", "the popup's send shows on the page");
+            drop.dismissPopupSend("p1");
+            assertEqual(find(section, "taildropSendState").text, "Sent to peer", "… the popup's \"×\" leaves it on the page");
+            same(TaildropRules.popupRow({}, drop.send, "p1", false), null, "… gone from the popup");
+            drop.send = Object.assign({}, drop.send, { popupCleared: false });
+            find(section, "taildropClear").clicked();
+            assert(!shown(find(section, "taildropSendState")), "the page's Clear: gone from the page");
+            assertEqual(TaildropRules.popupRow({}, drop.send, "p1", false)?.kind, "result", "… still in the popup");
+            drop.dismissPopupSend("p1");
+            assertEqual(drop.send.state, "", "cleared in both: gone");
+
+            // Another module's chooser open, a lock, an error
+            chooser.open = { foreign: true };
+            assert(drop.chooseForPopup("p1"), "another module's chooser open: asked");
+            deliver();
+            assertEqual(drop.popupNotes.p1, "Another file chooser is open", "… \"busy\": a note under the device");
+            same(drop.popupChoices.p1, ["/home/u/first.txt"], "… its choice untouched");
+            find(section, "taildropChooseFiles").clicked();
+            deliver();
+            assertEqual(find(section, "taildropInputProblem")?.text, "Another file chooser is open", "… the page's \"Choose files…\": on its message line");
+            find(section, "taildropChooseFolder").clicked();
+            deliver();
+            assert(shown(find(section, "taildropFolderNote")) && find(section, "taildropFolderNote").text === "Another file chooser is open", "… the folder's \"Choose…\": under the folder");
+            chooser.open = null;
+            chooser.refuse = "locked";
+            drop.chooseForPopup("p1");
+            find(section, "taildropChooseFolder").clicked();
+            deliver();
+            same(drop.popupNotes, {}, "locked: nothing said under the device");
+            assert(!shown(find(section, "taildropFolderNote")), "… nor under the folder");
+            chooser.refuse = "the dialog could not be opened\n<b>x</b>";
+            drop.chooseForPopup("p1");
+            deliver();
+            assertEqual(drop.popupNotes.p1, "the dialog could not be opened <b>x</b>", "an error: its text, on one line");
+            chooser.refuse = "";
+
+            // An account switch drops the popup's choices; a stop cancels the open chooser
+            fake.operation = "account";
+            same([drop.popupChoices, drop.popupNotes], [{}, {}], "an account switch: the choices and notes dropped");
+            fake.operation = "";
             assert(drop.chooseForPopup("p1"), "asked once more");
+            const open = asked[asked.length - 1];
             fake.running = false;
-            asked[4].done({ paths: ["/home/u/late.txt"], cancelled: false, blocked: "", error: "" });
-            same(drop.popupChoice.paths, [], "an answer after the client stopped is dropped");
+            assert(open.cancelled, "the client stops: its open chooser cancelled");
+            open.raw(answer({ paths: ["/home/u/late.txt"] }));
+            same(drop.popupChoices, {}, "an answer after the client stopped is dropped");
+            const count = asked.length;
             assert(!drop.chooseForPopup("p1"), "stopped: the chooser is not asked");
-            assertEqual(asked.length, 5, "… nothing more asked");
+            assertEqual(asked.length, count, "… nothing more asked");
             section.destroy();
             drop.destroy();
             fake.destroy();

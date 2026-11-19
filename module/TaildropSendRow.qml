@@ -3,9 +3,9 @@ import QtQuick.Layouts
 import qs.api
 
 // The row under a device in the bar popup (TaildropRules.popupRow): the files picked for it
-// with Send and "×", then the send's progress bar with Cancel, then how it ended with "×".
-// Everything it does is TaildropClient's. Public elements only; the bar is the module's own,
-// drawn on the theme's tokens.
+// with Send and "×", then the send's progress bar with Cancel, then how it ended with "×"; and
+// under it why its chooser did not open, with "×". Everything it does is TaildropClient's.
+// Public elements only; the bar is the module's own, drawn on the theme's tokens.
 ColumnLayout {
     id: root
 
@@ -13,10 +13,16 @@ ColumnLayout {
     property var taildrop: null
     property string deviceId: ""
 
-    readonly property var row: TaildropRules.popupRow(taildrop?.popupChoice ?? null, taildrop?.send ?? null, deviceId, taildrop?.sending === true)
+    readonly property var row: TaildropRules.popupRow(taildrop?.popupChoices ?? null, taildrop?.send ?? null, deviceId, taildrop?.sending === true)
+    readonly property string note: String(taildrop?.popupNotes?.[deviceId] ?? "")
 
-    visible: row !== null
-    spacing: 2
+    // Api.theme names no spacing or progress-bar size yet: both follow the small type until
+    // the core's public progress bar and its tokens replace them (never a user's padding
+    // setting: a button's padding of 0 would hide the bar)
+    readonly property int _gap: Math.round(Api.theme.fontSizeSmall / 2)
+
+    visible: row !== null || note !== ""
+    spacing: Math.round(_gap / 3)
 
     component Line: Text {
         textFormat: Text.PlainText
@@ -28,8 +34,9 @@ ColumnLayout {
     }
 
     RowLayout {
+        visible: root.row !== null
         Layout.fillWidth: true
-        spacing: 6
+        spacing: root._gap
         Line {
             objectName: "taildropPopupFiles"
             Layout.fillWidth: true
@@ -53,7 +60,7 @@ ColumnLayout {
             size: "xs"
             tooltip: root.row?.names ?? ""
             available: root.row?.canSend === true
-            onClicked: root.taildrop.sendChoice()
+            onClicked: root.taildrop.sendChoice(root.deviceId)
         }
         SmallButton {
             objectName: "taildropPopupCancel"
@@ -70,7 +77,7 @@ ColumnLayout {
             tooltip: root.row?.kind === "choice" ? "Drop" : "Clear"
             onClicked: {
                 if (root.row?.kind === "choice")
-                    root.taildrop.dropChoice();
+                    root.taildrop.dropChoice(root.deviceId);
                 else
                     root.taildrop.dismissPopupSend(root.deviceId);
             }
@@ -83,7 +90,9 @@ ColumnLayout {
         objectName: "taildropPopupProgress"
         visible: root.row?.kind === "sending" || (root.row?.kind === "result" && root.row?.fraction === 1)
         Layout.fillWidth: true
-        implicitHeight: Api.theme.button.verticalPadding
+        // A third of the small type: moves to the core's public progress bar (its own height
+        // token) once the core has one
+        implicitHeight: Math.round(Api.theme.fontSizeSmall / 3)
         radius: height / 2
         color: Api.theme.track
 
@@ -94,6 +103,26 @@ ColumnLayout {
             height: parent.height
             radius: parent.radius
             color: root.row?.kind === "result" ? Api.theme.success : Api.theme.accent
+        }
+    }
+
+    // Why the chooser did not open (another one open, an error); the send's own refusal
+    RowLayout {
+        visible: root.note !== ""
+        Layout.fillWidth: true
+        spacing: root._gap
+        Line {
+            objectName: "taildropPopupNote"
+            Layout.fillWidth: true
+            text: root.note
+            color: Api.theme.warning
+        }
+        SmallButton {
+            objectName: "taildropPopupNoteDrop"
+            label: "×"
+            size: "xs"
+            tooltip: "Clear"
+            onClicked: root.taildrop.dropPopupNote(root.deviceId)
         }
     }
 }

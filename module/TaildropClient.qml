@@ -18,8 +18,10 @@ import qs.api
 // so do Disconnect, logout, an account switch and the module going away. Limits: no progress
 // on the bus for idleLimitMs (2 minutes) → stopped as stalled; overall TailscaleRules'
 // timeLimits.send. Files come from the shell's chooser (module.chooseFiles): the page's list
-// (`chosen`, also pasted or dropped paths) or the bar popup's choice for one device
-// (`popupChoice`), sent from the row under that device, which shows the send's progress.
+// (`chosen`, also pasted or dropped paths) or the bar popup's choices, one per device
+// (`popupChoices`), each sent from the row under its device, which shows the send's progress.
+// The page and the popup each clear the send's result for themselves (pageCleared,
+// popupCleared).
 //
 // RECEIVING — anyone sees that files arrived (the bus's IncomingFiles with Done, FilesWaiting):
 // a notification per arrival, the count on the page and the entry's status line. The operator
@@ -130,68 +132,127 @@ QtObject {
     property var inputProblems: []
     // { state: "" | "checking" | "sending" | "done" | "failed" | "cancelled", targetName,
     //   targetId, files [{ path, name, size, problem, sent, percent, outcome }], message }
-    // origin: "page" | "popup" (whose Send started it)
-    property var send: ({ state: "", targetName: "", targetId: "", origin: "", files: [], message: "", startedAt: 0 })
+    // origin: "page" | "popup" (whose Send started it); pageCleared, popupCleared: that view's
+    // Clear or "×" took its result away (only there)
+    property var send: ({ state: "", targetName: "", targetId: "", origin: "", files: [], message: "", startedAt: 0, pageCleared: false, popupCleared: false })
     readonly property bool sending: send.state === "checking" || send.state === "sending"
     // The send's run (the runner's handle: the check, then `file cp`), null none
     property var _sendRun: null
     property int _sendToken: 0
     property real _progressAt: 0
     property var _outgoing: []
-    // The bar popup's choice: the files picked for a device there, waiting for its Send
-    // ({ targetId, paths }; TaildropRules.popupRow says what the row under the device shows)
-    property var popupChoice: ({ targetId: "", paths: [] })
-    // The chooser this client asked for (the shell's: one for the whole shell), null none;
-    // an answer to an older one, or after the client stopped, is dropped
+    // The bar popup's choices: the files picked for each device there, waiting for its Send
+    // ({ <device id>: paths }; TaildropRules.popupRow says what the row under a device shows),
+    // and a note per device when its chooser could not open (TaildropRules.chooserNote)
+    property var popupChoices: ({})
+    property var popupNotes: ({})
+    // The device ids the popup keeps in its list past its cap
+    readonly property var popupKept: TaildropRules.popupKept(popupChoices, popupNotes, send)
+    // The page's note for the received-files folder's chooser
+    property string folderNote: ""
+    // The chooser this client asked for and the shell opened (one for the whole shell), null
+    // none. While it is open a new ask does not replace it: the answer stays the user's.
+    // `_chooserEpoch` moves when the client stops: an answer to an ask made before is dropped.
     property var _chooser: null
-    property int _chooserToken: 0
+    property int _chooserEpoch: 0
+
+    readonly property var _busyAnswer: ({ paths: [], cancelled: false, blocked: "busy", error: "" })
 
     // Asks the shell's chooser (module API 1.17), then done(result) with the answer — only
-    // while the client still runs and no newer chooser was asked for
+    // while the client still runs. Its own chooser still open: not asked again, done() gets
+    // "busy" at once (→ false)
     function _choose(options, done) {
         if (!running || typeof module?.chooseFiles !== "function")
             return false;
-        const token = ++_chooserToken;
-        const handle = module.chooseFiles(Object.assign({ startDirectory: String(client?.system?.home ?? "") }, options), result => {
-            if (token !== _chooserToken)
+        if (_chooser !== null && _chooser.open === true) {
+            done(_busyAnswer);
+            return false;
+        }
+        const epoch = _chooserEpoch;
+        let handle = null;
+        handle = module.chooseFiles(Object.assign({ startDirectory: String(client?.system?.home ?? "") }, options), result => {
+            if (epoch !== _chooserEpoch)
                 return;
-            _chooser = null;
+            if (handle !== null && _chooser === handle)
+                _chooser = null;
             if (running)
                 done(result);
         });
-        _chooser = handle?.open === true ? handle : null;
+        // Refused at once (busy, locked, an error): its answer still comes, for the note
+        if (handle?.open === true)
+            _chooser = handle;
         return true;
     }
 
-    // The popup's "Send file…": the files for this device, kept for its row's Send. Nothing
-    // chosen (closed, the session locked, another chooser open): no row
+    function _setPopupNote(id, text) {
+        const next = Object.assign({}, popupNotes);
+        if (text === "")
+            delete next[id];
+        else
+            next[id] = text;
+        popupNotes = next;
+    }
+
+    function _setPopupPaths(id, paths) {
+        const next = Object.assign({}, popupChoices);
+        if (paths.length === 0)
+            delete next[id];
+        else
+            next[id] = paths;
+        popupChoices = next;
+    }
+
+    // The popup's "Send file…": the files for this device, kept for its row's Send (beside
+    // other devices' choices). Not while this device's send from the popup runs. Nothing
+    // chosen: the choice it had stays; why nothing opened shows under the device
     function chooseForPopup(deviceId) {
         const id = String(deviceId ?? "");
-        return id !== "" && _choose({ mode: "openMany", title: "Files to send" }, result => {
+        if (id === "" || !running)
+            return false;
+        if (sending && send.origin === "popup" && send.targetId === id) {
+            _setPopupNote(id, "A send to this device is running");
+            return false;
+        }
+        _setPopupNote(id, "");
+        return _choose({ mode: "openMany", title: "Files to send" }, result => {
+            _setPopupNote(id, TaildropRules.chooserNote(result));
             const paths = TaildropRules.chosenPaths(result);
             if (paths.length > 0)
-                popupChoice = { targetId: id, paths: paths };
+                _setPopupPaths(id, paths);
         });
     }
 
-    function dropChoice() {
-        popupChoice = { targetId: "", paths: [] };
+    // The popup row's "×" on a choice
+    function dropChoice(deviceId) {
+        _setPopupPaths(String(deviceId ?? ""), []);
     }
 
-    // The popup row's Send: the choice becomes the send (one at a time); the row then shows
-    // its progress and result
-    function sendChoice() {
-        if (!running || sending || popupChoice.paths.length === 0)
+    // The note's "×" under a device
+    function dropPopupNote(deviceId) {
+        _setPopupNote(String(deviceId ?? ""), "");
+    }
+
+    function _dropPopupChoices() {
+        popupChoices = {};
+        popupNotes = {};
+    }
+
+    // The popup row's Send: the device's choice becomes the send (one at a time); the row
+    // then shows its progress and result
+    function sendChoice(deviceId) {
+        const id = String(deviceId ?? "");
+        const paths = TaildropRules.popupPaths(popupChoices, id);
+        if (!running || sending || paths.length === 0)
             return false;
-        const request = { targetId: popupChoice.targetId, paths: popupChoice.paths.slice(), origin: "popup" };
-        dropChoice();
+        const request = { targetId: id, paths: paths.slice(), origin: "popup" };
+        dropChoice(id);
         return sendFiles(request);
     }
 
-    // The popup row's "×" on a result
+    // The popup row's "×" on a result: cleared there only (the page keeps showing it)
     function dismissPopupSend(deviceId) {
         if (send.origin === "popup" && send.targetId === String(deviceId ?? ""))
-            dismissSend();
+            dismissSend("popup");
     }
 
     // The page's "Choose files…", and a device row's "Send file…" there (that device as the
@@ -203,12 +264,17 @@ QtObject {
             const paths = TaildropRules.chosenPaths(result);
             if (paths.length > 0)
                 addPaths(paths);
+            const note = TaildropRules.chooserNote(result);
+            if (note !== "")
+                inputProblems = [{ text: "", problem: note }];
         });
     }
 
     // The page's "Choose…" for the folder received files are saved to
     function chooseFolder() {
+        folderNote = "";
         return _choose({ mode: "folder", title: "Save received files to", startDirectory: folder }, result => {
+            folderNote = TaildropRules.chooserNote(result);
             const path = TaildropRules.chosenFolder(result);
             if (path !== "")
                 setFolder(path);
@@ -248,7 +314,8 @@ QtObject {
         const origin = request?.origin === "popup" ? "popup" : "page";
         const wantedId = request ? String(request.targetId ?? "") : targetId;
         const wanted = request ? (Array.isArray(request.paths) ? request.paths : []) : chosen;
-        const failed = message => _setSend({ state: "failed", message: message, files: [], origin: origin, targetId: wantedId, targetName: "" });
+        const failed = message => _setSend({ state: "failed", message: message, files: [], origin: origin, targetId: wantedId, targetName: "",
+                                             pageCleared: false, popupCleared: false });
         if (!canSend) {
             failed("Needs the operator");
             return false;
@@ -265,6 +332,7 @@ QtObject {
         const paths = wanted.slice();
         const token = ++_sendToken;
         _setSend({ state: "checking", targetName: device.name, targetId: device.id, origin: origin, message: "", startedAt: Date.now(),
+                   pageCleared: false, popupCleared: false,
                    files: paths.map(path => ({ path: path, name: TaildropRules.displayName(TaildropRules.baseName(path)), size: 0, problem: "", sent: 0, percent: -1, outcome: "" })) });
         // Only for a clear message (the CLI opens the files itself, as this user)
         _sendRun = client._run(TaildropRules.checkArgv(paths), TaildropRules.checkLimitMs, result => {
@@ -357,9 +425,17 @@ QtObject {
         return _stopSend("cancelled", "Cancelled");
     }
 
-    function dismissSend() {
-        if (!sending)
-            _setSend({ state: "", files: [], message: "", origin: "" });
+    // A view's "×" or Clear on the send's result: gone from that view ("page", the default, or
+    // "popup") only; once neither shows it, gone
+    function dismissSend(view) {
+        if (sending)
+            return;
+        const changes = view === "popup" ? { popupCleared: true } : { pageCleared: true };
+        const next = Object.assign({}, send, changes);
+        if (next.pageCleared && (next.popupCleared || next.origin !== "popup"))
+            _setSend({ state: "", files: [], message: "", origin: "", pageCleared: false, popupCleared: false });
+        else
+            _setSend(changes);
     }
 
     // No progress on the bus for idleLimitMs: stalled (only judged while the bus is up — without
@@ -383,6 +459,9 @@ QtObject {
         function onOperationChanged() {
             if (["disconnect", "logout", "account", "login", "addAccount"].includes(root.client.operation))
                 root._stopSend("cancelled", "Stopped: disconnected");
+            // The popup's choices name another account's devices
+            if (["logout", "account", "login", "addAccount"].includes(root.client.operation))
+                root._dropPopupChoices();
         }
     }
 
@@ -592,16 +671,16 @@ QtObject {
             _autoPending = false;
             _autoStartChecked = false;
             _stopSend("cancelled", "Stopped");
-            _chooserToken++;
+            _chooserEpoch++;
             _chooser?.cancel();
             _chooser = null;
-            dropChoice();
+            _dropPopupChoices();
         }
     }
     onCanSaveChanged: refreshWaiting()
     Component.onDestruction: {
         _stopSend("cancelled", "Stopped");
-        _chooserToken++;
+        _chooserEpoch++;
         _chooser?.cancel();
     }
 }

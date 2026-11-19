@@ -21,7 +21,8 @@ ColumnLayout {
     readonly property bool _connected: client?.view?.phase === "running"
     readonly property bool _operator: taildrop?.isOperator ?? false
     readonly property bool _free: client !== null && !client.busy
-    readonly property var _send: taildrop?.send ?? ({ state: "", files: [], message: "" })
+    // The send, unless this page's Clear took its result away (the popup clears its own)
+    readonly property var _send: taildrop && (taildrop.sending || taildrop.send.pageCleared !== true) ? taildrop.send : ({ state: "", files: [], message: "" })
 
     visible: taildrop !== null && client.cli === "present"
     Layout.fillWidth: true
@@ -154,6 +155,7 @@ ColumnLayout {
                 }
                 Line {
                     required property var modelData
+                    objectName: "taildropInputProblem"
                     text: [modelData.text, modelData.problem].filter(part => part !== "").join(" · ")
                     color: Api.theme.warning
                 }
@@ -200,9 +202,10 @@ ColumnLayout {
             onClicked: root.taildrop.cancelSend()
         }
         SmallButton {
+            objectName: "taildropClear"
             visible: !(root.taildrop?.sending ?? true) && root._send.state !== ""
             label: "Clear"
-            onClicked: root.taildrop.dismissSend()
+            onClicked: root.taildrop.dismissSend("page")
         }
     }
     Line {
@@ -323,6 +326,12 @@ ColumnLayout {
             label: "Default"
             onClicked: root.taildrop.resetFolder()
         }
+    }
+    Line {
+        objectName: "taildropFolderNote"
+        visible: root._operator && text !== ""
+        text: root.taildrop?.folderNote ?? ""
+        color: Api.theme.warning
     }
     RowLayout {
         visible: root._operator
