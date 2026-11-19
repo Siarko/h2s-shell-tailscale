@@ -89,7 +89,7 @@ which the shell keeps current, and scrolls past it.
 - When the stream ends, it restarts with a backoff from 1 s to 30 s.
   The client reads once only if the stream had been up: a message came, or it lived 10 s.
 - A 60 s poll runs at all times, except while the look-again backoff runs.
-- After the computer wakes (`module.resumed()`), the client reads again and restarts the stream.
+- After the computer wakes (`module.resumed()`), the client reads again and restarts the stream, and a choice of exit node made for now ends (`NetworkExitClient.dropOverride`).
 - Device traffic is read every 3 s, only while the page shows the devices.
 - A read that times out marks the state stale. It is retried with a backoff from 2 s to 60 s.
 

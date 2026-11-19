@@ -5,11 +5,13 @@ import ".."
 // The exit node per network on the network cards: the element in an opened saved network's
 // card (NetworkExitCard) sets and clears that network's choice in the table the live side
 // follows (NetworkExitClient); the mark on the card's name line (NetworkExitMark) shows while
-// a choice is set, with the choice as its tooltip.
+// a choice is set, with the choice as its tooltip. The exit-node chooser says which choice is
+// in effect ("for now", "for Café") and offers "Default" while one made by hand overrides the
+// network's.
 // Against a stand-in client (it runs nothing) and a store in memory.
 TestCase {
     id: suite
-    suiteName: "tailscale: exit node per network on the network cards"
+    suiteName: "tailscale: exit node per network on the network cards and in the chooser"
 
     function fixture(name) {
         const view = Qt.createQmlObject("import Quickshell.Io\nFileView { blockLoading: true }", suite, "fixture");
@@ -69,6 +71,23 @@ TestCase {
     }
     property Component _markComponent: Component {
         NetworkExitMark {}
+    }
+    property Component _chooserComponent: Component {
+        ExitNodeChooser {
+            width: 500
+        }
+    }
+    // The live side as the chooser reads it: what is in effect, and "Default"
+    property Component _effectComponent: Component {
+        QtObject {
+            property var effect: ({ kind: "override", network: "Café", label: "No exit node" })
+            property int drops: 0
+            function dropOverride() {
+                drops++;
+                effect = { kind: "network", network: "Café", label: "No exit node" };
+                return true;
+            }
+        }
     }
     function same(actual, expected, message) {
         assertEqual(JSON.stringify(actual), JSON.stringify(expected), message);
@@ -196,9 +215,33 @@ TestCase {
         markItem.destroy();
     }
 
+    function chooserDefault() {
+        const exit = _effectComponent.createObject(suite);
+        const picked = [];
+        const client = { busy: false, canChange: true, view: { phase: "running", exitNode: null }, exitNodes: nodes, networkExit: exit,
+                         setExitNode: option => picked.push(option) };
+        const chooser = _chooserComponent.createObject(_holder, { client: client });
+        const effectText = findNamed(chooser, "tailscaleExitNodeEffect");
+        same([effectText?.visible, effectText?.text, effectText?.textFormat], [true, "for now", Text.PlainText], "chosen by hand: the header says \"for now\"");
+        same([chooser._rows[0].key, chooser._rows[0].label, chooser._rows[0].detail, chooser._rows[1].key], ["default", "Default", "Café: No exit node", "none"],
+             "… the list starts with \"Default\", naming what it brings back, then \"None\"");
+        chooser.expanded = true;
+        const row = findNamed(chooser, "tailscaleExitNode-0");
+        const area = Array.from(row?.children ?? []).find(child => child instanceof MouseArea) ?? null;
+        assert(area !== null, "… its row is shown, with its pointer area");
+        area?.clicked(null);
+        same([exit.drops, picked.length, chooser.expanded], [1, 0, false], "\"Default\" clicked: the choice by hand dropped, no exit node set by the chooser, the list closed");
+        same([effectText.text, chooser._rows[0].key], ["for Café", "none"], "… then \"for Café\", no \"Default\" any more");
+        exit.effect = { kind: "", network: "", label: "" };
+        assertEqual(effectText.visible, false, "nothing in effect: no words");
+        chooser.destroy();
+        exit.destroy();
+    }
+
     function run() {
         rules();
         cardSetsAndClears();
         withoutClient();
+        chooserDefault();
     }
 }

@@ -9,7 +9,10 @@ import qs.components
 // nodes, location nodes (Mullvad) grouped by country — collapsed — and by city (the city's
 // best online server is the one chosen), offline nodes disabled, a filter when the list is
 // long. A change that asks for a password carries the privileged mark. Collapsible (the
-// popup): a header that opens the list, closed again after a choice.
+// popup): a header that opens the list, closed again after a choice. A choice here is "for
+// now" over the networks' choices (NetworkExitClient); while one overrides a network's choice
+// the list starts with "Default", which goes back to it, and the header says which is in
+// effect ("for now", "for Café").
 ColumnLayout {
     id: root
     objectName: "tailscaleExitNodeChooser"
@@ -24,6 +27,9 @@ ColumnLayout {
     readonly property var nodes: client?.exitNodes ?? ({ own: [], countries: [], current: null, suggested: null, count: 0 })
     readonly property string need: client && !client.canChange ? "auth" : ""
     readonly property bool _available: client !== null && !client.busy && client.view.phase === "running"
+    // What decides the exit node now (NetworkExitRules.effect), and the header's words for it
+    readonly property var effect: client?.networkExit?.effect ?? ({ kind: "", network: "", label: "" })
+    readonly property string effectText: NetworkExitRules.effectText(effect)
     property string _filter: ""
     // Countries opened, by key
     property var _openCountries: ({})
@@ -43,11 +49,23 @@ ColumnLayout {
             expanded = false;
     }
 
+    // "Default": the choice made by hand ends, the network's choice applies again
+    function _useDefault() {
+        if (!_available)
+            return;
+        client.networkExit?.dropOverride();
+        if (collapsible)
+            expanded = false;
+    }
+
     // The list as rows: { key, kind ("choice" | "heading" | "country"), label, detail, option,
     // current, enabled, depth }
     readonly property var _rows: {
         const rows = [];
         const filtering = _filter.trim() !== "";
+        if (effect.kind === "override" && !filtering)
+            rows.push({ key: "default", kind: "choice", label: "Default", detail: NetworkExitRules.defaultDetail(effect), option: null, isDefault: true,
+                        current: false, enabled: true, depth: 0 });
         rows.push({ key: "none", kind: "choice", label: "None", detail: "Internet traffic goes out directly", option: null,
                     current: nodes.current === null, enabled: true, depth: 0 });
         const suggested = nodes.suggested;
@@ -114,6 +132,17 @@ ColumnLayout {
                 font.family: Api.theme.fontFamily
                 font.pixelSize: Api.theme.fontSizeSmall
                 color: root.nodes.current && !root.nodes.current.online ? Api.theme.warning : Api.theme.textPrimary
+            }
+            Text {
+                objectName: "tailscaleExitNodeEffect"
+                visible: text !== ""
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                Layout.maximumWidth: root.width * 0.4
+                text: root.effectText
+                font.family: Api.theme.fontFamily
+                font.pixelSize: Api.theme.fontSizeXSmall
+                color: Api.theme.textMuted
             }
             PrivilegedMark {
                 need: root.need
@@ -216,7 +245,10 @@ ColumnLayout {
                         open[_row.modelData.countryKey] = !_row.modelData.open;
                         root._openCountries = open;
                     } else if (_row._choosable && !_row.modelData.current) {
-                        root._choose(_row.modelData.option);
+                        if (_row.modelData.isDefault === true)
+                            root._useDefault();
+                        else
+                            root._choose(_row.modelData.option);
                     }
                 }
             }

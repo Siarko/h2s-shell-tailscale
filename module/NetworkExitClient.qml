@@ -15,6 +15,13 @@ import qs.api
 // acts only as an automatic change: plainly, as origin "network" — never a password prompt; not
 // the operator → "Needs the operator" on the page, nothing run. While Tailscale is not Running
 // (or its peers are not read yet) it waits, the key not taken, and acts once Tailscale is up.
+//
+// A choice made by hand in the shell (the exit-node chooser: chosenByHand) is "for now": it
+// overrides the networks' choices until "Default" (dropOverride), a wake from sleep (the
+// client's resumed()) or a restart of the shell — it lives only in memory. While it lasts
+// nothing is applied, whatever networks come and go; when it ends, the choice of the networks
+// up then is applied again (the networks are a new set: the key cleared, also in the store, so
+// a restart during it applies them too).
 QtObject {
     id: root
 
@@ -44,6 +51,13 @@ QtObject {
     // The change last notified (NetworkExitRules.noticeKey): a restored hold was notified already
     property string _noticed: _held !== null ? NetworkExitRules.noticeKey(_held) : ""
     property bool _inFlight: false
+    // A choice made by hand "for now" (in memory only), and a count of its changes: a run
+    // started before one began or ended does not take the networks when it ends
+    property bool overridden: false
+    property int _overrideRevision: 0
+    // What decides the exit node now, for the chooser (NetworkExitRules.effect)
+    readonly property var effect: NetworkExitRules.effect({ table: table, networks: networks, overridden: overridden, lastKey: lastKey,
+                                                            decisionKind: decision.kind, held: _held !== null })
     // Serve's check after a Funnel is waiting for the change lock: no automatic change takes it
     readonly property bool _serveChecking: client?.serve?.checking === true
 
@@ -52,7 +66,7 @@ QtObject {
     // why using an exit node is refused, so the end of that is noticed
     readonly property string _inputs: running ? JSON.stringify([networksReady, NetworkExitRules.activeKey(table, networks), client.prefs?.ok === true,
         client.prefs?.exitNodeId ?? "", client.prefs?.exitNodeIp ?? "", client.exitNodes.count, client.canChange, client.status?.backendState ?? "",
-        client.status?.peersRead === true, client.busy, _serveChecking, NetworkExitRules.wanted(table, networks),
+        client.status?.peersRead === true, client.busy, _serveChecking, overridden, NetworkExitRules.wanted(table, networks),
         NetworkExitRules.wantedNodes(table, networks, client.exitNodes), TailscaleRules.exitNodeUseProblem(client.prefs)]) : ""
     on_InputsChanged: Qt.callLater(follow)
 
@@ -70,6 +84,35 @@ QtObject {
 
     function removeNetwork(networkId) {
         setChoice(networkId, null);
+    }
+
+    // An exit node chosen by hand in the shell: the networks' choices wait until dropOverride.
+    // The networks up are left open (the key cleared), so they are applied again when it ends
+    function chosenByHand() {
+        overridden = true;
+        _overrideRevision++;
+        _noneMarkedTimer.stop();
+        _setHeld(null);
+        _noticed = "";
+        lastKey = "";
+        store?.set("exitByNetwork.lastKey", lastKey);
+        decision = { kind: "override", key: "", text: "" };
+    }
+
+    // "Default", or a wake: the choice made by hand ends, the networks' choice applies again.
+    // false when there was none
+    function dropOverride() {
+        if (!overridden)
+            return false;
+        overridden = false;
+        _overrideRevision++;
+        _setHeld(null);
+        _noticed = "";
+        lastKey = "";
+        store?.set("exitByNetwork.lastKey", lastKey);
+        decision = { kind: "", key: "", text: "" };
+        Qt.callLater(follow);
+        return true;
     }
 
     // The networks done with: a later return to them is a new change (notified again if needed)
@@ -96,7 +139,7 @@ QtObject {
     function follow(settled) {
         // The networks not read whole yet (a restart, NetworkManager not answering): deciding now
         // would take "none up" and act again once they arrive
-        if (!running || _inFlight || !networksReady)
+        if (!running || _inFlight || !networksReady || overridden)
             return;
         const result = NetworkExitRules.decide({
             table: table, networks: networks, lastKey: lastKey, prefs: client.prefs, exitNodes: client.exitNodes,
@@ -150,8 +193,15 @@ QtObject {
             return;
         runs++;
         _inFlight = true;
+        const revision = _overrideRevision;
         client._runChange(command, "network", "exit-node", null, null, outcome => {
             _inFlight = false;
+            // A choice made by hand began (or ended) meanwhile: this answer is late, it takes
+            // nothing; whatever applies now is decided again
+            if (revision !== _overrideRevision) {
+                Qt.callLater(follow);
+                return;
+            }
             // The CLI's words as plain text (TailscaleRules.plainText), as on the entry
             const reason = outcome.ok ? "" : TailscaleRules.plainText(outcome.message, 300);
             decision = { kind: outcome.ok ? "applied" : "failed", key: result.key, text: reason };

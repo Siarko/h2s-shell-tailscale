@@ -237,4 +237,48 @@ Singleton {
             return "";
         return row.choice === "none" ? "No exit node" : row.choice === "auto" ? "Exit node: automatic" : "Exit node: " + choiceLabel(row).slice(0, 40);
     }
+
+    // What decides the exit node now, for the chooser: effect({ table, networks, overridden (a
+    // choice made by hand "for now", NetworkExitClient), lastKey, decisionKind, held }) →
+    // { kind, network (its name), label (its choice's) }:
+    //   "override"  a choice made by hand, while the networks up have a choice of their own:
+    //               "Default" goes back to that one
+    //   "network"   the networks up have one choice, applied (the networks taken, nothing held,
+    //               no pick by hand outside the shell since)
+    //   ""          none of these: no choice for the networks up, two that differ, or one not
+    //               applied (its reason is on the network's card)
+    function effect(input) {
+        const none = { kind: "", network: "", label: "" };
+        const key = activeKey(input?.table, input?.networks);
+        const wants = wanted(input?.table, input?.networks);
+        if (key === "" || wants === "" || wants.includes(","))
+            return none;
+        const firstId = key.split(" ")[0];
+        const row = rowFor(input?.table, firstId);
+        const network = (Array.isArray(input?.networks) ? input.networks : []).find(item => item && item.id === firstId) ?? null;
+        const name = String(network?.name || row?.name || "").replace(/\s+/g, " ").trim().slice(0, 40);
+        const found = { network: name, label: choiceLabel(row) };
+        if (input?.overridden === true)
+            return Object.assign({ kind: "override" }, found);
+        const notApplied = ["conflict", "unavailable", "refused", "needs-operator", "failed", "manual", "override"];
+        if (input?.held === true || String(input?.lastKey ?? "") !== key || notApplied.includes(String(input?.decisionKind ?? "")))
+            return none;
+        return Object.assign({ kind: "network" }, found);
+    }
+
+    // The chooser's words for it, beside the exit node in use: "for now", "for Café", ""
+    function effectText(effect) {
+        if (effect?.kind === "override")
+            return "for now";
+        if (effect?.kind === "network")
+            return effect.network !== "" ? "for " + effect.network : "for this network";
+        return "";
+    }
+
+    // What "Default" brings back: "Café: No exit node"
+    function defaultDetail(effect) {
+        if (effect?.kind !== "override")
+            return "";
+        return (effect.network !== "" ? effect.network : "This network") + ": " + effect.label;
+    }
 }

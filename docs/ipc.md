@@ -108,7 +108,7 @@ The check after Funnel runs for these calls too. Turning Funnel off again then n
 |---|---|
 | `tailnetLock` | JSON: read, enabled, signed, locked out, trusted key count |
 | `readTailnetLock` | read the lock status again |
-| `networkExit` | JSON: marked rows, networks, active networks, last decision, runs |
+| `networkExit` | JSON: marked rows, networks, active networks, last decision, runs, `override` (a choice made for now lasts), `effect` (`override`, `network` or empty) |
 | `setNetworkExit <network id> <choice>` | mark a network: `none`, `auto` or an exit node's stable id; empty removes the mark |
 
 Marking a network needs no privileges. Applying it needs the operator.
@@ -120,7 +120,8 @@ Marking a network needs no privileges. Applying it needs the operator.
 | empty | nothing decided yet |
 | `applied` | the exit node was set |
 | `already` | it was already as wanted |
-| `manual` | an exit node picked by hand ended an open choice |
+| `manual` | an exit node changed outside the shell ended an open choice |
+| `override` | a choice made for now in the chooser; nothing is applied until it ends |
 | `none-marked` | no marked network is up |
 | `unavailable`, `needs-operator`, `refused`, `conflict` | the choice is open, for that reason |
 | `failed` | the change failed; the choice is open |

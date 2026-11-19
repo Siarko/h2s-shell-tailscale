@@ -54,13 +54,25 @@ TestCase {
             property QtObject serve: QtObject {
                 property bool checking: false
             }
+            // true: a run's end waits for finishRun() (a run still going when something changes)
+            property bool holdRuns: false
+            property var _heldEnd: null
             signal failed(string what, string reason)
             onFailed: (what, reason) => notices = notices.concat([reason])
             function _runChange(command, origin, operationName, onSuccess, prepare, onEnd) {
                 ran = ran.concat([command.argv.join(" ") + " (" + origin + ")"]);
                 const ok = !failRuns;
-                Qt.callLater(() => onEnd({ ok: ok, dismissed: false, message: ok ? "" : failMessage }));
+                const end = () => onEnd({ ok: ok, dismissed: false, message: ok ? "" : failMessage });
+                if (holdRuns)
+                    _heldEnd = end;
+                else
+                    Qt.callLater(end);
                 return true;
+            }
+            function finishRun() {
+                const end = _heldEnd;
+                _heldEnd = null;
+                end?.();
             }
         }
     }
@@ -172,6 +184,8 @@ TestCase {
 
     function runAsync() {
         const wanted = "tailscale set --exit-node=" + online.argument + " (network)";
+        // An exit node picked outside the module (prefs only)
+        const manualPrefs = Object.assign({}, prefs, { exitNodeId: "nManual" });
         let s = null;
 
         // Tailscale off when the network comes up; the user turns it on later on the same network
@@ -313,7 +327,6 @@ TestCase {
 
         // Held (node offline), then an exit node picked by hand: the networks taken, and the
         // node coming back does not switch it
-        const manualPrefs = Object.assign({}, prefs, { exitNodeId: "nManual" });
         step(1, () => s = make(running, offline));
         step(1, () => s.follower.networks = cafeUp);
         until("held: unavailable", () => s.follower.decision.kind === "unavailable", () => s.fake.prefs = manualPrefs);
@@ -378,6 +391,58 @@ TestCase {
             s.fake.serve.checking = false;
         });
         until("Serve done: applied", () => s.follower.decision.kind === "applied", () => assertEqual(s.fake.ran.length, 1, "applied once"));
+
+        // A choice made by hand "for now" (the chooser: chosenByHand) wins over the network's:
+        // nothing applied while it lasts, whatever networks come and go; "Default" ends it and
+        // the network's choice applies again
+        step(1, () => s = make(running, nodes, { module: _moduleComponent.createObject(suite) }));
+        step(1, () => s.follower.networks = cafeUp);
+        until("applied on the network", () => s.follower.decision.kind === "applied", () => {
+            same([s.follower.effect.kind, s.follower.effect.network], ["network", "Café"], "the network's choice in effect, for Café");
+            s.fake.prefs = manualPrefs;
+            s.follower.chosenByHand();
+            same([s.follower.overridden, s.follower.lastKey, s.fake.module.store.get("exitByNetwork.lastKey", null), s.follower.effect.kind],
+                 [true, "", "", "override"], "chosen by hand: for now, the networks left open (also in the store)");
+            s.follower.networks = cafeDown;
+        });
+        step(700, () => s.follower.networks = cafeUp);
+        settled("back on the network while the choice by hand lasts", () => {
+            same([s.fake.ran.length, s.follower.decision.kind, s.follower.lastKey], [1, "override", ""], "the network again: the choice by hand stays, nothing run");
+            assert(s.follower.dropOverride(), "\"Default\": the choice by hand dropped");
+            assert(!s.follower.dropOverride(), "… once");
+        });
+        until("the network's choice applied again", () => s.follower.decision.kind === "applied", () => {
+            same([s.fake.ran.length, s.follower.lastKey, s.follower.overridden], [2, "cafe-uuid", false], "\"Default\": the network's choice applied again, the network taken");
+            same(s.fake.ran[1], wanted, "… the network's node");
+        });
+
+        // A restart during a choice by hand: it is gone (memory only), the network's applies
+        step(1, () => {
+            s.fake.prefs = manualPrefs;
+            s.follower.chosenByHand();
+        });
+        settled("chosen by hand", () => {
+            restart(s);
+            s.follower.networks = cafeUp;
+        });
+        until("after the restart: the network's choice applied", () => s.follower.decision.kind === "applied", () => {
+            same([s.follower.overridden, s.fake.ran.length], [false, 3], "restarted: no choice by hand, the network's applied");
+        });
+
+        // A run for the network still going when a choice by hand begins: its late answer takes
+        // nothing, the networks stay open for when the choice by hand ends
+        step(1, () => s = make(running, nodes, { holdRuns: true }));
+        step(1, () => s.follower.networks = cafeUp);
+        until("the network's run started", () => s.fake._heldEnd !== null, () => {
+            s.follower.chosenByHand();
+            s.fake.finishRun();
+        });
+        settled("the late answer", () => {
+            same([s.follower.lastKey, s.follower.decision.kind, s.fake.ran.length], ["", "override", 1], "a late answer: the network not taken, the choice by hand stays");
+            s.fake.holdRuns = false;
+            s.follower.dropOverride();
+        });
+        until("applied after Default", () => s.follower.decision.kind === "applied", () => same([s.fake.ran.length, s.follower.lastKey], [2, "cafe-uuid"], "… applied when it ended"));
         step(1, () => {});
         _clock.interval = 1;
         _clock.start();

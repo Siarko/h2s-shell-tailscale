@@ -287,7 +287,8 @@ QtObject {
         function networkExit(): string {
             const exit = main.client.networkExit;
             return JSON.stringify({ rows: exit.rows.length, networks: exit.networks.length, active: exit.networks.filter(network => network.active).length,
-                                    decision: exit.decision.kind, runs: exit.runs, canChange: main.client.canChange });
+                                    decision: exit.decision.kind, runs: exit.runs, canChange: main.client.canChange,
+                                    override: exit.overridden, effect: exit.effect.kind });
         }
 
         // Marks a network (by its id) with a choice: "none", "auto" or a node's stable id

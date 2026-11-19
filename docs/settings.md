@@ -36,7 +36,7 @@ The shell's module host owns that file.
 | `taildrop.conflict` | `rename`, `overwrite` or `skip` | `TaildropClient.qml` |
 | `taildrop.autoSave` | bool | `TaildropClient.qml` |
 | `exitByNetwork` | `{ <network id>: { choice, label, name } }` | `NetworkExitClient.qml` |
-| `exitByNetwork.lastKey` | the set of marked networks last acted on | `NetworkExitClient.qml` |
+| `exitByNetwork.lastKey` | the set of marked networks last acted on; empty while a choice made for now lasts | `NetworkExitClient.qml` |
 | `exitByNetwork.held` | the open choice: `{ key, choice, kind, seen }`; absent when none | `NetworkExitClient.qml` |
 
 `choice` is `none`, `auto` or an exit node's stable id. A network id is NetworkManager's profile UUID.

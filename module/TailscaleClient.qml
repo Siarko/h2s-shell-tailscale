@@ -986,15 +986,22 @@ QtObject {
         return _runChange(command, _origin(origin ?? "user"), operationName, onSuccess);
     }
 
+    // The user's choice: "for now", over the networks' choices (NetworkExitClient.chosenByHand)
+    // from the moment it starts
     function setExitNode(option) {
-        if (option === null || option === undefined)
-            return _userChange("exitNodeNone", {}, "exit-node");
-        // The daemon refuses to use an exit node while offering one: said before anything runs
-        if (TailscaleRules.exitNodeUseProblem(prefs) !== "") {
+        let started = false;
+        if (option === null || option === undefined) {
+            started = _userChange("exitNodeNone", {}, "exit-node");
+        } else if (TailscaleRules.exitNodeUseProblem(prefs) !== "") {
+            // The daemon refuses to use an exit node while offering one: said before anything runs
             failed("Changing Tailscale's exit node", TailscaleRules.exitNodeUseProblem(prefs));
             return false;
+        } else {
+            started = _userChange("exitNode", { node: option.argument }, "exit-node");
         }
-        return _userChange("exitNode", { node: option.argument }, "exit-node");
+        if (started)
+            networkExit.chosenByHand();
+        return started;
     }
 
     // The suggested exit node (asked for first when none is known)
@@ -1951,6 +1958,8 @@ QtObject {
     // ---- Resume from sleep (module API 1.2: the handle's resumed()) ----
 
     function resumed() {
+        // A choice made by hand lasts until the computer sleeps: the networks' choices again
+        networkExit.dropOverride();
         if (!running)
             return;
         tailnetLock.read();

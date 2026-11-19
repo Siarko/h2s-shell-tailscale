@@ -72,6 +72,7 @@ Needs h2s-shell with module API 1.28.
 - "Send file…" in the bar popup stays in the popup: the shell's file chooser, then a row under the device with the files, Send and "×", then a progress bar with Cancel and the result. Each device keeps its own files. The settings window no longer opens.
 - Taildrop's files and its folder for received files are chosen in the shell's file chooser instead of the module's own dialogs.
 - The exit node per network is set on the network's own card (Settings → System → Network, a saved Wi-Fi or Ethernet network, opened): "Tailscale exit node". While one is set, the card's name line shows the exit-node mark, with the choice in its tooltip. The table on the Tailscale page is gone. Choices made before are kept.
+- A choice in the exit node chooser is for now: it wins over the networks' choices until "Default", a wake from sleep or a restart, and the network's choice then applies again. The chooser shows "Default" while a network has a choice of its own, and its header says "for now" or "for <network>".
 
 ### Removed
 

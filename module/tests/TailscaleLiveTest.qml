@@ -480,14 +480,22 @@ TestCase {
         then(exitNode, "read", () => exitNode.client.status !== null, () => {
             const peer4 = exitNode.client.exitNodes.own.find(option => option.name === "peer4");
             assert(peer4 !== undefined, "exit nodes: peer4 offered");
+            assert(!exitNode.client.networkExit.overridden, "no choice by hand yet");
             exitNode.client.setExitNode(peer4);
+            assert(exitNode.client.networkExit.overridden, "… chosen: \"for now\", over the networks' choices");
         });
         then(exitNode, "via peer4", () => /^Via /.test(_entry(exitNode).status) && !exitNode.client.busy, () => {
             assertEqual(_entry(exitNode).status, "Via peer4", "exit node set: \"Via peer4\"");
             assert(exitNode.client.exitNodes.current?.name === "peer4", "… current in the chooser");
             exitNode.client.setExitNode(null);
         });
-        then(exitNode, "none", () => _entry(exitNode).status === "Tailnet only" && !exitNode.client.busy, () => {});
+        then(exitNode, "none", () => _entry(exitNode).status === "Tailnet only" && !exitNode.client.busy, () => {
+            assert(exitNode.client.networkExit.overridden, "\"None\" chosen: for now too");
+            // The computer woke (the handle's resumed(), as the shell sends it): the choice by
+            // hand ends, the networks' choices apply again
+            exitNode.module.resumed();
+            assert(!exitNode.client.networkExit.overridden, "woken: the choice by hand dropped");
+        });
         thenLogs(exitNode, "after the exit nodes", () => {
             assertEqual(count(exitNode.logLines, /^set --exit-node=100\.64\.0\.4$/), 1, "set --exit-node=<its IPv4>");
             assertEqual(count(exitNode.logLines, /^set --exit-node=$/), 1, "set --exit-node= (none)");

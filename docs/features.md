@@ -93,7 +93,7 @@ While one is set, the card's name line shows the exit-node mark, open or closed.
 Its tooltip names the choice, for example "Tailscale: Exit node: home-server".
 
 - When the set of marked networks that are up changes, the module sets the exit node once.
-- A choice made by hand afterwards stays until the networks change.
+- An exit node changed outside the shell afterwards (the `tailscale` command) stays until the networks change.
 - A drop to no marked network shorter than 30 s does not count.
 - While Tailscale is off or starting, the module waits. It never turns Tailscale on.
 - It runs as an automatic change: never a password prompt. It waits while another change runs or Serve checks a Funnel.
@@ -110,8 +110,20 @@ A choice that cannot be applied stays open. It is applied once the reason goes:
 
 - Each open choice gives one notification, "Exit node for this network". The same networks and choice never notify twice.
 - A failed change is not tried again for the same networks and choice. It is tried again when the networks change, and once after a restart of the shell.
-- An exit node picked by hand while a choice is open ends it. The pick stays until the networks change, also across a restart.
+- An exit node changed outside the shell while a choice is open ends it. The change stays until the networks change, also across a restart.
 - The open choice is kept in the store under `exitByNetwork.held`.
+
+### For now
+
+A choice in the exit node chooser (the popup, the network popup, the page) is for now.
+It wins over the networks' choices, whatever networks come and go, until one of these:
+
+- "Default" in the chooser. It shows while the networks up have a choice of their own, and names it, for example "Café: No exit node".
+- The computer wakes from sleep or hibernation.
+- The shell or the computer restarts. The choice is kept in memory only.
+
+Then the choice of the networks up applies again.
+The chooser's header says which one is in effect: "for now", or "for Café" when the network's choice is applied.
 
 ## Network switches
 
