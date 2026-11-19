@@ -102,10 +102,9 @@ The module writes no sysctl and changes no system file.
 
 ## Time limits
 
-Every command runs under coreutils `timeout`: the module's own, `-k 5`, for what runs as
-you; the shell's, `-k 3`, inside pkexec for what runs as administrator. Without a `timeout`
-of its own the module runs its commands without one and says so; its own watchdog still stops
-waiting.
+Every command has a time limit. What runs as you goes through the shell's command runner:
+past the limit the command gets TERM, and KILL 5 s later. What runs as administrator has the
+shell's `timeout`, `-k 3`, inside pkexec.
 
 | Kind | Limit |
 |---|---|

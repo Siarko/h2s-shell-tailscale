@@ -57,6 +57,7 @@ Needs h2s-shell with module API 1.14.
 - Links and the Taildrop folder open through the shell.
 - IP forwarding, the download folder and the data folder come from the shell's system facts.
 - IPC `state`: `testMode` in place of `toolsMode`; `tools` names `tailscale`, `timeout`, `curl`, `systemctl`.
+- Commands run through the shell's command runner, each with its time limit. Without coreutils `timeout` they keep their limits, and the card no longer warns about it.
 
 ### Removed
 

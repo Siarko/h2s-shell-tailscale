@@ -100,9 +100,9 @@ Singleton {
     // Where tailscaled's LocalAPI socket may be, in this order (the live side takes the first
     // that exists; localApiSocket when none does)
     readonly property var localApiSockets: ["/var/run/tailscale/tailscaled.sock", "/run/tailscale/tailscaled.sock"]
-    // Time limits, in seconds: every command runs under coreutils' timeout (timed(); a run as
-    // administrator under the shell's own, privilegedRun()'s timeoutMs), so nothing it runs
-    // can wait for ever — not a `status --json`
+    // Time limits, in seconds: every command runs with one, kept by the shell's command runner
+    // (runLimits(); a run as administrator by the shell's own timeout inside pkexec,
+    // privilegedRun()'s timeoutMs), so nothing it runs can wait for ever — not a `status --json`
     // that hangs, not a bare `up` that waits for Running offline, behind a captive portal or
     // with an expired key, and not a root process the shell cannot signal.
     //   read      status --json, debug prefs, exit-node suggest: answered at once by a healthy
@@ -118,7 +118,7 @@ Singleton {
     //   send      `file cp`, as the user: 6 hours — about 10 GB at 0.5 MB/s over a relay. A stalled
     //             send is stopped long before by TaildropClient (no bus progress for 2 minutes)
     //   save      each LocalAPI request of the save script (one received file each)
-    //   killAfter timeout(1)'s -k: KILL this long after TERM, for a program that ignores TERM
+    //   killAfter KILL this long after TERM, for a program that ignores TERM (the runner's killAfterMs)
     readonly property var timeLimits: ({ read: 15, change: 60, up: 60, login: 600, diagnose: 30, ping: 10, send: 21600, save: 600, cert: 180, killAfter: 5 })
     // An account (profile) id from `switch --list`: never starting with "-", which the CLI
     // would read as a flag
@@ -2212,21 +2212,53 @@ Singleton {
         return "Changes that need an administrator are not offered" + (why !== "" ? ": " + why : "") + ".";
     }
 
-    // The plain form of a command with its time limit: timed(argv, timeoutPath, seconds) →
-    // { ok, error, argv, limited }. argv[0] is the program's absolute path (tailscale's, or
-    // systemctl's); timeoutPath coreutils' timeout — "" when it was not found: the argv as it
-    // is, limited false (the live side's own watchdog then only stops waiting for it).
-    //   [timeout, "-k", killAfter, seconds, program, args…]
-    function timed(argv, timeoutPath, seconds) {
-        if (!Array.isArray(argv) || argv.length === 0 || !argv.every(item => typeof item === "string") || !_validPath(argv[0]) || /\s/.test(argv[0]))
-            return { ok: false, error: "not a command by absolute path", argv: [], limited: false };
-        if (!_validSeconds(seconds))
-            return { ok: false, error: "not a time limit", argv: [], limited: false };
-        if (timeoutPath === "" || timeoutPath === null || timeoutPath === undefined)
-            return { ok: true, error: "", argv: argv.slice(), limited: false };
-        if (typeof timeoutPath !== "string" || !_validPath(timeoutPath) || /\s/.test(timeoutPath))
-            return { ok: false, error: "the path to timeout is not absolute", argv: [], limited: false };
-        return { ok: true, error: "", argv: [timeoutPath, "-k", String(timeLimits.killAfter), String(seconds)].concat(argv), limited: true };
+    // ---- Running a command (the shell's command runner, module API 1.8) ----
+
+    // A command by its program's absolute path: commandLine(argv, path) → the argv with `path`
+    // in place of its first word (commandFor's argv starts with "tailscale", startService's with
+    // "systemctl"); [] when the path is not absolute or the argv not a list of words
+    function commandLine(argv, path) {
+        if (!Array.isArray(argv) || argv.length === 0 || !argv.every(item => typeof item === "string") || !_validPath(path) || /\s/.test(path))
+            return [];
+        return [path].concat(argv.slice(1));
+    }
+
+    // A run's limits for the runner: runLimits(limitMs) → { ok, timeoutMs, killAfterMs }.
+    // `limitMs` milliseconds, rounded, at most a day (maxRunMs) — or 0: no limit (the event
+    // stream, which lives as long as the daemon answers). Past the limit the runner sends
+    // TERM, and KILL timeLimits.killAfter later. Not a number, or below 0: not ok
+    readonly property int maxRunMs: 86400000
+    function runLimits(limitMs) {
+        const killAfterMs = timeLimits.killAfter * 1000;
+        if (typeof limitMs !== "number" || !isFinite(limitMs) || limitMs < 0)
+            return { ok: false, timeoutMs: 0, killAfterMs: killAfterMs };
+        return { ok: true, timeoutMs: Math.min(maxRunMs, Math.round(limitMs)), killAfterMs: killAfterMs };
+    }
+
+    // The event stream's argv: curl on the LocalAPI's watch-ipn-bus (any user may read it),
+    // both by absolute path; [] without them
+    function streamArgv(curlPath, socket) {
+        if (!_validPath(curlPath) || /\s/.test(curlPath) || !_validPath(socket) || /\s/.test(socket))
+            return [];
+        return [curlPath, "-sN", "--unix-socket", socket, "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus?mask=" + watchMask];
+    }
+
+    // How a plain run ended — the runner's result ({ ok, code, stdout, stderr, timedOut,
+    // cancelled, failedToStart, error }) → { kind, message }: kind "" (ok), "timeout" (its time
+    // limit ended it), "not-run" (the runner refused it: `error`; or the program could not be
+    // started), else errorKind's of its exit status and its error output
+    function runError(result) {
+        const field = key => _get(result, key);
+        if (field("ok") === true)
+            return { kind: "", message: "" };
+        if (field("timedOut") === true)
+            return { kind: "timeout", message: errorKind(124, "").message };
+        const refusal = plainText(_string(field("error"), 300), 200);
+        if (refusal !== "")
+            return { kind: "not-run", message: "It could not be run: " + refusal };
+        if (field("failedToStart") === true)
+            return { kind: "not-run", message: "The program could not be started." };
+        return errorKind(field("code"), _string(field("stderr"), 65536));
     }
 
     function _validSeconds(seconds) {
@@ -2384,7 +2416,7 @@ Singleton {
         case "connect":
             // Bare, always: never a flag on `up` (or `login`) — not even --timeout: a flag makes
             // `up` demand every non-default setting (the accidental-revert trap). Its time
-            // limit is timeout(1)'s, around it
+            // limit is the runner's (runLimits)
             return _command(name, ["tailscale", "up"], true, true, "Connecting Tailscale", { timeLimit: "up" });
         case "disconnect":
             return _command(name, ["tailscale", "down"], true, true, "Disconnecting Tailscale");

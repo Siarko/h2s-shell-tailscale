@@ -375,19 +375,37 @@ TestCase {
                    "what: never a name the user typed");
         }
 
-        // --- timed: every plain command under timeout ---
+        // --- running a command: the shell's runner (argv, time limit, result) ---
         {
             const ts = "/usr/bin/tailscale";
-            same(rules.timed([ts, "status", "--json"], "/usr/bin/timeout", rules.timeLimits.read).argv,
-                 ["/usr/bin/timeout", "-k", "5", "15", ts, "status", "--json"], "timed: a read, 15 s");
-            same(rules.timed([ts, "up"], "/usr/bin/timeout", rules.timeLimits.up).argv, ["/usr/bin/timeout", "-k", "5", "60", ts, "up"], "timed: up, 60 s, bare");
-            same(rules.timed([ts, "set", "--shields-up=true"], "/usr/bin/timeout", rules.timeLimits.change).argv,
-                 ["/usr/bin/timeout", "-k", "5", "60", ts, "set", "--shields-up=true"], "timed: a set, 60 s");
-            same(rules.timed([ts, "login"], "/usr/bin/timeout", rules.timeLimits.login).argv, ["/usr/bin/timeout", "-k", "5", "600", ts, "login"], "timed: login, 600 s");
-            const bare = rules.timed([ts, "up"], "", 60);
-            assert(bare.ok && !bare.limited && bare.argv.join(" ") === ts + " up", "timed: no timeout found: as it is, limited false");
-            for (const argv of [["tailscale", "up"], [], null, ["/a b/tailscale"]])
-                assertEqual(rules.timed(argv, "/usr/bin/timeout", 60).ok, false, "timed: " + JSON.stringify(argv) + " refused");
+            same(rules.commandLine(rules.commandFor("status", {}).argv, ts), [ts, "status", "--json"], "commandLine: tailscale by its absolute path");
+            same(rules.commandLine(rules.commandFor("connect", {}).argv, ts), [ts, "up"], "commandLine: up, bare");
+            same(rules.commandLine(rules.commandFor("startService", {}).argv, "/usr/bin/systemctl").slice(0, 1), ["/usr/bin/systemctl"], "commandLine: systemctl by its path");
+            for (const path of ["", "tailscale", "/a b/tailscale", "/x/../tailscale", null])
+                same(rules.commandLine(["tailscale", "up"], path), [], "commandLine: path " + JSON.stringify(path) + " refused");
+            for (const argv of [[], null, [1, 2], "tailscale up"])
+                same(rules.commandLine(argv, ts), [], "commandLine: argv " + JSON.stringify(argv) + " refused");
+            same(rules.runLimits(rules.timeLimits.read * 1000), { ok: true, timeoutMs: 15000, killAfterMs: 5000 }, "runLimits: a read, 15 s, KILL 5 s after TERM");
+            same(rules.runLimits(rules.timeLimits.login * 1000), { ok: true, timeoutMs: 600000, killAfterMs: 5000 }, "runLimits: the login, 10 minutes");
+            same(rules.runLimits(0), { ok: true, timeoutMs: 0, killAfterMs: 5000 }, "runLimits: 0, no limit (the stream)");
+            assertEqual(rules.runLimits(10 * 86400000).timeoutMs, rules.maxRunMs, "runLimits: at most a day");
+            for (const value of [-1, NaN, Infinity, "15000", null, undefined])
+                assertEqual(rules.runLimits(value).ok, false, "runLimits: " + String(value) + " not ok");
+            same(rules.streamArgv("/usr/bin/curl", "/run/tailscale/tailscaled.sock"),
+                 ["/usr/bin/curl", "-sN", "--unix-socket", "/run/tailscale/tailscaled.sock", "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus?mask=" + rules.watchMask],
+                 "streamArgv: curl on watch-ipn-bus, by absolute paths");
+            same(rules.streamArgv("", "/run/tailscale/tailscaled.sock"), [], "streamArgv: no curl, no stream");
+            same(rules.streamArgv("/usr/bin/curl", "tailscaled.sock"), [], "streamArgv: a socket not by absolute path: none");
+            // The runner's result → the module's reading of it
+            const result = changes => Object.assign({ ok: false, code: 1, stdout: "", stderr: "", timedOut: false, cancelled: false, failedToStart: false, error: "" }, changes);
+            same(rules.runError(result({ ok: true, code: 0 })), { kind: "", message: "" }, "runError: ok");
+            same(rules.runError(result({ timedOut: true, code: -1 })), { kind: "timeout", message: rules.errorKind(124, "").message }, "runError: timed out, whatever the code");
+            same(rules.runError(result({ code: -1, error: "argv is empty" })), { kind: "not-run", message: "It could not be run: argv is empty" }, "runError: refused by the runner, why");
+            same(rules.runError(result({ code: 127, failedToStart: true, stderr: "timeout: failed to run command" })), { kind: "not-run", message: "The program could not be started." },
+                 "runError: the program could not be started");
+            assertEqual(rules.runError(result({ stderr: "Access denied: prefs write access denied" })).kind, "denied", "runError: otherwise errorKind's of stderr");
+            assertEqual(rules.runError(result({ code: 3, stderr: "" })).message, "Tailscale exited with status 3.", "runError: … and of the exit status");
+            assertEqual(rules.runError(null).kind, "other", "runError: no result: a failure");
             same([rules.commandFor("connect", {}).timeLimit, rules.commandFor("login", {}).timeLimit, rules.commandFor("status", {}).timeLimit,
                   rules.commandFor("shieldsUp", { on: true }).timeLimit], ["up", "login", "read", "change"], "commands: their time limits");
             assertEqual(rules.errorKind(124, "").message, "Tailscale did not answer in time and was stopped: check its service and the network.", "error: 124's sentence");

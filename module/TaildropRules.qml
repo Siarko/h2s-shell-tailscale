@@ -162,6 +162,9 @@ Singleton {
         return parts[parts.length - 1] ?? "";
     }
 
+    // The time limit of a look at local files (the check before a send, the folder's)
+    readonly property int checkLimitMs: 15000
+
     // The user-side check before a send: one `find` over the paths, as the user, not
     // following links (-P): a regular file this user can read, a link, a folder, unreadable,
     // or (not printed: find's error) missing. Paths are absolute, so find never reads one as

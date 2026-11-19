@@ -53,8 +53,20 @@ tests/lock-bed/                runs the real shell with the module and the stand
 ## Lifetime
 
 `Main.qml` owns one `TailscaleClient`. The client runs only while `module.active` is true.
-Turning the module off destroys `Main`, which ends the stream, the timers and every process.
+Turning the module off destroys `Main`, which ends the stream, the timers and every command.
 The feature clients (`TaildropClient`, `ServeClient`, …) hang off the main client.
+
+## Running commands
+
+- Every command goes through the shell's command runner (`CommandRunner`, module API 1.8):
+  the reads, the changes, the stream, the scripts. `TailscaleClient._run` starts each.
+- Each runs by its program's absolute path (`TailscaleRules.commandLine`), with the client's
+  environment and a time limit (`TailscaleRules.runLimits`, the table in
+  [privileges.md](privileges.md)). The stream has none.
+- A run the client stops waiting for is cancelled: when the client stops, or an operation is
+  given up. Its answer never reaches the code that started it.
+- The runner's result is read by `TailscaleRules.runError`: timed out, not run, or the
+  command's own error (`errorKind`).
 
 ## How state is read
 
@@ -122,9 +134,10 @@ that absolute path (`TailscaleRules.programsFound`).
 - `tailscale` must be trusted: owned by root and writable by root alone, or in the Nix store.
   It is the one program handed to pkexec. Otherwise the module counts as "not trusted" and
   runs nothing.
-- `timeout`, `curl`, `systemctl` and `openssl` run as you only and are not judged. Without
-  `timeout` commands run without a time limit (said on the card); without `curl` there is no
-  event stream; without `openssl` a certificate's end date is not shown.
+- `timeout`, `curl`, `systemctl` and `openssl` run as you only and are not judged. `timeout`
+  only limits each file of a Taildrop save; without it the save's own limit still holds.
+  Without `curl` there is no event stream; without `openssl` a certificate's end date is not
+  shown.
 - `pkexec` is named only for module test mode. Outside it the shell uses its own.
 - "Check again", a view coming on screen and the backoff ask the shell to look again
   (`module.recheckPrograms()`); the shell also does after the machine wakes.

@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell.Io
 import qs.api
 
 // The live side of the Tailscale module: I/O only — every decision is TailscaleRules'. One of
@@ -34,9 +33,11 @@ import qs.api
 //   - Byte counters (devices' traffic) are in `status --json`: re-read every watchPollMs only
 //     while something watches (the devices page while it is shown: watch() / unwatch()).
 //
-// TIME LIMITS: every command runs under coreutils' timeout (TailscaleRules.timed, the limits
-// in TailscaleRules.timeLimits; a suite may shorten them with `timeLimits`), and the client
-// also stops waiting for it a little after (a watchdog, for a timeout that was not found).
+// RUNNING: every command — the reads, the changes, the stream — goes through the shell's
+// command runner (module API 1.8, `runner`), by its program's absolute path, with a time limit
+// (TailscaleRules.runLimits, the limits in TailscaleRules.timeLimits; a suite may shorten them
+// with `timeLimits`; the stream has none). A run the client stops waiting for (stopped, an
+// operation given up) is cancelled, and its answer never reaches the code that started it.
 // A read that times out marks the state stale (the entry: "Not answering — state unknown")
 // and is retried with a backoff (readRetryMinMs, doubling to readRetryMaxMs).
 //
@@ -85,9 +86,12 @@ QtObject {
     // The system's facts (module API 1.13; a suite may give its own): the data and download
     // folders, IP forwarding
     property var system: Api.system
-    // Added to every process's environment, and handed to the runs as administrator (the
+    // Added to every command's environment, and handed to the runs as administrator (the
     // suites: the stand-ins' TS_FAKE_* variables; module API 1.14 takes them in test mode only)
     property var environment: ({})
+    // What runs the commands: the shell's command runner (module API 1.8) — its own, or one a
+    // suite hands over to see what is started ({ start(argv, options), cancelAll() })
+    property var runner: _ownRunner
     // The clock, for the suites (0: the real one)
     property real fixedNow: 0
     property int readDebounceMs: 150
@@ -122,6 +126,7 @@ QtObject {
     readonly property var programs: module?.programsReady === false ? null : (module?.programs ?? null)
     // Absolute paths, as last applied ("" unknown or missing)
     property string tailscalePath: ""
+    // Only for Taildrop's save script: a limit for each file it fetches
     property string timeoutPath: ""
     property string curlPath: ""
     property string systemctlPath: ""
@@ -271,15 +276,12 @@ QtObject {
     readonly property var warnings: view.warnings.concat(routeWarnings.map(found => ({ kind: "route-shadows-lan", text: found.text })),
         busError !== "" ? [{ kind: "error", text: "Tailscale said: " + TailscaleRules.plainText(busError, 500) }] : [],
         curlMissing ? [{ kind: "curl-missing", text: "Live updates need curl: without it Tailscale's state is re-read once a minute." }] : [],
-        elevationProblem !== "" ? [{ kind: "no-elevation", text: elevationProblem }] : [],
-        cli === "present" && timeoutPath === "" ? [{ kind: "no-timeout", text: "coreutils' timeout was not found: Tailscale's commands run without a time limit." }] : [])
+        elevationProblem !== "" ? [{ kind: "no-elevation", text: elevationProblem }] : [])
     // This computer
     readonly property var self: status?.self ?? null
     readonly property var keyExpiry: TailscaleRules.keyExpiryWarning(self, now)
 
     // ---- Start and stop ----
-
-    property int _generation: 0
 
     onRunningChanged: running ? _start() : _stop()
     Component.onCompleted: {
@@ -289,7 +291,6 @@ QtObject {
     Component.onDestruction: _stop()
 
     function _start() {
-        _generation++;
         // A look of an earlier start is no longer waited for (its answer is dropped)
         _probing = false;
         _lookAgain = false;
@@ -300,7 +301,6 @@ QtObject {
     }
 
     function _stop() {
-        _generation++;
         loginInterrupted = null;
         _strandCheck = null;
         _loginFrom = null;
@@ -315,16 +315,13 @@ QtObject {
         _startedAt = 0;
         _readIntent = "";
         failure = null;
-        if (_stream.running)
-            _stream.running = false;
+        _streamRun = null;
         _opToken++;
         _readToken++;
-        // Everything it started: asked to end (a root process cannot be — it ends at its
-        // timeout), and never waited for again
-        for (const process of _processes)
-            process.abandon();
-        _processes = [];
-        _opProcess = null;
+        // Everything it started: cancelled (a root process cannot be ended — it ends at its
+        // time limit), and its answer never comes back (_run)
+        runner?.cancelAll();
+        _opRun = null;
         for (const run of _privilegedRuns)
             run.cancel();
         _privilegedRuns = [];
@@ -337,10 +334,6 @@ QtObject {
         _watchers = 0;
         diagnostics = Object.assign({}, diagnostics, { running: false });
         pings = ({});
-    }
-
-    function _alive(generation) {
-        return running && generation === _generation;
     }
 
     // The programs as the handle has them now (TailscaleRules.programsFound), and the LocalAPI
@@ -357,14 +350,11 @@ QtObject {
             return;
         }
         _probing = true;
-        const generation = _generation;
         const probe = "for s in \"$@\"; do [ -S \"$s\" ] && { printf 'socket\\t%s\\n' \"$s\"; break; }; done; true";
-        _misc.run(["sh", "-c", probe, "sh"].concat(TailscaleRules.localApiSockets), result => {
-            if (!_alive(generation))
-                return;
+        _run(["sh", "-c", probe, "sh"].concat(TailscaleRules.localApiSockets), _limitMs("read"), result => {
             _probing = false;
             let socket = "";
-            for (const line of result.lines ?? []) {
+            for (const line of result.stdout.split("\n")) {
                 const parts = String(line).split("\t");
                 if (parts[0] === "socket" && parts.length === 2 && TailscaleRules.localApiSockets.includes(parts[1])) {
                     socket = parts[1];
@@ -406,8 +396,8 @@ QtObject {
             cli = found.cli;
             _logOutcome("looking for tailscale", false, found.cli === "untrusted" ? untrustedReason : "not installed");
             _readIntent = "";
-            if (wasPresent && _stream.running)
-                _stream.running = false;
+            if (wasPresent)
+                _stopStream();
             _followRecheck();
             return;
         }
@@ -426,23 +416,22 @@ QtObject {
     function _readSystemHostname() {
         if (Api.testMode || (systemHostname !== "" && !_systemHostnameRead))
             return;
-        const generation = _generation;
-        _misc.run(["cat", "/proc/sys/kernel/hostname"], result => {
-            if (!_alive(generation) || !result.ok)
+        _run(["cat", "/proc/sys/kernel/hostname"], _limitMs("read"), result => {
+            if (!result.ok)
                 return;
             _systemHostnameRead = true;
-            systemHostname = String(result.lines[0] ?? "").trim().slice(0, 253);
+            systemHostname = String(result.stdout.split("\n")[0] ?? "").trim().slice(0, 253);
         });
     }
     property bool _systemHostnameRead: false
 
     function _readIdentity() {
-        const generation = _generation;
-        _misc.run(["sh", "-c", "id -u; id -un"], result => {
-            if (!_alive(generation) || !result.ok)
+        _run(["sh", "-c", "id -u; id -un"], _limitMs("read"), result => {
+            if (!result.ok)
                 return;
-            uid = Number(result.lines[0] ?? -1);
-            const name = (result.lines[1] ?? "").trim();
+            const lines = result.stdout.split("\n");
+            uid = Number(lines[0] ?? -1);
+            const name = (lines[1] ?? "").trim();
             userName = TailscaleRules.validUserName(name) ? name : "";
         });
     }
@@ -450,12 +439,9 @@ QtObject {
     // The local networks (for "an accepted route covers the LAN"): global addresses of every
     // interface but Tailscale's
     function _readLan() {
-        const generation = _generation;
-        _misc.run(["sh", "-c", "ip -o addr show scope global 2> /dev/null; true"], result => {
-            if (!_alive(generation))
-                return;
+        _run(["sh", "-c", "ip -o addr show scope global 2> /dev/null; true"], _limitMs("read"), result => {
             const subnets = [];
-            for (const line of result.lines) {
+            for (const line of result.stdout.split("\n")) {
                 const match = /^\d+:\s+(\S+)\s+inet6?\s+(\S+)/.exec(line);
                 if (match && !match[1].startsWith("tailscale") && !subnets.includes(match[2]))
                     subnets.push(match[2]);
@@ -464,37 +450,35 @@ QtObject {
         });
     }
 
-    // ---- Running a command (every one but the stream: a process of its own) ----
+    // ---- Running a command (the shell's command runner) ----
 
-    property var _processes: []
-
-    // `argv` as it runs (timed already); `limitMs` the watchdog (0 none): past it `done` gets
-    // { timedOut: true, code: 124 } and the process is no longer waited for. done({ ok, code,
-    // out, err, timedOut }) once; onChunk(text) with its output as it comes. → the process
-    // (abandon() it to stop waiting)
-    function _spawn(argv, limitMs, done, onChunk) {
-        const process = _processComponent.createObject(root, {
-            command: argv, environment: _environment(), limitMs: limitMs, done: done ?? null, onChunk: onChunk ?? null
+    // `argv` by absolute path, under the time limit `limitMs` (TailscaleRules.runLimits; 0 none),
+    // with this client's environment. done(result) once with the runner's result ({ ok, code,
+    // stdout, stderr, timedOut, failedToStart, error, … }) — never for a run that was cancelled
+    // (the client stopped, the operation was given up): nobody waits for it any more.
+    // `onOutput(text)`: each line of both streams, with its line break, as it comes. → the
+    // runner's handle ({ running, cancel() })
+    function _run(argv, limitMs, done, onOutput) {
+        const limits = TailscaleRules.runLimits(limitMs);
+        return runner.start(argv, {
+            timeoutMs: limits.ok ? limits.timeoutMs : TailscaleRules.timeLimits.read * 1000, killAfterMs: limits.killAfterMs,
+            environment: Object.assign({}, environment ?? {}),
+            onStdout: onOutput ?? null, onStderr: onOutput ?? null,
+            done: result => {
+                if (result.cancelled !== true)
+                    done?.(result);
+            }
         });
-        _processes = _processes.concat([process]);
-        process.running = true;
-        return process;
     }
 
-    function _forget(process) {
-        _processes = _processes.filter(item => item !== process);
+    // A tailscale command (commandFor's) by absolute path → the argv
+    function _tailscaleArgv(command) {
+        return TailscaleRules.commandLine(command.argv, tailscalePath);
     }
 
-    // A tailscale command (commandFor's) by absolute path, under timeout (its time limit:
-    // `seconds`) → the argv
-    function _timedArgv(command, seconds) {
-        const timed = TailscaleRules.timed([tailscalePath].concat(command.argv.slice(1)), timeoutPath, seconds);
-        return timed.ok ? timed.argv : [tailscalePath].concat(command.argv.slice(1));
-    }
-
-    // The watchdog: a little after timeout(1)'s own TERM and KILL
-    function _watchdogMs(seconds) {
-        return (seconds + TailscaleRules.timeLimits.killAfter + 5) * 1000;
+    // A time limit of TailscaleRules.timeLimits (or a suite's) in milliseconds
+    function _limitMs(name) {
+        return _limit(name) * 1000;
     }
 
     // ---- Reading ----
@@ -587,7 +571,7 @@ QtObject {
         }
         if (plan === "read") {
             _streamFailures = 0;
-            if (!_stream.running) {
+            if (_streamRun === null) {
                 _streamRestart.stop();
                 _startStream();
             }
@@ -621,21 +605,19 @@ QtObject {
         _readRetry.stop();
         reads++;
         const readNumber = reads;
-        const generation = _generation;
         const token = ++_readToken;
-        const seconds = _limit("read");
         const serialAtStart = _changeSerial;
-        _spawn(_timedArgv(TailscaleRules.commandFor("status", {}), seconds), _watchdogMs(seconds), statusResult => {
-            if (!_alive(generation) || token !== _readToken)
+        _run(_tailscaleArgv(TailscaleRules.commandFor("status", {})), _limitMs("read"), statusResult => {
+            if (token !== _readToken)
                 return;
             if (_timedOut(statusResult)) {
                 _readTimedOut();
                 return;
             }
-            _spawn(_timedArgv(TailscaleRules.commandFor("prefs", {}), seconds), _watchdogMs(seconds), prefsResult => {
-                if (!_alive(generation) || token !== _readToken)
+            _run(_tailscaleArgv(TailscaleRules.commandFor("prefs", {})), _limitMs("read"), prefsResult => {
+                if (token !== _readToken)
                     return;
-                _applyRead(statusResult, _timedOut(prefsResult) ? { ok: false, code: 124, out: "", err: "" } : prefsResult);
+                _applyRead(statusResult, prefsResult);
                 // These prefs were read after every operation that ended before the read began
                 if (prefsResult.ok && !_timedOut(prefsResult) && prefs?.ok === true)
                     _prefsSerial = serialAtStart;
@@ -656,7 +638,7 @@ QtObject {
     }
 
     function _timedOut(result) {
-        return result.timedOut === true || TailscaleRules.errorKind(result.code, result.err).kind === "timeout" && (result.code === 124 || result.code === 137);
+        return result.timedOut === true;
     }
 
     // A read that did not answer in time: the state is unknown (stale), retried with a backoff
@@ -680,7 +662,7 @@ QtObject {
         if (fixedNow <= 0)
             now = Date.now();
         if (statusResult.ok) {
-            const parsed = TailscaleRules.parseStatus(statusResult.out);
+            const parsed = TailscaleRules.parseStatus(statusResult.stdout);
             if (parsed.ok) {
                 status = parsed;
                 daemon = "running";
@@ -691,7 +673,7 @@ QtObject {
             _statusFailing = !parsed.ok;
             _logOutcome("status --json", parsed.ok, "its answer could not be read");
         } else {
-            const error = TailscaleRules.errorKind(statusResult.code, statusResult.err);
+            const error = TailscaleRules.runError(statusResult);
             _statusFailing = true;
             _logOutcome("status --json", false, error.message);
             if (error.kind === "not-running") {
@@ -708,7 +690,7 @@ QtObject {
             }
         }
         if (prefsResult.ok) {
-            const parsed = TailscaleRules.parsePrefs(prefsResult.out);
+            const parsed = TailscaleRules.parsePrefs(prefsResult.stdout);
             if (parsed.ok)
                 prefs = parsed;
             _logOutcome("debug prefs", parsed.ok, "its answer could not be read");
@@ -716,7 +698,7 @@ QtObject {
             prefs = null;
         } else if (statusResult.ok) {
             // Only while status answers: a daemon that is down is said once, by status
-            _logOutcome("debug prefs", false, TailscaleRules.errorKind(prefsResult.code, prefsResult.err).message);
+            _logOutcome("debug prefs", false, TailscaleRules.runError(prefsResult).message);
         }
         _followExitNode();
         _rememberTailnet();
@@ -747,26 +729,54 @@ QtObject {
             module?.store?.set("lastTailnet", name);
     }
 
-    function _environment() {
-        return Object.assign({}, environment ?? {});
-    }
-
     // ---- The event stream ----
 
     property var _splitter: TailscaleRules.jsonSplitter()
     property real _streamStartedAt: 0
     property int _streamFailures: 0
 
+    // The stream's run (the runner's handle), null while none runs
+    property var _streamRun: null
+
+    // The stream: the runner without a time limit, its lines read as they come; when it ends,
+    // _streamEnded (unless it was stopped: _stopStream, the client stopping)
     function _startStream() {
-        if (!running || cli !== "present" || _stream.running || curlPath === "")
+        if (!running || cli !== "present" || _streamRun !== null || curlPath === "")
+            return;
+        const argv = TailscaleRules.streamArgv(curlPath, socketPath);
+        if (argv.length === 0)
             return;
         _splitter = TailscaleRules.jsonSplitter();
-        _stream.command = [curlPath, "-sN", "--unix-socket", socketPath,
-            "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus?mask=" + TailscaleRules.watchMask];
-        _stream.environment = _environment();
         _streamStartedAt = Date.now();
         streamStarts++;
-        _stream.running = true;
+        let run = null;
+        run = runner.start(argv, {
+            timeoutMs: 0, environment: Object.assign({}, environment ?? {}), keepOutput: false,
+            onStdout: text => {
+                if (_streamRun === run)
+                    _onBusText(text);
+            },
+            done: result => {
+                if (_streamRun !== run)
+                    return;
+                _streamRun = null;
+                _streamEnded();
+            }
+        });
+        _streamRun = run;
+    }
+
+    // Ends the stream; it is not started again by itself
+    function _stopStream() {
+        const run = _streamRun;
+        _streamRun = null;
+        streamUp = false;
+        run?.cancel();
+    }
+
+    // Ends the stream as if it had ended by itself: it is started again after the backoff
+    function _restartStream() {
+        _streamRun?.cancel();
     }
 
     function _streamEnded() {
@@ -837,9 +847,9 @@ QtObject {
     // ---- Actions ----
 
     // The operation in flight: a token (a late answer of an abandoned one is ignored), its
-    // plain process (ended when abandoned), who asked
+    // plain run (cancelled when abandoned), who asked
     property int _opToken: 0
-    property var _opProcess: null
+    property var _opRun: null
     property string _opOrigin: ""
     property string _opText: ""
 
@@ -1338,7 +1348,6 @@ QtObject {
     function runDiagnostics() {
         if (!running || cli !== "present" || diagnostics.running)
             return false;
-        const generation = _generation;
         const result = { running: true, ranAt: 0, clientVersion: "", netcheck: [], nearest: null, dns: [], errors: [] };
         diagnostics = Object.assign({}, result);
         const steps = [
@@ -1359,8 +1368,6 @@ QtObject {
             } }
         ];
         const next = () => {
-            if (!_alive(generation))
-                return;
             const step = steps.shift();
             if (!step) {
                 result.running = false;
@@ -1374,14 +1381,12 @@ QtObject {
             }
             const command = TailscaleRules.commandFor(step.name, {});
             const seconds = _limit(step.limit);
-            _spawn(_timedArgv(command, seconds), _watchdogMs(seconds), answer => {
-                if (!_alive(generation))
-                    return;
+            _run(_tailscaleArgv(command), seconds * 1000, answer => {
                 if (answer.ok)
-                    step.apply(answer.out);
+                    step.apply(answer.stdout);
                 else
                     result.errors.push(command.argv.slice(1, 3).join(" ") + ": " + (_timedOut(answer)
-                        ? TailscaleRules.timeoutMessage(step.name, seconds) : TailscaleRules.errorKind(answer.code, answer.err).message));
+                        ? TailscaleRules.timeoutMessage(step.name, seconds) : TailscaleRules.runError(answer).message));
                 diagnostics = Object.assign({}, result, { running: true });
                 next();
             });
@@ -1413,31 +1418,27 @@ QtObject {
             return false;
         }
         record({ running: true, ok: false, text: "pinging…" });
-        const generation = _generation;
         const seconds = _limit("ping");
-        _spawn(_timedArgv(command, seconds), _watchdogMs(seconds), answer => {
-            if (!_alive(generation))
-                return;
-            const parsed = TailscaleRules.parsePing(answer.out);
+        _run(_tailscaleArgv(command), seconds * 1000, answer => {
+            const parsed = TailscaleRules.parsePing(answer.stdout);
             const summary = TailscaleRules.pingSummary(parsed);
             if (summary.ok || parsed.timedOut || parsed.noReply || answer.ok)
                 record({ running: false, ok: summary.ok, text: summary.text });
             else
                 record({ running: false, ok: false, text: _timedOut(answer) ? "no answer within " + seconds + " s"
-                    : TailscaleRules.errorKind(answer.code, answer.err).message });
+                    : TailscaleRules.runError(answer).message });
         });
         return true;
     }
 
     // Stops waiting for the operation in flight: its token bumped (its late answer ignored),
-    // its plain process ended, its run as administrator cancelled (pkexec ends while it asks;
+    // its plain run cancelled, its run as administrator cancelled (pkexec ends while it asks;
     // a command already running as root ends at its time limit), busy cleared
     function _abandonOperation() {
         _opToken++;
         _loginTimer.stop();
-        if (_opProcess !== null)
-            _opProcess.abandon();
-        _opProcess = null;
+        _opRun?.cancel();
+        _opRun = null;
         if (_opPrivileged !== null)
             _opPrivileged.cancel();
         _opPrivileged = null;
@@ -1469,7 +1470,6 @@ QtObject {
         });
         if (!plan.ok)
             return { ok: false, error: plan.error };
-        const generation = _generation;
         let run = null;
         const forget = () => {
             _privilegedRuns = _privilegedRuns.filter(item => item !== run);
@@ -1477,22 +1477,18 @@ QtObject {
                 _opPrivileged = null;
         };
         // The suites' stand-in state (module API 1.14, module test mode only); never given
-        // outside a suite (`environment` is empty there)
+        // outside a suite (`environment` is empty there). A run the client cancelled (it
+        // stopped, the operation was given up) hands over no output and answers `cancelled`;
+        // its handlers drop that by the operation's token
         const environmentOption = plan.environment !== null ? { environment: plan.environment } : {};
         try {
             run = privileged.start(plan.argv, Object.assign(environmentOption, {
                 what: plan.what, timeoutMs: plan.timeoutMs, notifyFailures: false,
-                onStdout: text => {
-                    if (_alive(generation))
-                        handlers?.onStdout?.(text);
-                },
-                onStderr: text => {
-                    if (_alive(generation))
-                        handlers?.onStderr?.(text);
-                },
+                onStdout: text => handlers?.onStdout?.(text),
+                onStderr: text => handlers?.onStderr?.(text),
                 done: result => {
                     forget();
-                    if (_alive(generation))
+                    if (running)
                         handlers?.done?.(result);
                 }
             }));
@@ -1535,7 +1531,6 @@ QtObject {
             return false;
         }
         const seconds = _limit(command.timeLimit ?? "change");
-        const generation = _generation;
         const token = ++_opToken;
         operation = operationName;
         _opOrigin = origin;
@@ -1577,24 +1572,24 @@ QtObject {
             }
         };
         const plain = current => {
-            _opProcess = _spawn(_timedArgv(current, seconds), _watchdogMs(seconds), result => {
-                if (!_alive(generation) || token !== _opToken)
+            _opRun = _run(_tailscaleArgv(current), seconds * 1000, result => {
+                if (token !== _opToken)
                     return;
-                _opProcess = null;
+                _opRun = null;
                 if (result.ok) {
                     _finish();
                     _failureEvent("succeeded");
-                    onSuccess?.(result.out, current);
+                    onSuccess?.(result.stdout, current);
                     onEnd?.({ ok: true, dismissed: false, elevated: false, code: 0, message: "", error: "" });
                     return;
                 }
-                const extra = { code: result.code, error: result.err ?? "" };
+                const extra = { code: result.code, error: result.stderr };
                 if (_timedOut(result)) {
                     _finish();
                     fail(current.description, TailscaleRules.timeoutMessage(current.name, seconds), extra);
                     return;
                 }
-                const error = TailscaleRules.errorKind(result.code, result.err);
+                const error = TailscaleRules.runError(result);
                 if (error.kind !== "denied") {
                     _finish();
                     fail(current.description, error.message, extra);
@@ -1624,13 +1619,11 @@ QtObject {
     // Reads `debug prefs` (any user may) for an operation in flight: done(parsed prefs) — or
     // nothing when the operation was abandoned meanwhile; a failed read is parsed as not ok
     function _readPrefsNow(token, done) {
-        const generation = _generation;
-        const seconds = _limit("read");
-        _opProcess = _spawn(_timedArgv(TailscaleRules.commandFor("prefs", {}), seconds), _watchdogMs(seconds), result => {
-            if (!_alive(generation) || token !== _opToken)
+        _opRun = _run(_tailscaleArgv(TailscaleRules.commandFor("prefs", {})), _limitMs("read"), result => {
+            if (token !== _opToken)
                 return;
-            _opProcess = null;
-            done(TailscaleRules.parsePrefs(result.ok ? result.out : ""));
+            _opRun = null;
+            done(TailscaleRules.parsePrefs(result.ok ? result.stdout : ""));
         });
     }
 
@@ -1664,20 +1657,18 @@ QtObject {
             _noteFailure("Not started.");
             return false;
         }
-        const generation = _generation;
         const token = ++_opToken;
         const seconds = _limit("change");
-        const timed = TailscaleRules.timed([systemctlPath].concat(command.argv.slice(1)), timeoutPath, seconds);
         operation = "start";
-        _opProcess = _spawn(timed.ok ? timed.argv : [systemctlPath].concat(command.argv.slice(1)), _watchdogMs(seconds), result => {
-            if (!_alive(generation) || token !== _opToken)
+        _opRun = _run(TailscaleRules.commandLine(command.argv, systemctlPath), seconds * 1000, result => {
+            if (token !== _opToken)
                 return;
-            _opProcess = null;
+            _opRun = null;
             operation = "";
             _changeSerial++;
             if (!result.ok) {
                 const reason = _timedOut(result) ? TailscaleRules.timeoutMessage("startService", seconds)
-                    : ((result.err.split("\n")[0] ?? "").trim() || ("systemctl exited with status " + result.code + "."));
+                    : ((result.stderr.trim().split("\n")[0] ?? "").trim() || ("systemctl exited with status " + result.code + "."));
                 failed(command.description, reason);
                 // A refused start and a cancelled password prompt look alike ("Access denied"):
                 // the entry says it neutrally, the notification keeps systemd's words
@@ -1705,18 +1696,18 @@ QtObject {
         return true;
     }
 
-    // A process that is not a tailscale command (Taildrop's save script), run under the
-    // operation lock, plainly — never through pkexec: done(result) once, unless abandoned
+    // A command that is not a tailscale command (Taildrop's save script, the certificate's),
+    // run under the operation lock, plainly — never through pkexec — under the time limit
+    // `limitMs`: done(result) once (the runner's), unless abandoned
     function _runLocked(operationName, argv, limitMs, done) {
         if (!running || busy)
             return false;
-        const generation = _generation;
         const token = ++_opToken;
         operation = operationName;
-        _opProcess = _spawn(argv, limitMs, result => {
-            if (!_alive(generation) || token !== _opToken)
+        _opRun = _run(argv, limitMs, result => {
+            if (token !== _opToken)
                 return;
-            _opProcess = null;
+            _opRun = null;
             _finish();
             done(result);
         });
@@ -1738,12 +1729,8 @@ QtObject {
             done?.();
             return;
         }
-        const generation = _generation;
-        const seconds = _limit("read");
-        _spawn(_timedArgv(TailscaleRules.commandFor("exitNodeSuggest", {}), seconds), _watchdogMs(seconds), result => {
-            if (!_alive(generation))
-                return;
-            const parsed = TailscaleRules.parseExitNodeSuggest(result.out);
+        _run(_tailscaleArgv(TailscaleRules.commandFor("exitNodeSuggest", {})), _limitMs("read"), result => {
+            const parsed = TailscaleRules.parseExitNodeSuggest(result.stdout);
             if (parsed.name !== "")
                 suggestedName = parsed.name;
             done?.();
@@ -1774,7 +1761,7 @@ QtObject {
     // One line after a cancelled login that runs as administrator (it cannot be stopped)
     property string loginNote: ""
     readonly property bool loggingIn: operation === "login"
-    // The login's time limit, in whole seconds (timeout(1)'s, also around the root one)
+    // The login's time limit, in whole seconds (the runner's, and the shell's around the root one)
     readonly property int _loginSeconds: Math.max(1, Math.ceil(loginTimeoutMs / 1000))
 
     function _startLogin(origin, commandName) {
@@ -1793,7 +1780,7 @@ QtObject {
         _loginElevated = false;
         _loginOpened = false;
         _loginTimer.restart();
-        _opProcess = _spawn(_timedArgv(TailscaleRules.commandFor(_loginCommand, {}), _loginSeconds), _watchdogMs(_loginSeconds),
+        _opRun = _run(_tailscaleArgv(TailscaleRules.commandFor(_loginCommand, {})), _loginSeconds * 1000,
             result => _loginExited(token, result), text => _onLoginText(text, token));
         return true;
     }
@@ -1866,7 +1853,7 @@ QtObject {
     function _loginExited(token, result) {
         if (!running || token !== _opToken)
             return;
-        _opProcess = null;
+        _opRun = null;
         const description = TailscaleRules.commandFor(_loginCommand, {}).description;
         const code = result.code;
         if (code === 0 || TailscaleRules.parseLoginOutput(_loginText).success) {
@@ -1886,7 +1873,7 @@ QtObject {
             _loginFailed(description, TailscaleRules.timeoutMessage(_loginCommand, _loginSeconds));
             return;
         }
-        const error = TailscaleRules.errorKind(code, _loginText);
+        const error = result.error !== "" || result.failedToStart ? TailscaleRules.runError(result) : TailscaleRules.errorKind(code, _loginText);
         if (error.kind === "denied") {
             // As administrator, its output streamed (the login link): the shell's timeout
             // inside pkexec ends it at the login's limit. Its first line: it runs as root
@@ -1989,8 +1976,8 @@ QtObject {
         _readLan();
         _readSystemHostname();
         refresh();
-        if (_stream.running)
-            _stream.running = false;
+        if (_streamRun !== null)
+            _restartStream();
         else
             _startStream();
     }
@@ -2003,105 +1990,9 @@ QtObject {
         }
     }
 
-    // ---- Processes and timers ----
+    // ---- The runner and the timers ----
 
-    property CommandAction _misc: CommandAction {}
-
-    // One command: its output collected, its exit answered once, a watchdog
-    property Component _processComponent: Component {
-        Process {
-            id: process
-            property var done: null
-            property var onChunk: null
-            property int limitMs: 0
-            property int code: -1
-            property var _out: []
-            property string err: ""
-            property bool _answered: false
-            stdout: SplitParser {
-                splitMarker: ""
-                onRead: data => {
-                    process._out.push(data);
-                    process.onChunk?.(data);
-                }
-            }
-            stderr: SplitParser {
-                splitMarker: ""
-                onRead: data => {
-                    process.err = (process.err + data).slice(-65536);
-                    process.onChunk?.(data);
-                }
-            }
-            function _answer(result) {
-                if (_answered)
-                    return;
-                _answered = true;
-                const callback = done;
-                done = null;
-                onChunk = null;
-                callback?.(result);
-            }
-            // No longer waited for: `done` is not called; the process is asked to end (a root
-            // one cannot be: it ends at its timeout, and this object goes with it)
-            function abandon() {
-                _answered = true;
-                done = null;
-                onChunk = null;
-                _watchdog.stop();
-                if (running)
-                    running = false;
-                else
-                    Qt.callLater(_end);
-            }
-            property bool _ended: false
-            function _end() {
-                if (_ended)
-                    return;
-                _ended = true;
-                root._forget(process);
-                process.destroy();
-            }
-            onExited: (exitCode, exitStatus) => {
-                code = exitCode;
-                _watchdog.stop();
-                _answer({ ok: exitCode === 0, code: exitCode, out: _out.join(""), err: err.trim(), timedOut: false });
-                Qt.callLater(_end);
-            }
-            onRunningChanged: {
-                if (!running)
-                    Qt.callLater(() => {
-                        // onExited's queued _end() may have run first and destroyed this object:
-                        // the id then reads as null, or its properties as undefined
-                        if (!process || process._ended !== false)
-                            return;
-                        if (process._answered !== true)
-                            _answer({ ok: false, code: code, out: _out.join(""), err: err.trim(), timedOut: false });
-                        _end();
-                    });
-            }
-            property Timer _watchdog: Timer {
-                interval: Math.max(1, process.limitMs)
-                running: process.limitMs > 0
-                onTriggered: {
-                    const callback = process.done;
-                    const result = { ok: false, code: 124, out: process._out.join(""), err: process.err.trim(), timedOut: true };
-                    process.abandon();
-                    callback?.(result);
-                }
-            }
-        }
-    }
-
-    property Process _stream: Process {
-        stdout: SplitParser {
-            splitMarker: "\n"
-            onRead: line => root._onBusText(line + "\n")
-        }
-        onRunningChanged: {
-            if (!running)
-                root._streamEnded();
-        }
-    }
+    property CommandRunner _ownRunner: CommandRunner {}
 
     property Timer _readTimer: Timer {
         interval: root.readDebounceMs

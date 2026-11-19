@@ -28,11 +28,8 @@ QtObject {
     function check() {
         if (!running || files === null)
             return false;
-        const generation = client._generation;
-        client._spawn(CertRules.checkArgv(files, client.opensslPath), 15000, result => {
-            if (!client._alive(generation))
-                return;
-            current = result.out.indexOf("present") >= 0 ? { present: true, expires: CertRules.expiry(result.out) } : { present: false, expires: 0 };
+        client._run(CertRules.checkArgv(files, client.opensslPath), CertRules.checkLimitMs, result => {
+            current = result.stdout.indexOf("present") >= 0 ? { present: true, expires: CertRules.expiry(result.stdout) } : { present: false, expires: 0 };
         });
         return true;
     }
@@ -45,19 +42,18 @@ QtObject {
             return false;
         }
         const seconds = client._limit("cert");
-        const argv = CertRules.argv(dir, domain, client.timeoutPath, seconds, client.tailscalePath, client.opensslPath);
+        const argv = CertRules.argv(dir, domain, client.tailscalePath, client.opensslPath);
         if (argv.length === 0) {
             message = "Not possible here";
             return false;
         }
         message = "";
-        return client._runLocked("cert", argv, client._watchdogMs(seconds), result => {
+        return client._runLocked("cert", argv, seconds * 1000, result => {
             if (result.ok) {
-                current = { present: true, expires: CertRules.expiry(result.out) };
+                current = { present: true, expires: CertRules.expiry(result.stdout) };
                 return;
             }
-            message = result.timedOut || result.code === 124 ? TailscaleRules.timeoutMessage("cert", seconds)
-                : TailscaleRules.errorKind(result.code, result.err).message;
+            message = result.timedOut ? TailscaleRules.timeoutMessage("cert", seconds) : TailscaleRules.runError(result).message;
         });
     }
 

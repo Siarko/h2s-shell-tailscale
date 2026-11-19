@@ -48,15 +48,12 @@ QtObject {
             return false;
         }
         reading = true;
-        const generation = client._generation;
-        const seconds = client._limit("read");
-        client._spawn(client._timedArgv({ argv: ["tailscale", "lock", "status", "--json"] }, seconds), client._watchdogMs(seconds), result => {
+        // Not answered when the client stopped meanwhile (its _life below resets `reading`)
+        client._run(client._tailscaleArgv({ argv: ["tailscale", "lock", "status", "--json"] }), client._limitMs("read"), result => {
             reading = false;
-            if (!client._alive(generation))
-                return;
             reads++;
             if (result.ok) {
-                const parsed = LockRules.parse(result.out);
+                const parsed = LockRules.parse(result.stdout);
                 if (parsed.ok)
                     lock = parsed;
             }

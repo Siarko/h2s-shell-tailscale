@@ -130,7 +130,8 @@ QtObject {
     //   targetId, files [{ path, name, size, problem, sent, percent, outcome }], message }
     property var send: ({ state: "", targetName: "", targetId: "", files: [], message: "", startedAt: 0 })
     readonly property bool sending: send.state === "checking" || send.state === "sending"
-    property var _sendProcess: null
+    // The send's run (the runner's handle: the check, then `file cp`), null none
+    property var _sendRun: null
     property int _sendToken: 0
     property real _progressAt: 0
     property var _outgoing: []
@@ -197,17 +198,15 @@ QtObject {
             return false;
         }
         const paths = chosen.slice();
-        const generation = client._generation;
         const token = ++_sendToken;
         _setSend({ state: "checking", targetName: device.name, targetId: device.id, message: "", startedAt: Date.now(),
                    files: paths.map(path => ({ path: path, name: TaildropRules.displayName(TaildropRules.baseName(path)), size: 0, problem: "", sent: 0, percent: -1, outcome: "" })) });
-        // Only for a clear message (the CLI opens the files itself, as this user): bounded by
-        // the runner's watchdog
-        _sendProcess = client._spawn(TaildropRules.checkArgv(paths), 15000, result => {
-            if (!client._alive(generation) || token !== _sendToken)
+        // Only for a clear message (the CLI opens the files itself, as this user)
+        _sendRun = client._run(TaildropRules.checkArgv(paths), TaildropRules.checkLimitMs, result => {
+            if (token !== _sendToken)
                 return;
-            _sendProcess = null;
-            const checked = TaildropRules.parseCheck(result.out, paths).map(file => Object.assign(file, { sent: 0, percent: -1, outcome: file.ok ? "" : "refused" }));
+            _sendRun = null;
+            const checked = TaildropRules.parseCheck(result.stdout, paths).map(file => Object.assign(file, { sent: 0, percent: -1, outcome: file.ok ? "" : "refused" }));
             const good = checked.filter(file => file.ok);
             if (good.length === 0) {
                 _setSend({ state: "failed", files: checked, message: "Nothing to send" });
@@ -222,10 +221,10 @@ QtObject {
             _progressAt = Date.now();
             _applyProgress();
             const seconds = client._limit("send");
-            _sendProcess = client._spawn(client._timedArgv(command, seconds), client._watchdogMs(seconds), sendResult => {
-                if (!client._alive(generation) || token !== _sendToken)
+            _sendRun = client._run(client._tailscaleArgv(command), seconds * 1000, sendResult => {
+                if (token !== _sendToken)
                     return;
-                _sendProcess = null;
+                _sendRun = null;
                 _sendEnded(sendResult, seconds);
             });
             _idleCheck.start();
@@ -267,8 +266,8 @@ QtObject {
             chosen = chosen.filter(path => !send.files.some(file => file.ok && file.path === path));
             return;
         }
-        const timedOut = result.timedOut === true || result.code === 124 || result.code === 137;
-        const error = timedOut ? { message: "Took too long, stopped" } : TaildropRules.sendError(result.code, result.err);
+        const error = result.timedOut === true ? { message: "Took too long, stopped" }
+            : result.failedToStart === true || result.error !== "" ? { message: "Not sent" } : TaildropRules.sendError(result.code, result.stderr);
         _setSend({ state: "failed", message: error.message, files: _unsent() });
     }
 
@@ -282,9 +281,8 @@ QtObject {
             return false;
         _sendToken++;
         _idleCheck.stop();
-        if (_sendProcess !== null)
-            _sendProcess.abandon();
-        _sendProcess = null;
+        _sendRun?.cancel();
+        _sendRun = null;
         _setSend({ state: state, message: message, files: _unsent() });
         return true;
     }
@@ -377,14 +375,10 @@ QtObject {
             return;
         }
         _listing = true;
-        const generation = client._generation;
-        const seconds = client._limit("read");
-        const timed = TailscaleRules.timed(TaildropRules.listArgv(client.curlPath, client.socketPath), client.timeoutPath, seconds);
-        client._spawn(timed.argv, client._watchdogMs(seconds), result => {
+        // Not answered when the client stopped meanwhile (onRunningChanged resets `_listing`)
+        client._run(TaildropRules.listArgv(client.curlPath, client.socketPath), client._limitMs("read"), result => {
             _listing = false;
-            if (!client._alive(generation))
-                return;
-            const parsed = result.ok ? TaildropRules.parseWaiting(result.out) : { ok: false, files: [] };
+            const parsed = result.ok ? TaildropRules.parseWaiting(result.stdout) : { ok: false, files: [] };
             waitingKnown = parsed.ok;
             waiting = parsed.files;
             if (_listAgain) {
@@ -468,7 +462,7 @@ QtObject {
             autoRuns++;
         const limitMs = (files.length * 2 + 1) * (seconds + 10) * 1000;
         const started = client._runLocked("taildrop-save", prepared.argv, limitMs, result => {
-            const parsed = TaildropRules.parseSave(result.out, target);
+            const parsed = TaildropRules.parseSave(result.stdout, target);
             const left = [];
             for (const item of parsed.results) {
                 const file = Object.prototype.hasOwnProperty.call(sentAs, item.rawName) ? sentAs[item.rawName] : null;
@@ -506,7 +500,7 @@ QtObject {
         if (url === "" || !running)
             return false;
         const path = folder;
-        client._spawn(["test", "-d", path], 5000, result => {
+        client._run(["test", "-d", path], TaildropRules.checkLimitMs, result => {
             if (result.ok && path === folder)
                 client.openFolder(url);
             else if (!result.ok)

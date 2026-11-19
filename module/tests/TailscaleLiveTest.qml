@@ -52,6 +52,45 @@ TestCase {
     property Component _moduleComponent: Component {
         ScenarioHandle {}
     }
+    property Component _runnerComponent: Component {
+        CommandRunner {}
+    }
+
+    // A scenario's runner that records what the client starts (s.runs: { argv, timeoutMs,
+    // killAfterMs, keepOutput, streamed (it reads the lines as they come), environment,
+    // cancelled, answered (times done came), result }) and hands every run to a real runner
+    function _recorder(s) {
+        const real = _runnerComponent.createObject(suite);
+        s.runs = [];
+        return {
+            start: (argv, options) => {
+                const record = { argv: Array.from(argv ?? []), timeoutMs: options?.timeoutMs, killAfterMs: options?.killAfterMs,
+                                 keepOutput: options?.keepOutput !== false, streamed: typeof options?.onStdout === "function",
+                                 environment: options?.environment ?? null, cancelled: false, answered: 0, result: null };
+                s.runs.push(record);
+                const handle = real.start(argv, Object.assign({}, options, { done: result => {
+                    record.answered++;
+                    record.result = result;
+                    options?.done?.(result);
+                } }));
+                return {
+                    get running() {
+                        return handle.running;
+                    },
+                    cancel: () => {
+                        record.cancelled = true;
+                        handle.cancel();
+                    }
+                };
+            },
+            cancelAll: () => {
+                for (const record of s.runs)
+                    if (record.answered === 0)
+                        record.cancelled = true;
+                real.cancelAll();
+            }
+        };
+    }
 
     // ---- The scenario machinery ----
 
@@ -94,12 +133,13 @@ TestCase {
                                                           without: s.options.without, untrusted: s.options.untrusted });
                 // IP forwarding as the system's facts read it: "<ipv4> <ipv6>"
                 const forwarding = (s.options.forwarding ?? "1 1").split(" ").map(value => value === "1");
-                s.client = _clientComponent.createObject(suite, {
+                const recorded = s.options.recordRuns === true ? { runner: _recorder(s) } : {};
+                s.client = _clientComponent.createObject(suite, Object.assign(recorded, {
                     module: s.module, system: Object.assign({}, Api.system, { readIpForwarding: () => ({ ipv4: forwarding[0], ipv6: forwarding[1] }) }),
                     environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: s.options.pollMs ?? 2000,
                     loginTimeoutMs: s.options.loginTimeoutMs ?? 60000, fixedNow: s.options.fixedNow ?? 0,
                     timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, recheckMinMs: s.options.recheckMinMs ?? 5000
-                });
+                }));
                 s.client.failed.connect((what, reason) => s.failures.push({ what: what, reason: reason }));
                 s.client.running = true;
                 s.ready = true;
@@ -858,16 +898,16 @@ TestCase {
             assertEqual(elevatedCalls(noPrivileges).length, 0, "… nothing asked of the shell");
         });
         thenLogs(noPrivileges, "nothing as root", () => assertEqual(noPrivileges.pkexecLines.length, 0, "nothing through pkexec"));
-        // No timeout(1) of the module's own: its plain commands run without one (said), a run
-        // as administrator still has the shell's
+        // No timeout(1) among the module's programs: nothing changes for its commands — their
+        // limits are the shell's runner's — and a run as administrator still has the shell's
         const noTimeout = scenario("connect-without-timeout", { state: "stopped", without: "timeout" });
         then(noTimeout, "read", () => noTimeout.client.status !== null, () => {
-            assert(noTimeout.client.warnings.some(warning => warning.kind === "no-timeout"), "the card says commands run without a time limit");
+            same(noTimeout.client.warnings.map(warning => warning.kind).filter(kind => kind.indexOf("timeout") >= 0), [], "no warning: the runner keeps the limits");
             assert(noTimeout.client.connect("user"), "Connect: the plain `up` runs");
         });
         then(noTimeout, "connected", () => _entry(noTimeout).state === "activated" && !noTimeout.client.busy, () => {});
         thenLogs(noTimeout, "as root with the shell's limit", () => {
-            assertEqual(count(noTimeout.logLines, /^up$/), 2, "bare `up` plainly (no timeout around it), then as root");
+            assertEqual(count(noTimeout.logLines, /^up$/), 2, "bare `up` plainly, then as root");
             same(whats(noTimeout), ["Connect"], "… the run as administrator asked of the shell all the same");
         });
         // The service cannot be started (systemd refuses): said on the entry, "Start" again
@@ -910,6 +950,44 @@ TestCase {
             assertEqual(beforeRead.failures.length, 0, "… no failure");
         });
         thenLogs(beforeRead, "one connect", () => assertEqual(count(beforeRead.pkexecLines, elevatedLine(60, "up")), 1, "the click ran `up` once (through pkexec)"));
+
+        // ---- the shell's command runner: what is started, with which limit; cancelled when stopped ----
+        const runs = scenario("runner", { state: "running", recordRuns: true, env: { TS_FAKE_OPERATOR: "1" } });
+        then(runs, "read and streaming", () => runs.client.streamUp && runs.client.status !== null && !runs.client._reading, () => {
+            const status = runs.runs.find(run => run.argv[1] === "status");
+            same(status ? [status.argv, status.timeoutMs, status.killAfterMs] : null, [[standIns + "/tailscale", "status", "--json"], 15000, 5000],
+                 "status --json: tailscale by its path, the read's 15 s, KILL 5 s after TERM");
+            const prefs = runs.runs.find(run => run.argv[1] === "debug" && run.argv[2] === "prefs");
+            same(prefs ? [prefs.argv.length, prefs.timeoutMs] : null, [3, 15000], "debug prefs: the read's limit");
+            const streams = runs.runs.filter(run => run.argv[0] === standIns + "/curl" && /watch-ipn-bus/.test(run.argv[4] ?? ""));
+            same(streams.map(run => [run.timeoutMs, run.streamed, run.keepOutput]), [[0, true, false]], "the stream: one run, no limit, its lines as they come, nothing kept");
+            assert(runs.client.events >= 1, "… its lines read (" + runs.client.events + " messages)");
+            assert(runs.runs.every(run => run.environment?.TS_FAKE_STATE_DIR === runs.env.TS_FAKE_STATE_DIR), "every run with the client's environment");
+            same(runs.runs.filter(run => /\/(tailscale|curl)$/.test(run.argv[0]) && !run.argv[0].startsWith(standIns + "/")).length, 0,
+                 "tailscale and curl: the stand-ins, by absolute path");
+            assert(runs.client.setShieldsUp(true), "a change: starts");
+        });
+        then(runs, "changed", () => runs.client.prefs?.shieldsUp === true && !runs.client.busy, () => {
+            const change = runs.runs.find(run => run.argv[1] === "set");
+            same(change ? [change.argv.slice(1), change.timeoutMs, change.result?.ok, change.result?.timedOut, change.result?.cancelled] : null,
+                 [["set", "--shields-up=true"], 60000, true, false, false], "the change: a set, the change's 60 s; its result the runner's");
+            runs.startsAtStop = runs.client.streamStarts;
+            runs.readsAtStop = runs.client.reads;
+            runs.client.running = false;
+            assert(runs.runs.some(run => run.cancelled && run.argv[0] === standIns + "/curl"), "stopped: the stream is cancelled");
+        });
+        then(runs, "every run answered", () => runs.runs.every(run => run.answered === 1), () => {
+            assert(runs.runs.filter(run => run.result?.cancelled).length >= 1, "… the stream's answer: cancelled");
+            assertEqual(runs.client.streamStarts, runs.startsAtStop, "… and nothing came of it: no stream started again");
+            assertEqual(runs.client.reads, runs.readsAtStop, "… no read");
+            assert(!runs.client._streamRestart.running && !runs.client.streamUp, "… no restart waiting");
+        });
+        // A run past its limit: the runner ends it, its answer says so (timedOut)
+        const overLimit = scenario("runner-limit", { state: "running", recordRuns: true, timeLimits: { read: 1 }, env: { TS_FAKE_STATUS_HANG: "8" } });
+        then(overLimit, "the read timed out", () => overLimit.client.stale, () => {
+            const status = overLimit.runs.find(run => run.argv[1] === "status" && run.answered === 1);
+            same(status ? [status.timeoutMs, status.result.timedOut, status.result.ok] : null, [1000, true, false], "status --json: 1 s, ended by the runner, timedOut");
+        });
 
         // ---- switched off: the stream process gone, nothing acts ----
         const off = scenario("off", { state: "running" });

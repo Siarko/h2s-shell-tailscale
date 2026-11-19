@@ -63,22 +63,16 @@ QtObject {
     }
 
     // One read of the config, whatever else is reading → done(parsed | null); nothing when the
-    // client stopped meanwhile
+    // client stopped meanwhile (its _life below resets the rest)
     function _readConfig(done) {
-        const generation = client._generation;
-        client._spawn(client._timedArgv(TailscaleRules.commandFor("serveStatus", {}), _seconds()), client._watchdogMs(_seconds()), result => {
-            if (!client._alive(generation)) {
-                reading = false;
-                checking = false;
-                return;
-            }
+        client._run(client._tailscaleArgv(TailscaleRules.commandFor("serveStatus", {})), _seconds() * 1000, result => {
             reads++;
             if (!result.ok) {
-                readError = TailscaleRules.plainText(TailscaleRules.errorKind(result.code, result.err).message, 300);
+                readError = TailscaleRules.plainText(TailscaleRules.runError(result).message, 300);
                 done(null);
                 return;
             }
-            const parsed = ServeRules.parseConfig(result.out);
+            const parsed = ServeRules.parseConfig(result.stdout);
             readError = parsed.ok ? "" : "Tailscale's answer could not be read";
             if (parsed.ok)
                 config = parsed;
@@ -88,20 +82,19 @@ QtObject {
 
     // For the change in flight (`token`): prefs, then the config, read now → done(prefs, config)
     function _readFresh(token, done) {
-        const generation = client._generation;
         client._readPrefsNow(token, fresh => {
-            client._opProcess = client._spawn(client._timedArgv(TailscaleRules.commandFor("serveStatus", {}), _seconds()), client._watchdogMs(_seconds()), result => {
-                if (!client._alive(generation) || token !== client._opToken)
+            client._opRun = client._run(client._tailscaleArgv(TailscaleRules.commandFor("serveStatus", {})), _seconds() * 1000, result => {
+                if (token !== client._opToken)
                     return;
-                client._opProcess = null;
+                client._opRun = null;
                 // A failed read is not an empty config: planning on "nothing shared" would miss
                 // what is on a port (Funnel is per port) — not ok, so nothing is planned on it
                 if (!result.ok) {
-                    readError = TailscaleRules.plainText(TailscaleRules.errorKind(result.code, result.err).message, 300);
+                    readError = TailscaleRules.plainText(TailscaleRules.runError(result).message, 300);
                     done(fresh, { ok: false, error: readError, entries: [] });
                     return;
                 }
-                const parsed = ServeRules.parseConfig(result.out);
+                const parsed = ServeRules.parseConfig(result.stdout);
                 if (parsed.ok)
                     config = parsed;
                 done(fresh, parsed);
