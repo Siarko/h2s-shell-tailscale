@@ -208,4 +208,33 @@ Singleton {
             return "";
         return row.choice === "none" ? "No exit node" : row.choice === "auto" ? "Automatic" : (row.label !== "" ? row.label : row.choice);
     }
+
+    // One network's row of the table, or null when it is not marked
+    function rowFor(table, networkId) {
+        return rows(table).find(row => row.id === networkId) ?? null;
+    }
+
+    // The choices on a network's card: [{ value, label, name }] — "Not set" (value "": the mark
+    // removed), no exit node, automatic, this tailnet's own exit nodes (`own`: TailscaleRules
+    // .exitNodes' own), and the network's choice when it is none of them (a node gone or not
+    // read yet, by the name kept with it). `name` is what setChoice keeps as the node's label
+    function cardOptions(own, row) {
+        const options = [{ value: "", label: "Not set", name: "" }, { value: "none", label: "No exit node", name: "" },
+                         { value: "auto", label: "Automatic", name: "" }];
+        for (const option of own && typeof own.length === "number" ? Array.from(own) : []) {
+            if (option && validChoice(option.id) && option.id !== "none" && option.id !== "auto" && !options.some(known => known.value === option.id))
+                options.push({ value: option.id, label: String(option.name || option.id), name: String(option.name ?? "") });
+        }
+        if (row && !options.some(option => option.value === row.choice))
+            options.push({ value: row.choice, label: choiceLabel(row), name: row.label });
+        return options;
+    }
+
+    // What the mark on a network's name line says (its tooltip and accessible name): "" for a
+    // network not marked
+    function markLabel(row) {
+        if (!row)
+            return "";
+        return row.choice === "none" ? "No exit node" : row.choice === "auto" ? "Exit node: automatic" : "Exit node: " + choiceLabel(row).slice(0, 40);
+    }
 }

@@ -16,7 +16,7 @@ The rules hold every decision, so the suites test them with plain objects.
 
 ```
 module/
-  module.json                  manifest: main, widget, two VPN anchors, page, setting, facts, programs, tests
+  module.json                  manifest: main, widget, two VPN anchors, four network card anchors, page, setting, facts, programs, tests
   qmldir                       types and singletons
   Main.qml                     created by the shell's module host: client, VPN provider, IPC, facts
   TailscaleRules.qml           state, entry, devices, exit nodes, event bus, errors, commands
@@ -34,7 +34,9 @@ module/
   Serve{Rules,Client,Section}.qml        serve and Funnel
   Cert{Rules,Client,Section}.qml         certificates
   Lock{Rules,Client,Section}.qml         tailnet lock status
-  NetworkExit{Rules,Client,Table}.qml    exit node by network
+  NetworkExit{Rules,Client}.qml          exit node by network
+  NetworkExitCard.qml          at the saved networks' card.settings: the network's exit node
+  NetworkExitMark.qml          at their card.title: the mark while one is set
   TailscaleWidget.qml          bar widget "tailscale"
   TailscalePopup.qml           its popup
   TailscaleWidgetSettings.qml  its preset pane

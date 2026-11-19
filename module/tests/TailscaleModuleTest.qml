@@ -161,7 +161,7 @@ TestCase {
         assert(module !== null && module.active, "the module is loaded and active");
         assertEqual(module.status?.state, "loaded", "… state loaded");
         assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, qs.components, Quickshell)");
-        assertEqual(module.manifest.api, "1.23", "written for module API 1.23 (the helpers, the system's and the networks' facts, its data directory, the VPN places as anchors)");
+        assertEqual(module.manifest.api, "1.28", "written for module API 1.28 (the helpers, the system's and the networks' facts, its data directory, the VPN places and the network cards' places as anchors)");
         assert(Api.testMode, "the module test runner: module test mode");
         const deprecations = JSON.stringify(module.status?.deprecations ?? []);
         assert(!/pkexec|PrivilegedAction|elevate|stand-in/i.test(deprecations),
@@ -182,12 +182,17 @@ TestCase {
         assert(module.privileged.available, "… and the shell can run as administrator through the stand-in pkexec (" + module.privileged.unavailableReason + ")");
         same(module.manifest.slots ?? [], [], "no `slots` in its manifest");
         same((module.manifest.anchors ?? []).map(entry => [entry.at, entry.place, entry.component]),
-             [["popup.network.connections.vpn.row", "after", "TailscaleRow.qml"], ["settings.network_vpn.vpns.card.settings", "prepend", "TailscaleCard.qml"]],
-             "its row and card as anchors: under its row in the network popup, first in its opened card");
+             [["popup.network.connections.vpn.row", "after", "TailscaleRow.qml"], ["settings.network_vpn.vpns.card.settings", "prepend", "TailscaleCard.qml"],
+              ["settings.network_wifi.saved.card.settings", "append", "NetworkExitCard.qml"],
+              ["settings.network_ethernet.profiles.card.settings", "append", "NetworkExitCard.qml"],
+              ["settings.network_wifi.saved.card.title", "append", "NetworkExitMark.qml"],
+              ["settings.network_ethernet.profiles.card.title", "append", "NetworkExitMark.qml"]],
+             "its row and card as anchors: under its row in the network popup, first in its opened card; the exit node per network in the saved networks' opened cards, its mark on their name lines");
         for (const entry of module.manifest.anchors ?? []) {
             const offered = (Api.anchors ?? []).find(anchor => anchor.path === entry.at);
-            assert(offered && offered.scope === "own-provider" && (offered.placements ?? []).includes(entry.place),
-                   entry.at + ": offered by the shell, own-provider, taking \"" + entry.place + "\"");
+            const ownProvider = entry.at.startsWith("popup.network.connections.vpn.") || entry.at.startsWith("settings.network_vpn.");
+            assert(offered && (offered.scope === "own-provider") === ownProvider && (offered.placements ?? []).includes(entry.place),
+                   entry.at + ": offered by the shell" + (ownProvider ? ", own-provider" : "") + ", taking \"" + entry.place + "\"");
         }
         assertEqual((module.manifest.settingsPages ?? []).map(page => page.id + ":" + page.parent).join(","), "tailscale:network",
                     "its page: the settings page \"tailscale\" under Network");
@@ -235,7 +240,7 @@ TestCase {
             // Its row and card as the shell builds them at their anchors, with the place's
             // context: the main's client, the other VPNs as Api.vpnsUp's rows (otherVpns)
             const work = { name: "Work", type: "wireguard", provider: "", fullTunnel: true, setsDns: true, routes: ["0.0.0.0/0"] };
-            for (const entry of module.manifest.anchors ?? []) {
+            for (const entry of (module.manifest.anchors ?? []).filter(item => !item.component.startsWith("NetworkExit"))) {
                 const component = Qt.createComponent("file://" + module.directory + "/" + entry.component, Component.PreferSynchronous);
                 const context = { anchor: entry.at, placement: entry.place, vpnId: "tailscale:main", entryId: "main", vpn: { name: "Tailscale" },
                                   provider: module.main.provider, otherVpnsUp: ["Work"], otherVpns: [work] };
@@ -248,6 +253,29 @@ TestCase {
                 assert(bare !== null, entry.at + ": builds without a context too");
                 bare?.destroy();
             }
+            // The exit node per network on a saved network's card, as the shell builds it with
+            // the card's context: set in the opened card, marked on the name line, cleared
+            const networkContext = at => ({ anchor: at, placement: "append", networkId: "cafe-uuid", name: "Café", kind: "wifi", active: false });
+            const cardComponent = Qt.createComponent("file://" + module.directory + "/NetworkExitCard.qml", Component.PreferSynchronous);
+            const markComponent = Qt.createComponent("file://" + module.directory + "/NetworkExitMark.qml", Component.PreferSynchronous);
+            // A parent: an item without one stays hidden once it was hidden
+            const holder = Qt.createQmlObject("import QtQuick\nItem {}", suite, "holder");
+            const exitCard = cardComponent.createObject(holder, { module: module, context: networkContext("settings.network_wifi.saved.card.settings") });
+            const exitMark = markComponent.createObject(holder, { module: module, context: networkContext("settings.network_wifi.saved.card.title") });
+            assert(exitCard !== null && exitCard.exit === module.main.client.networkExit && exitMark?.exit === module.main.client.networkExit,
+                   "the network card's element and mark: the main's client (" + cardComponent.errorString() + markComponent.errorString() + ")");
+            const choice = _findNamed(exitCard, "tailscaleNetworkExitChoice");
+            assertEqual(exitMark?.visible, false, "… nothing set for the network: no mark");
+            choice?.picked("none");
+            same([exitMark?.visible, exitMark?.label, module.main.client.networkExit.rows.map(row => row.id)], [true, "No exit node", ["cafe-uuid"]],
+                 "… set in the card: kept, and marked on the name line");
+            choice?.picked("");
+            same([exitMark?.visible, module.main.client.networkExit.rows.length], [false, 0], "… cleared: the mark gone");
+            // Each before its parent: the shell's dropdown, torn down with its parent, reads
+            // a parent already gone
+            exitCard?.destroy();
+            exitMark?.destroy();
+            Qt.callLater(() => holder.destroy());
             assert(!("client" in module.main.provider), "the provider carries no client of its own");
         });
         // The shell's queue, its test polkit agent and the module's on/off state are shared with

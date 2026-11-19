@@ -493,10 +493,6 @@ ColumnLayout {
             || TailscaleRules.overlappingVpns(Api.vpnsUp, root.module?.moduleId ?? "tailscale", root.client?.entry.routes ?? null).length > 0)
         text: "Another VPN is also on"
     }
-    NetworkExitTable {
-        Layout.fillWidth: true
-        client: root.client
-    }
 
     // ── Network ──
     SectionTitle {

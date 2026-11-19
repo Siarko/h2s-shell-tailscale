@@ -9,6 +9,7 @@ Who may do what is in [privileges.md](privileges.md).
 |---|---|
 | Network popup, VPN section | the Tailscale entry, its exit node chooser, the login link |
 | VPN card (Settings → System → Network → VPN) | tailnet, account, this device, exit node, key expiry, warnings |
+| Saved Wi-Fi and Ethernet cards (Settings → System → Network) | the exit node for that network; a mark on the name line when one is set |
 | Settings → System → Network → Tailscale | the module's page with everything below |
 | Bar widget "Tailscale" | icon, optional text, badge, popup |
 
@@ -86,7 +87,10 @@ On the status line and in notifications, IP addresses show as `[address]`.
 
 ### By network
 
-Mark saved Wi-Fi and Ethernet networks with "none", "automatic" or one of the tailnet's exit nodes.
+Each saved Wi-Fi and Ethernet network's card has "Tailscale exit node" when opened: "Not set",
+"No exit node", "Automatic" or one of the tailnet's exit nodes.
+While one is set, the card's name line shows the exit-node mark, open or closed.
+Its tooltip names the choice, for example "Tailscale: Exit node: home-server".
 
 - When the set of marked networks that are up changes, the module sets the exit node once.
 - A choice made by hand afterwards stays until the networks change.
@@ -96,7 +100,7 @@ Mark saved Wi-Fi and Ethernet networks with "none", "automatic" or one of the ta
 
 A choice that cannot be applied stays open. It is applied once the reason goes:
 
-| Reason | Shown on the page |
+| Reason | Shown on the network's card |
 |---|---|
 | the chosen node is offline or gone | The chosen exit node is not available |
 | your user is not the operator | Needs the operator |

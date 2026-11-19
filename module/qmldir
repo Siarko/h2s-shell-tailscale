@@ -20,5 +20,6 @@ LockClient 1.0 LockClient.qml
 LockSection 1.0 LockSection.qml
 singleton NetworkExitRules 1.0 NetworkExitRules.qml
 NetworkExitClient 1.0 NetworkExitClient.qml
-NetworkExitTable 1.0 NetworkExitTable.qml
+NetworkExitCard 1.0 NetworkExitCard.qml
+NetworkExitMark 1.0 NetworkExitMark.qml
 singleton TailscaleWidgetRules 1.0 TailscaleWidgetRules.qml

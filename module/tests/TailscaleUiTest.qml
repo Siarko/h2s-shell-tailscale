@@ -134,6 +134,8 @@ TestCase {
         const page = _page.createObject(null, { module: { main: { client: pageClient }, value: key => undefined, setValue: (key, value) => {} }, _diagnosticsOpen: true });
         const pageTexts = checkPlain(page, "page");
         assert(pageTexts.length >= 12, "page: the crafted names in every new section (" + pageTexts.length + " texts)");
+        // The exit node per network is on the network cards now (NetworkExitCard): no table here
+        assertEqual(textsWith(page, "By network").length + textsWith(page, "Add a network").length, 0, "page: no per-network exit node table");
         page.destroy();
     }
 }
