@@ -21,8 +21,8 @@ module/
   Main.qml                     created by the shell's module host: client, VPN provider, IPC, facts
   TailscaleRules.qml           state, entry, devices, exit nodes, event bus, errors, commands
   TailscaleClient.qml          event stream, reads, actions, programs, runs as administrator
-  TailscaleRow.qml             slot network.vpn.row: exit node chooser, login link
-  TailscaleCard.qml            slot network.vpn.card: tailnet, account, device, warnings
+  TailscaleRow.qml             at popup.network.connections.vpn.row: exit node chooser, login link
+  TailscaleCard.qml            at settings.network_vpn.vpns.card.settings: tailnet, account, device, warnings
   TailscalePage.qml            settings page "tailscale"
   ExitNodeChooser.qml          exit node list (row, page, popup)
   DeviceRow.qml                one device on the page

@@ -9,9 +9,9 @@
         { "type": "tailscale", "name": "Tailscale", "widget": "TailscaleWidget.qml", "popup": "tailscale", "popupPanel": "TailscalePopup.qml",
           "settings": "TailscaleWidgetSettings.qml", "presetDefaults": { "text": "none", "badge": true, "devices": 5 } }
     ],
-    "slots": [
-        { "slot": "network.vpn.row", "component": "TailscaleRow.qml" },
-        { "slot": "network.vpn.card", "component": "TailscaleCard.qml" }
+    "anchors": [
+        { "at": "popup.network.connections.vpn.row", "place": "after", "component": "TailscaleRow.qml" },
+        { "at": "settings.network_vpn.vpns.card.settings", "place": "prepend", "component": "TailscaleCard.qml" }
     ],
     "settingsPages": [
         { "id": "tailscale", "label": "Tailscale", "component": "TailscalePage.qml", "tab": "system", "parent": "network" }

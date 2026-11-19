@@ -4,17 +4,19 @@ import Quickshell
 import qs.api
 import qs.components
 
-// Slot network.vpn.card: on Tailscale's card in Settings → System → Network → VPN — the
-// tailnet and account, this computer's name and addresses, the key's expiry, the exit node,
-// the warnings (health, an accepted route that covers the local network, two VPNs up), and
-// that the shell's blocking does not support Tailscale. The state, its attention with the
+// At settings.network_vpn.vpns.card.settings ("prepend", own-provider; module API 1.23): in
+// Tailscale's opened card in Settings → System → Network → VPN — the tailnet and account, this
+// computer's name and addresses, the key's expiry, the exit node, the warnings (health, an
+// accepted route that covers the local network, two VPNs up), and that the shell's blocking
+// does not support Tailscale. The state, its attention with the
 // action and "Settings…" (the module's page) are the core card's own.
 ColumnLayout {
     id: root
     objectName: "tailscaleCardExtras"
 
     property var module: null
-    // { slot, vpnId, entryId, vpn, provider, otherVpnsUp, open }
+    // { anchor, placement, vpnId, entryId, vpn, provider, otherVpnsUp, otherVpns: the other VPNs
+    // up as Api.vpnsUp's rows } (the place's)
     property var context: null
     // The live client: the module's main's (module API 1.15), null while the module is off
     readonly property var client: module?.main?.client ?? null

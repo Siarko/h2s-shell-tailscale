@@ -67,6 +67,7 @@ Needs h2s-shell with module API 1.23.
 - The exit node per network waits until the shell has read the networks whole, not merely until it lists one.
 - Tailscale's entry tells the shell what it does with the traffic: a full tunnel through an exit node, its DNS, the networks it carries.
 - Log lines through the shell's module log: a changed reason reads "failed: <reason>" again rather than "still failing, now: <reason>".
+- Its row in the network popup and its part of the VPN card are the manifest's `anchors` (the places under its row and in its opened card) instead of `slots`; the shell no longer lists them as deprecated.
 - Sizes, times ("5 min ago") and addresses use the shell's helpers; the state follows the shell's minute clock, and an exit node's offline grace ends on time.
 
 ### Removed

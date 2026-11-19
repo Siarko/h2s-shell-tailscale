@@ -3,14 +3,15 @@ import QtQuick.Layouts
 import qs.api
 import qs.components
 
-// Slot network.vpn.row: under Tailscale's row in the network popup — the exit-node chooser
-// while connected, and the login link to copy while a login waits for the browser
+// At popup.network.connections.vpn.row ("after", own-provider; module API 1.23): under
+// Tailscale's row in the network popup — the exit-node chooser while connected, and the login
+// link to copy while a login waits for the browser
 ColumnLayout {
     id: root
     objectName: "tailscaleRowExtras"
 
     property var module: null
-    // { slot, vpnId, entryId, vpn, provider, otherVpnsUp } (VpnManager.contextFor)
+    // { anchor, placement, vpnId, entryId, vpn, provider, otherVpnsUp, otherVpns } (the place's)
     property var context: null
     // The live client: the module's main's (module API 1.15), null while the module is off
     readonly property var client: module?.main?.client ?? null

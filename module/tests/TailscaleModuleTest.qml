@@ -9,7 +9,7 @@ import "liveSuites.js" as LiveSuites
 // made the live client and the VPN provider; its programs are the stand-ins of its manifest's
 // testPrograms (never a real tailscale), handed over by the shell; a run as administrator goes
 // through the shell's own queue and its stand-in pkexec, saying who and what for; the facts are
-// declared and pushed; the slot contributions are the manifest's. Then the lifetime rule: the
+// declared and pushed; its row and card are the manifest's anchors (no slots). Then the lifetime rule: the
 // module turned off (ModuleTestKit), its client stops (stream and timers) and its provider
 // leaves; on again, a new main.
 TestCase {
@@ -134,6 +134,11 @@ TestCase {
         const deprecations = JSON.stringify(module.status?.deprecations ?? []);
         assert(!/pkexec|PrivilegedAction|elevate|stand-in/i.test(deprecations),
                "… not in the transitional test-mode gate any more (no stand-in pkexec outside testPrograms): " + deprecations);
+        // Its row and card through anchors (module API 1.23): no slot among its deprecations;
+        // what is left is the shell's internal elements (until the module moves off them)
+        assert(!/slots|network\.vpn\.(row|card)/.test(deprecations), "… no slot deprecation: its row and card are anchors: " + deprecations);
+        same((module.status?.deprecations ?? []).map(text => text.split(" (")[0]), ["import qs.components"], "… its deprecations: only qs.components");
+        same(module.status?.errors ?? [], [], "… no error (its anchors are offered and take its placements)");
         // Its programs: the stand-ins of its testPrograms, handed over by the shell, trusted
         const standIns = module.directory + "/tests/stand-in";
         assertEqual(module.manifest.testPrograms, "tests/stand-in", "its stand-ins: tests/stand-in (testPrograms)");
@@ -143,11 +148,17 @@ TestCase {
             .filter(name => programs[name]?.path !== standIns + "/" + name || programs[name]?.trusted !== true || programs[name]?.reason !== "test stand-in");
         assertEqual(fromStandIns.join(","), "", "every program it names is its stand-in (trusted, \"test stand-in\"), never one on PATH");
         assert(module.privileged.available, "… and the shell can run as administrator through the stand-in pkexec (" + module.privileged.unavailableReason + ")");
-        const slots = (module.manifest.slots ?? []).map(entry => entry.slot).sort().join(",");
-        assertEqual(slots, "network.vpn.card,network.vpn.row", "the row's and the card's VPN slots in its manifest — no network.vpn.page: its page is a settings page");
+        same(module.manifest.slots ?? [], [], "no `slots` in its manifest");
+        same((module.manifest.anchors ?? []).map(entry => [entry.at, entry.place, entry.component]),
+             [["popup.network.connections.vpn.row", "after", "TailscaleRow.qml"], ["settings.network_vpn.vpns.card.settings", "prepend", "TailscaleCard.qml"]],
+             "its row and card as anchors: under its row in the network popup, first in its opened card");
+        for (const entry of module.manifest.anchors ?? []) {
+            const offered = (Api.anchors ?? []).find(anchor => anchor.path === entry.at);
+            assert(offered && offered.scope === "own-provider" && (offered.placements ?? []).includes(entry.place),
+                   entry.at + ": offered by the shell, own-provider, taking \"" + entry.place + "\"");
+        }
         assertEqual((module.manifest.settingsPages ?? []).map(page => page.id + ":" + page.parent).join(","), "tailscale:network",
                     "its page: the settings page \"tailscale\" under Network");
-        assert(Api.slots.some(slot => slot.name === "network.vpn.row"), "… offered by the shell");
         assertEqual(module.value("openLoginInBrowser"), true, "its setting: open the login in the browser (default on)");
 
         _then("the main's client is there", () => _client() !== null && _client().cli !== "unknown", () => {
@@ -189,11 +200,21 @@ TestCase {
             assert(panel !== null && panel.client === module.main.client, "its popup panel: the main's client (" + panelComponent.errorString() + ")");
             assertEqual(panel?.deviceCap, 5, "… the device cap of the opener's preset: the default");
             panel?.destroy();
-            for (const entry of module.manifest.slots ?? []) {
+            // Its row and card as the shell builds them at their anchors, with the place's
+            // context: the main's client, the other VPNs as Api.vpnsUp's rows (otherVpns)
+            const work = { name: "Work", type: "wireguard", provider: "", fullTunnel: true, setsDns: true, routes: ["0.0.0.0/0"] };
+            for (const entry of module.manifest.anchors ?? []) {
                 const component = Qt.createComponent("file://" + module.directory + "/" + entry.component, Component.PreferSynchronous);
-                const view = component.status === Component.Ready ? component.createObject(null, { module: module, context: null }) : null;
-                assert(view !== null && view.client === module.main.client, entry.slot + ": the main's client, no provider needed (" + component.errorString() + ")");
+                const context = { anchor: entry.at, placement: entry.place, vpnId: "tailscale:main", entryId: "main", vpn: { name: "Tailscale" },
+                                  provider: module.main.provider, otherVpnsUp: ["Work"], otherVpns: [work] };
+                const view = component.status === Component.Ready ? component.createObject(null, { module: module, context: context }) : null;
+                assert(view !== null && view.client === module.main.client, entry.at + ": the main's client, no provider needed (" + component.errorString() + ")");
+                if (entry.component === "TailscaleCard.qml")
+                    assert(String(view?._twoVpns).includes("Work"), "… the card's note on two VPNs from the context's otherVpns: " + view?._twoVpns);
                 view?.destroy();
+                const bare = component.status === Component.Ready ? component.createObject(null, { module: module, context: null }) : null;
+                assert(bare !== null, entry.at + ": builds without a context too");
+                bare?.destroy();
             }
             assert(!("client" in module.main.provider), "the provider carries no client of its own");
         });

@@ -99,6 +99,8 @@ print(json.dumps(modules[0].get("deprecations", []) if modules else ["absent"]))
 not_in_test_gate() { ! module_deprecations | grep -qiE 'pkexec|stand-in|PrivilegedAction'; }
 check "… and it is not in the transitional test-mode gate (no stand-in pkexec outside testPrograms)" not_in_test_gate
 log "deprecations: $(module_deprecations)"
+no_slot_deprecations() { ! module_deprecations | grep -qiE 'slots|network\.vpn\.(row|card)'; }
+check "… its row and card through anchors: no slot among its deprecations" no_slot_deprecations
 check_within 15 "the entry: off (the stand-in is stopped)" ts_is phase stopped
 check "… not busy, no attention" test "$(ts_field state)|$(ts_field attention)|$(ts_field busy)" = "||false"
 check "… changes ask for a password (not the operator)" ts_is canChange false
@@ -138,7 +140,7 @@ if ! popup_open; then
     send_input "click left"
     check_within 5 "the network popup open again" popup_open
 fi
-check_within 10 "the exit-node chooser shows under Tailscale's row (slot network.vpn.row)" item_shown tailscaleExitNodeHeader
+check_within 10 "the exit-node chooser shows under Tailscale's row (anchor popup.network.connections.vpn.row)" item_shown tailscaleExitNodeHeader
 header=$(item_rect tailscaleExitNodeHeader)
 log "chooser header: $header"
 screenshot popup-tailscale-on
