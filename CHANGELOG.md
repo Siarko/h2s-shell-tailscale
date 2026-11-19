@@ -53,6 +53,7 @@ Needs h2s-shell with module API 1.14.
 - Funnel is refused on ports of terminal sessions and Tailscale Services.
 - The programs it runs (`tailscale`, `timeout`, `curl`, `systemctl`, `openssl`) are the ones the shell finds and judges. Only `tailscale` must be one your user cannot replace: it is the one run as administrator.
 - Changes that need an administrator run through the shell: its password prompt says "Module: Tailscale" and what for, for example "Authorization: Connect". A change that is not allowed is told by the shell, and "Not allowed." shows on the entry.
+- A login cancelled while it waits for the password says "Login cancelled." Only one already running as administrator says it runs on until its time limit.
 - Links and the Taildrop folder open through the shell.
 - IP forwarding, the download folder and the data folder come from the shell's system facts.
 - IPC `state`: `testMode` in place of `toolsMode`; `tools` names `tailscale`, `timeout`, `curl`, `systemctl`.

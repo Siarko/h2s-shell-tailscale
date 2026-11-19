@@ -71,7 +71,7 @@ On the status line and in notifications, IP addresses show as `[address]`.
 
 - Connect runs a bare `tailscale up`. Disconnect runs `tailscale down`.
 - Log in runs a bare `tailscale login`. The login page opens in the browser. The link can also be copied.
-- A login can be cancelled. It gives up after 10 minutes.
+- A login can be cancelled. It gives up after 10 minutes. Cancelled while the password is asked, it says "Login cancelled."
 - Log out asks for confirmation first.
 - A daemon in NoState with a node key and WantRunning off counts as off. Connect runs `tailscale up`.
 

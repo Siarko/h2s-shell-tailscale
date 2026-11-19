@@ -580,6 +580,8 @@ TestCase {
         then(cancel, "the elevated login waits for the browser", () => cancel.client.authUrl !== "" && cancel.client._loginElevated, () => {
             cancel.cancelledAt = Date.now();
             cancel.client.cancelLogin();
+            assertEqual(cancel.client.loginNote, "Close the login page in the browser: the login runs on as administrator until its time limit.",
+                        "cancelled once it printed (it runs as root): it runs on, said");
         });
         then(cancel, "not busy", () => !cancel.client.busy, () => {
             assert(Date.now() - cancel.cancelledAt < 1000, "cancel: not busy within a second (" + (Date.now() - cancel.cancelledAt) + " ms) though the root login still runs");
@@ -595,6 +597,25 @@ TestCase {
             assertEqual(cancel.failures.length, 0, "the late exit (a failed login) changes nothing: no failure shown");
             assertEqual(cancel.client.operation + "|" + cancel.client.authUrl, "|", "… not busy, no URL");
             assertEqual(count(cancel.pkexecLines, elevatedLine(60, "login")), 1, "… pkexec ran once: timeout around the login, so it ends by itself");
+        });
+
+        // Cancelled while the run as administrator still asks for the password (the stand-in
+        // pkexec "ask": nothing printed, nothing run): nothing runs as root, so the login was
+        // simply cancelled — never "runs on as administrator"
+        const cancelAsking = scenario("login-cancel-asking", { state: "needs-login", env: { TS_FAKE_PKEXEC: "ask" } });
+        then(cancelAsking, "read", () => cancelAsking.client.status !== null, () => assert(cancelAsking.client.attend(), "attend: the login starts"));
+        thenShellUntil(cancelAsking, "the run as administrator asks", "grep -c '^pkexec' \"$1/pkexec.log\"", "asking", "1", () => {
+            assert(cancelAsking.client.loggingIn && cancelAsking.client._opPrivileged !== null, "the plain login refused: the run as administrator started");
+            assert(!cancelAsking.client._loginElevated, "… nothing printed yet: not taken as running as root");
+            cancelAsking.client.cancelLogin();
+            assertEqual(cancelAsking.client.loginNote, "Login cancelled.", "cancelled while it asks: \"Login cancelled.\"");
+            assert(!cancelAsking.client.busy, "… not busy");
+        });
+        thenShellUntil(cancelAsking, "the asking pkexec ended", processesScript("stand-in/pkexec|^sleep 30 $"), "askingLeft", "0",
+            left => assertEqual(left, "0", "… the cancel ended the asking pkexec (and its wait)"));
+        then(cancelAsking, "no failure", () => !cancelAsking.client.busy, () => {
+            assertEqual(cancelAsking.failures.length, 0, "… and no failure notified");
+            same(whats(cancelAsking), ["Log in"], "… one run as administrator, \"Log in\"");
         });
 
         // ---- A2: a bare `up` that waits (offline, captive portal): its URL, Disconnect ends it ----

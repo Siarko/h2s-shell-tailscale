@@ -1753,6 +1753,8 @@ QtObject {
     // ---- Logging in (also: adding an account, renewing the key) ----
 
     property string _loginText: ""
+    // The login runs as root: the run as administrator printed its first line (before that it
+    // waits in the shell's queue or for the password, and nothing runs as root yet)
     property bool _loginElevated: false
     property bool _loginOpened: false
     // Which: "login" | "addAccount" (both a bare `tailscale login`)
@@ -1807,9 +1809,11 @@ QtObject {
         if (operation !== "login")
             return;
         // A login already running as root ends only at its time limit: its browser page still
-        // works
+        // works. One still waiting for the password (or its turn) ends with the cancel
         if (_loginElevated)
             loginNote = "Close the login page in the browser: the login runs on as administrator until its time limit.";
+        else if (_opPrivileged !== null)
+            loginNote = "Login cancelled.";
         _loginGaveUp();
         _abandonOperation();
     }
@@ -1885,12 +1889,16 @@ QtObject {
         const error = TailscaleRules.errorKind(code, _loginText);
         if (error.kind === "denied") {
             // As administrator, its output streamed (the login link): the shell's timeout
-            // inside pkexec ends it at the login's limit
-            _loginElevated = true;
+            // inside pkexec ends it at the login's limit. Its first line: it runs as root
             _loginText = "";
+            const elevatedText = text => {
+                if (token === _opToken)
+                    _loginElevated = true;
+                _onLoginText(text, token);
+            };
             const started = _runPrivileged(TailscaleRules.commandFor(_loginCommand, {}), _loginSeconds, {
-                onStdout: text => _onLoginText(text, token),
-                onStderr: text => _onLoginText(text, token),
+                onStdout: elevatedText,
+                onStderr: elevatedText,
                 done: answer => _elevatedLoginEnded(token, answer)
             });
             if (!started.ok) {

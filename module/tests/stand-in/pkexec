@@ -11,7 +11,9 @@
 #                       signalled by the user — SIGTERM, SIGINT and SIGHUP are ignored (by
 #                       it and, inherited, by what it runs) — and it lasts at least
 #                       TS_FAKE_UNKILLABLE_SECONDS (default 3) before it exits with the
-#                       program's status
+#                       program's status | ask: as pkexec while its prompt is open — nothing
+#                       printed, nothing run — until TERM, INT or HUP (exit 126, as pkexec
+#                       ended while it asks) or TS_FAKE_ASK_SECONDS (default 30; then dismissed)
 #   TS_FAKE_PKEXEC_LOG  a file each call's argv is appended to (one line, arguments
 #                       separated by tabs)
 #   TS_FAKE_CALLS       a file each call's own path ($0) is appended to
@@ -34,6 +36,13 @@ case ${TS_FAKE_PKEXEC:-ok} in
         status=$?
         while [ $(($(date +%s) - started)) -lt "${TS_FAKE_UNKILLABLE_SECONDS:-3}" ]; do sleep 0.2; done
         exit "$status" ;;
+    ask)
+        sleeper=""
+        trap '[ -n "$sleeper" ] && kill "$sleeper" 2> /dev/null; exit 126' TERM INT HUP
+        sleep "${TS_FAKE_ASK_SECONDS:-30}" &
+        sleeper=$!
+        wait "$sleeper"
+        echo "Error executing command as another user: Request dismissed" >&2; exit 126 ;;
     dismiss) echo "Error executing command as another user: Request dismissed" >&2; exit 126 ;;
     no-agent) echo "Error executing command as another user: No authentication agent found." >&2; exit 127 ;;
     *) echo "stand-in pkexec: unknown TS_FAKE_PKEXEC=$TS_FAKE_PKEXEC" >&2; exit 127 ;;

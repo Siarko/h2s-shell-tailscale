@@ -33,7 +33,7 @@ fresh() {
     rm -rf "$work/state" "$work/log" "$work/pkexec.log"
     mkdir -p "$work/state"
     unset SSH_CLIENT
-    unset TS_FAKE_CALLS TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT TS_FAKE_UP_DELAY TS_FAKE_UP_URL TS_FAKE_STATUS_HANG TS_FAKE_CERT_DELAY TS_FAKE_CERT_NOT_AFTER
+    unset TS_FAKE_CALLS TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT TS_FAKE_UP_DELAY TS_FAKE_UP_URL TS_FAKE_STATUS_HANG TS_FAKE_CERT_DELAY TS_FAKE_CERT_NOT_AFTER TS_FAKE_ASK_SECONDS
     export TS_FAKE_STATE_DIR=$work/state TS_FAKE_LOG=$work/log TS_FAKE_PKEXEC_LOG=$work/pkexec.log
     export TS_FAKE_LOGIN_DELAY=0 TS_FAKE_USER=tester TS_FAKE_FIXTURES=$FIXTURES
 }
@@ -437,6 +437,18 @@ run "$work/out" "$work/err" env TS_FAKE_PKEXEC=no-agent "$PKEXEC" "$TS" down
 check "no-agent: exit 127" test "$status" = 127
 run "$work/out" "$work/err" "$PKEXEC" tailscale down
 check "a relative program name is refused (127)" test "$status" = 127 -a "$(backend)" = Running
+start=$SECONDS
+TS_FAKE_PKEXEC=ask "$PKEXEC" "$TS" down > /dev/null 2> "$work/err" &
+pk_pid=$!
+sleep 0.3
+check "ask: still asking after 0.3 s, nothing printed" kill -0 "$pk_pid"
+check "… nothing printed" test ! -s "$work/err"
+kill -TERM "$pk_pid"
+wait "$pk_pid"
+check "ask: TERM ends it with 126 at once, nothing run" test $? = 126 -a $((SECONDS - start)) -lt 5 -a "$(backend)" = Running
+check "… no sleep left behind" test -z "$(own_processes "sleep 30")"
+run "$work/out" "$work/err" env TS_FAKE_PKEXEC=ask TS_FAKE_ASK_SECONDS=1 "$PKEXEC" "$TS" down
+check "ask: unanswered, dismissed (126) after TS_FAKE_ASK_SECONDS" test "$status" = 126 -a "$(backend)" = Running
 
 echo "=== the caller's name from the state dir; each call's own path ==="
 fresh
