@@ -33,12 +33,18 @@ Singleton {
         return choice === "none" || choice === "auto" || (typeof choice === "string" && /^[A-Za-z0-9]{1,64}$/.test(choice));
     }
 
+    // A node's or a network's name as shown and kept: one line, capped (TailscaleRules.oneLine:
+    // names come from other people's devices and from NetworkManager)
+    function _name(value) {
+        return TailscaleRules.oneLine(value, 100);
+    }
+
     // The stored table, cleaned: [{ id, choice, label, name }]
     function rows(table) {
         if (!_isObject(table))
             return [];
         return Object.keys(table).filter(id => validId(id) && _isObject(table[id]) && validChoice(table[id].choice)).slice(0, maxNetworks)
-            .map(id => ({ id: id, choice: table[id].choice, label: String(table[id].label ?? "").slice(0, 100), name: String(table[id].name ?? "").slice(0, 100) }));
+            .map(id => ({ id: id, choice: table[id].choice, label: _name(table[id].label), name: _name(table[id].name) }));
     }
 
     function withRow(table, id, choice, label, name) {
@@ -50,7 +56,7 @@ Singleton {
         if (choice === null || choice === undefined)
             delete next[id];
         else if (validChoice(choice) && (id in next || Object.keys(next).length < maxNetworks))
-            next[id] = { choice: choice, label: String(label ?? "").slice(0, 100), name: String(name ?? "").slice(0, 100) };
+            next[id] = { choice: choice, label: _name(label), name: _name(name) };
         return next;
     }
 
@@ -85,8 +91,11 @@ Singleton {
 
     // What to do now: decide({ table, networks, lastKey, prefs, backendState, peersRead (status
     // .backendState, .peersRead), exitNodes (TailscaleRules.exitNodes), canChange, useProblem
-    // (TailscaleRules.exitNodeUseProblem) }) → { kind, key, choice (wanted), command name and
-    // args, text }:
+    // (TailscaleRules.exitNodeUseProblem), clearUnmarked }) → { kind, key, choice (wanted),
+    // command name and args, text }. `clearUnmarked`: a choice made "for now" just ended
+    // (NetworkExitClient.dropOverride) — with no marked network up there is no choice to go
+    // back to, so no exit node is used: decided as a choice of "none" for the key "" (already,
+    // needs-operator or run), never "same" or "none-marked":
     //   "wait"            prefs not read yet, Tailscale not Running (off, starting: at boot or
     //                     resume the network is often up first), or the chosen node not among
     //                     the exit nodes while no peer list has been read: decide later (the key
@@ -113,11 +122,12 @@ Singleton {
         // The exit node in use now (id and address), for react: a change by hand while held
         current = String(prefs.exitNodeId ?? "") + "|" + String(prefs.exitNodeIp ?? "");
         const key = activeKey(input?.table, input?.networks);
-        if (key === String(input?.lastKey ?? ""))
+        const clearing = key === "" && input?.clearUnmarked === true;
+        if (!clearing && key === String(input?.lastKey ?? ""))
             return result("same", { key: key });
-        if (key === "")
+        if (!clearing && key === "")
             return result("none-marked", { key: key });
-        const wants = wanted(input?.table, input?.networks);
+        const wants = clearing ? "none" : wanted(input?.table, input?.networks);
         const choices = wants.split(",");
         if (choices.length !== 1)
             return result("conflict", { key: key, choice: wants, text: "Two networks want different exit nodes" });
@@ -202,11 +212,11 @@ Singleton {
                  seen: stored.seen.slice(0, 200) };
     }
 
-    // The label of a choice
+    // The label of a choice, on one line
     function choiceLabel(row) {
         if (!row)
             return "";
-        return row.choice === "none" ? "No exit node" : row.choice === "auto" ? "Automatic" : (row.label !== "" ? row.label : row.choice);
+        return row.choice === "none" ? "No exit node" : row.choice === "auto" ? "Automatic" : _name(row.label !== "" ? row.label : row.choice);
     }
 
     // One network's row of the table, or null when it is not marked
@@ -223,45 +233,65 @@ Singleton {
                          { value: "auto", label: "Automatic", name: "" }];
         for (const option of own && typeof own.length === "number" ? Array.from(own) : []) {
             if (option && validChoice(option.id) && option.id !== "none" && option.id !== "auto" && !options.some(known => known.value === option.id))
-                options.push({ value: option.id, label: String(option.name || option.id), name: String(option.name ?? "") });
+                options.push({ value: option.id, label: _name(option.name || option.id), name: _name(option.name) });
         }
         if (row && !options.some(option => option.value === row.choice))
             options.push({ value: row.choice, label: choiceLabel(row), name: row.label });
         return options;
     }
 
-    // What the mark on a network's name line says (its tooltip and accessible name): "" for a
-    // network not marked
+    // What the mark on a network's name line says (its tooltip and accessible name): "" for no
+    // mark — a network not marked, or set to "No exit node" (only a network that routes through
+    // an exit node is marked)
     function markLabel(row) {
-        if (!row)
+        if (!row || row.choice === "none")
             return "";
-        return row.choice === "none" ? "No exit node" : row.choice === "auto" ? "Exit node: automatic" : "Exit node: " + choiceLabel(row).slice(0, 40);
+        return row.choice === "auto" ? "Exit node: automatic" : "Exit node: " + TailscaleRules.oneLine(choiceLabel(row), 40);
+    }
+
+    // Whether the exit node in use (prefs: TailscaleRules.parsePrefs) is what `choice` asks for:
+    // "none" none in use, a node's id that node, "auto" any (the prefs do not say which was
+    // picked automatically). Prefs not read: false (unknown is not "as wanted")
+    function _inUse(prefs, choice) {
+        if (prefs?.ok !== true)
+            return false;
+        const id = String(prefs.exitNodeId ?? "");
+        const using = id !== "" || String(prefs.exitNodeIp ?? "") !== "";
+        return choice === "none" ? !using : choice === "auto" ? using : id === choice;
     }
 
     // What decides the exit node now, for the chooser: effect({ table, networks, overridden (a
-    // choice made by hand "for now", NetworkExitClient), lastKey, decisionKind, held }) →
-    // { kind, network (its name), label (its choice's) }:
-    //   "override"  a choice made by hand, while the networks up have a choice of their own:
-    //               "Default" goes back to that one
-    //   "network"   the networks up have one choice, applied (the networks taken, nothing held,
-    //               no pick by hand outside the shell since)
-    //   ""          none of these: no choice for the networks up, two that differ, or one not
-    //               applied (its reason is on the network's card)
+    // choice made by hand "for now", NetworkExitClient), lastKey, decisionKind, held, prefs (the
+    // exit node in use) }) → { kind, from, network (its name), label (its choice's) }:
+    //   "override"  a choice made by hand "for now": "Default" ends it and brings back `from`:
+    //               "network" the choice of the networks up (`network`, `label`), "none" no exit
+    //               node (no marked network up: `label` "No exit node"), "conflict" two networks
+    //               up that want different nodes (nothing applied: `label` "")
+    //   "network"   the networks up have one choice, applied (the networks taken, nothing held)
+    //               and still in use (the prefs: not changed outside the shell since)
+    //   ""          none of these: no choice for the networks up, two that differ, one not
+    //               applied (its reason is on the network's card), or the exit node changed
+    //               since by something else (the `tailscale` command), or not read
     function effect(input) {
-        const none = { kind: "", network: "", label: "" };
+        const none = { kind: "", from: "", network: "", label: "" };
         const key = activeKey(input?.table, input?.networks);
         const wants = wanted(input?.table, input?.networks);
+        if (input?.overridden === true && key === "")
+            return { kind: "override", from: "none", network: "", label: "No exit node" };
+        if (input?.overridden === true && wants.includes(","))
+            return { kind: "override", from: "conflict", network: "", label: "" };
         if (key === "" || wants === "" || wants.includes(","))
             return none;
         const firstId = key.split(" ")[0];
         const row = rowFor(input?.table, firstId);
         const network = (Array.isArray(input?.networks) ? input.networks : []).find(item => item && item.id === firstId) ?? null;
-        const name = String(network?.name || row?.name || "").replace(/\s+/g, " ").trim().slice(0, 40);
-        const found = { network: name, label: choiceLabel(row) };
+        const found = { from: "network", network: TailscaleRules.oneLine(network?.name || row?.name || "", 40), label: choiceLabel(row) };
         if (input?.overridden === true)
             return Object.assign({ kind: "override" }, found);
         const notApplied = ["conflict", "unavailable", "refused", "needs-operator", "failed", "manual", "override"];
         if (input?.held === true || String(input?.lastKey ?? "") !== key || notApplied.includes(String(input?.decisionKind ?? "")))
+            return none;
+        if (!_inUse(input?.prefs, wants))
             return none;
         return Object.assign({ kind: "network" }, found);
     }
@@ -275,10 +305,13 @@ Singleton {
         return "";
     }
 
-    // What "Default" brings back: "Café: No exit node"
+    // What "Default" brings back: "Café: home-server", "No exit node"; "" for two networks that
+    // differ (their cards say so)
     function defaultDetail(effect) {
-        if (effect?.kind !== "override")
+        if (effect?.kind !== "override" || effect.from === "conflict")
             return "";
-        return (effect.network !== "" ? effect.network : "This network") + ": " + effect.label;
+        if (effect.from === "none")
+            return "No exit node";
+        return TailscaleRules.oneLine((effect.network !== "" ? effect.network : "This network") + ": " + effect.label, 80);
     }
 }

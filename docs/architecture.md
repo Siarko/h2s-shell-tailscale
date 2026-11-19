@@ -36,7 +36,7 @@ module/
   Lock{Rules,Client,Section}.qml         tailnet lock status
   NetworkExit{Rules,Client}.qml          exit node by network
   NetworkExitCard.qml          at the saved networks' card.settings: the network's exit node
-  NetworkExitMark.qml          at their card.title: the mark while one is set
+  NetworkExitMark.qml          at their card.title: the mark while one routes through an exit node
   TailscaleWidget.qml          bar widget "tailscale"
   TailscalePopup.qml           its popup
   TailscaleWidgetSettings.qml  its preset pane
@@ -89,7 +89,7 @@ which the shell keeps current, and scrolls past it.
 - When the stream ends, it restarts with a backoff from 1 s to 30 s.
   The client reads once only if the stream had been up: a message came, or it lived 10 s.
 - A 60 s poll runs at all times, except while the look-again backoff runs.
-- After the computer wakes (`module.resumed()`), the client reads again and restarts the stream, and a choice of exit node made for now ends (`NetworkExitClient.dropOverride`).
+- After the computer wakes (`module.resumed()`), the client reads again and restarts the stream, and a choice of exit node made for now ends (`NetworkExitClient.dropOverride(true)`); with no marked network up, the exit node is turned off once that lasted (`NetworkExitRules.decide`'s `clearUnmarked`).
 - Device traffic is read every 3 s, only while the page shows the devices.
 - A read that times out marks the state stale. It is retried with a backoff from 2 s to 60 s.
 

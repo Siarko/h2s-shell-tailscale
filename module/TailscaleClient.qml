@@ -986,22 +986,20 @@ QtObject {
         return _runChange(command, _origin(origin ?? "user"), operationName, onSuccess);
     }
 
-    // The user's choice: "for now", over the networks' choices (NetworkExitClient.chosenByHand)
-    // from the moment it starts
+    // The user's choice: "for now", over the networks' choices (NetworkExitClient.chosenByHand),
+    // once its run succeeded — a run that fails, a dismissed prompt, a refusal while another
+    // change runs leave the networks' choices as they were. Its success counts whatever
+    // happened while it ran (a wake): the user's latest word
     function setExitNode(option) {
-        let started = false;
-        if (option === null || option === undefined) {
-            started = _userChange("exitNodeNone", {}, "exit-node");
-        } else if (TailscaleRules.exitNodeUseProblem(prefs) !== "") {
-            // The daemon refuses to use an exit node while offering one: said before anything runs
+        const chosen = () => networkExit.chosenByHand();
+        if (option === null || option === undefined)
+            return _userChange("exitNodeNone", {}, "exit-node", null, chosen);
+        // The daemon refuses to use an exit node while offering one: said before anything runs
+        if (TailscaleRules.exitNodeUseProblem(prefs) !== "") {
             failed("Changing Tailscale's exit node", TailscaleRules.exitNodeUseProblem(prefs));
             return false;
-        } else {
-            started = _userChange("exitNode", { node: option.argument }, "exit-node");
         }
-        if (started)
-            networkExit.chosenByHand();
-        return started;
+        return _userChange("exitNode", { node: option.argument }, "exit-node", null, chosen);
     }
 
     // The suggested exit node (asked for first when none is known)
@@ -1959,7 +1957,7 @@ QtObject {
 
     function resumed() {
         // A choice made by hand lasts until the computer sleeps: the networks' choices again
-        networkExit.dropOverride();
+        networkExit.dropOverride(true);
         if (!running)
             return;
         tailnetLock.read();

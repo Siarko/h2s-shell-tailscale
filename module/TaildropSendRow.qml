@@ -5,7 +5,7 @@ import qs.api
 // The row under a device in the bar popup (TaildropRules.popupRow): the files picked for it
 // with Send and "×", then the send's progress bar with Cancel, then how it ended with "×"; and
 // under it why its chooser did not open, with "×". Everything it does is TaildropClient's.
-// Public elements only; the bar is the module's own, drawn on the theme's tokens.
+// Public elements only (the bar: ProgressBar, module API 1.31).
 ColumnLayout {
     id: root
 
@@ -16,9 +16,7 @@ ColumnLayout {
     readonly property var row: TaildropRules.popupRow(taildrop?.popupChoices ?? null, taildrop?.send ?? null, deviceId, taildrop?.sending === true)
     readonly property string note: String(taildrop?.popupNotes?.[deviceId] ?? "")
 
-    // Api.theme names no spacing or progress-bar size yet: both follow the small type until
-    // the core's public progress bar and its tokens replace them (never a user's padding
-    // setting: a button's padding of 0 would hide the bar)
+    // Api.theme names no spacing: it follows the small type (never a user's padding setting)
     readonly property int _gap: Math.round(Api.theme.fontSizeSmall / 2)
 
     visible: row !== null || note !== ""
@@ -84,26 +82,14 @@ ColumnLayout {
         }
     }
 
-    // The send's bytes so far over all its files; empty while no size is known yet
-    Rectangle {
-        id: _track
+    // The send's bytes so far over all its files (of unknown length while no size is known),
+    // then how it ended (TaildropRules.popupRow's bar)
+    ProgressBar {
         objectName: "taildropPopupProgress"
-        visible: root.row?.kind === "sending" || (root.row?.kind === "result" && root.row?.fraction === 1)
+        visible: root.row?.bar != null
         Layout.fillWidth: true
-        // A third of the small type: moves to the core's public progress bar (its own height
-        // token) once the core has one
-        implicitHeight: Math.round(Api.theme.fontSizeSmall / 3)
-        radius: height / 2
-        color: Api.theme.track
-
-        readonly property real fraction: Math.max(0, root.row?.fraction ?? 0)
-
-        Rectangle {
-            width: _track.width * _track.fraction
-            height: parent.height
-            radius: parent.radius
-            color: root.row?.kind === "result" ? Api.theme.success : Api.theme.accent
-        }
+        kind: root.row?.bar?.kind ?? "normal"
+        value: root.row?.bar?.value ?? 0
     }
 
     // Why the chooser did not open (another one open, an error); the send's own refusal

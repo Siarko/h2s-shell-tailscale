@@ -108,7 +108,7 @@ The check after Funnel runs for these calls too. Turning Funnel off again then n
 |---|---|
 | `tailnetLock` | JSON: read, enabled, signed, locked out, trusted key count |
 | `readTailnetLock` | read the lock status again |
-| `networkExit` | JSON: marked rows, networks, active networks, last decision, runs, `override` (a choice made for now lasts), `effect` (`override`, `network` or empty) |
+| `networkExit` | JSON: marked rows, networks, active networks, last decision, runs, `override` (a choice made for now lasts), `effect` (`override`, `network` or empty: `network` only while that network's choice is the exit node in use) |
 | `setNetworkExit <network id> <choice>` | mark a network: `none`, `auto` or an exit node's stable id; empty removes the mark |
 
 Marking a network needs no privileges. Applying it needs the operator.

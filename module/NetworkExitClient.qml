@@ -16,12 +16,17 @@ import qs.api
 // the operator → "Needs the operator" on the page, nothing run. While Tailscale is not Running
 // (or its peers are not read yet) it waits, the key not taken, and acts once Tailscale is up.
 //
-// A choice made by hand in the shell (the exit-node chooser: chosenByHand) is "for now": it
-// overrides the networks' choices until "Default" (dropOverride), a wake from sleep (the
-// client's resumed()) or a restart of the shell — it lives only in memory. While it lasts
-// nothing is applied, whatever networks come and go; when it ends, the choice of the networks
-// up then is applied again (the networks are a new set: the key cleared, also in the store, so
-// a restart during it applies them too).
+// A choice made by hand in the shell (the exit-node chooser) is "for now" once its run
+// succeeded (TailscaleClient.setExitNode → chosenByHand; a run that failed, was dismissed or
+// refused changes nothing here). It overrides the networks' choices until "Default"
+// (dropOverride), a wake from sleep (the client's resumed()) or anything that builds the
+// module's main again (a restart of the shell, a reload, the module re-enabled) — it lives only
+// in memory. While it lasts nothing is applied, whatever networks come and go; when it ends,
+// the choice of the networks up then is applied again (the networks are a new set: the key
+// cleared, also in the store, so a restart during it applies them too) — and with no marked
+// network up, no exit node is used (NetworkExitRules.decide's clearUnmarked). A pick whose run
+// was still going when "for now" ended (a wake while it ran) is "for now" when it succeeds: it
+// is the user's latest word, and no network run can start while it runs (one change at a time).
 QtObject {
     id: root
 
@@ -51,13 +56,17 @@ QtObject {
     // The change last notified (NetworkExitRules.noticeKey): a restored hold was notified already
     property string _noticed: _held !== null ? NetworkExitRules.noticeKey(_held) : ""
     property bool _inFlight: false
-    // A choice made by hand "for now" (in memory only), and a count of its changes: a run
-    // started before one began or ended does not take the networks when it ends
+    // A choice made by hand "for now" (in memory only). A network run never overlaps it: one
+    // runs only while there is none, and a pick runs (and becomes one) only while no other
+    // change runs
     property bool overridden: false
-    property int _overrideRevision: 0
+    // "for now" just ended (dropOverride): with no marked network up, the exit node is turned
+    // off. "" no, "now" ("Default": at once), "settled" (a wake: once "no marked network up"
+    // lasted, as the networks often come back after a wake)
+    property string _clearing: ""
     // What decides the exit node now, for the chooser (NetworkExitRules.effect)
     readonly property var effect: NetworkExitRules.effect({ table: table, networks: networks, overridden: overridden, lastKey: lastKey,
-                                                            decisionKind: decision.kind, held: _held !== null })
+                                                            decisionKind: decision.kind, held: _held !== null, prefs: client?.prefs ?? null })
     // Serve's check after a Funnel is waiting for the change lock: no automatic change takes it
     readonly property bool _serveChecking: client?.serve?.checking === true
 
@@ -86,11 +95,12 @@ QtObject {
         setChoice(networkId, null);
     }
 
-    // An exit node chosen by hand in the shell: the networks' choices wait until dropOverride.
-    // The networks up are left open (the key cleared), so they are applied again when it ends
+    // An exit node chosen by hand in the shell, its run succeeded: the networks' choices wait
+    // until dropOverride. The networks up are left open (the key cleared), so they are applied
+    // again when it ends
     function chosenByHand() {
         overridden = true;
-        _overrideRevision++;
+        _clearing = "";
         _noneMarkedTimer.stop();
         _setHeld(null);
         _noticed = "";
@@ -99,13 +109,13 @@ QtObject {
         decision = { kind: "override", key: "", text: "" };
     }
 
-    // "Default", or a wake: the choice made by hand ends, the networks' choice applies again.
-    // false when there was none
-    function dropOverride() {
+    // "Default", or a wake (`afterWake`): the choice made by hand ends, the networks' choice
+    // applies again — none marked up: no exit node. false when there was none
+    function dropOverride(afterWake) {
         if (!overridden)
             return false;
         overridden = false;
-        _overrideRevision++;
+        _clearing = afterWake === true ? "settled" : "now";
         _setHeld(null);
         _noticed = "";
         lastKey = "";
@@ -144,13 +154,15 @@ QtObject {
         const result = NetworkExitRules.decide({
             table: table, networks: networks, lastKey: lastKey, prefs: client.prefs, exitNodes: client.exitNodes,
             backendState: client.status?.backendState ?? "", peersRead: client.status?.peersRead === true,
-            canChange: client.canChange, useProblem: TailscaleRules.exitNodeUseProblem(client.prefs)
+            canChange: client.canChange, useProblem: TailscaleRules.exitNodeUseProblem(client.prefs), clearUnmarked: _clearing !== ""
         });
         if (result.kind === "wait")
             return;
         // Off the held networks with none up counts only once it lasted, as "none-marked" does
+        // (and the exit node turned off after a wake)
         const leaving = result.kind === "same" && _held !== null && result.key !== _held.key;
-        if (result.kind === "none-marked" || (leaving && result.key === "")) {
+        const clearing = _clearing !== "" && result.key === "";
+        if (result.kind === "none-marked" || (leaving && result.key === "") || (clearing && _clearing === "settled")) {
             if (settled !== true) {
                 if (!_noneMarkedTimer.running)
                     _noneMarkedTimer.start();
@@ -162,6 +174,9 @@ QtObject {
             _noneMarkedTimer.stop();
         }
         const step = NetworkExitRules.react(result, _held, _noticed);
+        // The end of "for now" is decided: done with, unless its run waits (below)
+        if (step.act !== "run")
+            _clearing = "";
         switch (step.act) {
         case "take":
             decision = { kind: step.manual === true ? "manual" : result.kind, key: result.key, text: step.manual === true ? "" : result.text };
@@ -193,15 +208,9 @@ QtObject {
             return;
         runs++;
         _inFlight = true;
-        const revision = _overrideRevision;
+        _clearing = "";
         client._runChange(command, "network", "exit-node", null, null, outcome => {
             _inFlight = false;
-            // A choice made by hand began (or ended) meanwhile: this answer is late, it takes
-            // nothing; whatever applies now is decided again
-            if (revision !== _overrideRevision) {
-                Qt.callLater(follow);
-                return;
-            }
             // The CLI's words as plain text (TailscaleRules.plainText), as on the entry
             const reason = outcome.ok ? "" : TailscaleRules.plainText(outcome.message, 300);
             decision = { kind: outcome.ok ? "applied" : "failed", key: result.key, text: reason };

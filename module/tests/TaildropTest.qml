@@ -226,10 +226,14 @@ TestCase {
         const running = rules.popupRow(null, sending, "p1", true);
         same([running.kind, running.fraction, running.text, running.canCancel, running.canDrop], ["sending", 0.125, "12 %", true, false],
              "a send runs: its bytes over all files (500 of 4000), Cancel");
+        same(running.bar, { kind: "normal", value: 0.125 }, "… the bar: its share, in the normal colour");
+        same(picked.bar, null, "a choice: no bar");
         same(rules.popupRow(choice, sending, "p1", true).kind, "sending", "… a choice made meanwhile waits behind it");
         same(rules.popupRow(null, Object.assign({}, sending, { origin: "page" }), "p1", true), null, "the page's send: not the popup's row");
         same(rules.popupRow(null, Object.assign({}, sending, { state: "checking" }), "p1", true).text, "Checking…", "the check first: no bar yet");
         same(rules.popupRow(null, Object.assign({}, sending, { files: [file("a", { size: 0 })] }), "p1", true).fraction, -1, "no size known: no share");
+        same([rules.popupRow(null, Object.assign({}, sending, { state: "checking" }), "p1", true).bar, rules.popupRow(null, Object.assign({}, sending, { files: [file("a", { size: 0 })] }), "p1", true).bar],
+             [{ kind: "normal", value: -1 }, { kind: "normal", value: -1 }], "… checking, or no size known: a bar of unknown length");
 
         const ended = (state, changes) => rules.popupRow(null, Object.assign({}, sending, { state: state }, changes), "p1", false);
         same([ended("done").kind, ended("done").text, ended("done").tone, ended("done").canDrop], ["result", "Sent", "success", true], "sent: said so, \"×\" clears it");
@@ -238,6 +242,8 @@ TestCase {
         same(ended("failed", { message: "Nothing to send", files: [file("x", { ok: false, problem: "Not found" })] }).text, "Nothing to send · Not found",
              "… the one file's problem");
         same([ended("cancelled", { message: "Cancelled" }).text, ended("cancelled").tone], ["Cancelled", "muted"], "cancelled");
+        same([ended("done").bar, ended("failed").bar, ended("cancelled").bar], [{ kind: "success", value: 1 }, { kind: "danger", value: 1 }, null],
+             "the bar at the end: full in the success colour, full in the danger colour, none when cancelled");
         same(rules.popupRow(choice, Object.assign({}, sending, { state: "done" }), "p1", false).kind, "choice", "a new choice replaces the last result");
         same(rules.sendTotals([file("a", { outcome: "sent", sent: 0 }), file("b", { sent: 5000 })]), { sent: 2000, total: 2000, fraction: 1 },
              "totals: a sent file counts whole, no more than its size");

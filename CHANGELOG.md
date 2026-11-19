@@ -4,7 +4,7 @@ Current version: 0.6.0 (`module/module.json`).
 
 ## Unreleased
 
-Needs h2s-shell with module API 1.28.
+Needs h2s-shell with module API 1.31.
 
 ### Added
 
@@ -69,10 +69,11 @@ Needs h2s-shell with module API 1.28.
 - Log lines through the shell's module log: a changed reason reads "failed: <reason>" again rather than "still failing, now: <reason>".
 - Its row in the network popup and its part of the VPN card are the manifest's `anchors` (the places under its row and in its opened card) instead of `slots`; the shell no longer lists them as deprecated.
 - Sizes, times ("5 min ago") and addresses use the shell's helpers; the state follows the shell's minute clock, and an exit node's offline grace ends on time.
-- "Send file…" in the bar popup stays in the popup: the shell's file chooser, then a row under the device with the files, Send and "×", then a progress bar with Cancel and the result. Each device keeps its own files. The settings window no longer opens.
+- "Send file…" in the bar popup stays in the popup: the shell's file chooser, then a row under the device with the files, Send and "×", then the shell's progress bar with Cancel and the result (the bar sliding while no size is known, full in the success colour when sent, in the danger colour when the send failed). Each device keeps its own files. The settings window no longer opens.
 - Taildrop's files and its folder for received files are chosen in the shell's file chooser instead of the module's own dialogs.
-- The exit node per network is set on the network's own card (Settings → System → Network, a saved Wi-Fi or Ethernet network, opened): "Tailscale exit node". While one is set, the card's name line shows the exit-node mark, with the choice in its tooltip. The table on the Tailscale page is gone. Choices made before are kept.
-- A choice in the exit node chooser is for now: it wins over the networks' choices until "Default", a wake from sleep or a restart, and the network's choice then applies again. The chooser shows "Default" while a network has a choice of its own, and its header says "for now" or "for <network>".
+- The exit node per network is set on the network's own card (Settings → System → Network, a saved Wi-Fi or Ethernet network, opened): "Tailscale exit node". While the network routes through an exit node (a node or "Automatic", not "No exit node"), the card's name line shows the exit-node mark, with the choice in the shell's tooltip. The table on the Tailscale page is gone. Choices made before are kept.
+- A choice in the exit node chooser is for now, once Tailscale made the change (not when it failed or the password prompt was dismissed): it wins over the networks' choices until "Default", a wake from sleep or a restart, and the network's choice then applies again; with no network's choice up, no exit node is used. The chooser shows "Default" while a choice is for now, with what it brings back, and its header says "for now" or "for <network>" (only while that network's exit node is still the one in use).
+- Exit node names from other devices show on one line: line breaks and invisible direction marks are dropped.
 
 ### Removed
 

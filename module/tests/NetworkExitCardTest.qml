@@ -5,9 +5,9 @@ import ".."
 // The exit node per network on the network cards: the element in an opened saved network's
 // card (NetworkExitCard) sets and clears that network's choice in the table the live side
 // follows (NetworkExitClient); the mark on the card's name line (NetworkExitMark) shows while
-// a choice is set, with the choice as its tooltip. The exit-node chooser says which choice is
-// in effect ("for now", "for Café") and offers "Default" while one made by hand overrides the
-// network's.
+// the network routes through an exit node, with the choice as its tooltip (the shell's
+// HoverTip). The exit-node chooser says which choice is in effect ("for now", "for Café") and
+// offers "Default" while one made by hand lasts.
 // Against a stand-in client (it runs nothing) and a store in memory.
 TestCase {
     id: suite
@@ -80,11 +80,11 @@ TestCase {
     // The live side as the chooser reads it: what is in effect, and "Default"
     property Component _effectComponent: Component {
         QtObject {
-            property var effect: ({ kind: "override", network: "Café", label: "No exit node" })
+            property var effect: ({ kind: "override", from: "network", network: "Café", label: "No exit node" })
             property int drops: 0
             function dropOverride() {
                 drops++;
-                effect = { kind: "network", network: "Café", label: "No exit node" };
+                effect = { kind: "network", from: "network", network: "Café", label: "No exit node" };
                 return true;
             }
         }
@@ -149,8 +149,30 @@ TestCase {
         assertEqual(NetworkExitRules.rowFor({ "cafe-uuid": { choice: "auto" } }, "home-uuid"), null, "… null when not marked");
         same([NetworkExitRules.markLabel(null), NetworkExitRules.markLabel({ choice: "none", label: "" }), NetworkExitRules.markLabel({ choice: "auto", label: "" }),
               NetworkExitRules.markLabel({ choice: "nA1", label: "home-server" })],
-             ["", "No exit node", "Exit node: automatic", "Exit node: home-server"], "the mark's words");
+             ["", "", "Exit node: automatic", "Exit node: home-server"], "the mark's words: none for \"No exit node\" (no mark)");
         assertEqual(NetworkExitRules.markLabel({ choice: "nA1", label: "x".repeat(90) }).length, "Exit node: ".length + 40, "… a long name cut");
+
+        // Names from other devices on one line: control and bidi characters gone, capped
+        const odd = "home\n\u202eserver\u0007\u200b " + "y".repeat(120);
+        const oddRow = NetworkExitRules.rows({ "cafe-uuid": { choice: "nA1", label: odd, name: "Caf\u00e9\r\nWi-Fi\u2066" } })[0];
+        same([oddRow.label.indexOf("\n"), oddRow.label.indexOf("\u202e"), oddRow.label.indexOf("\u200b"), oddRow.label.length <= 100, oddRow.name],
+             [-1, -1, -1, true, "Café Wi-Fi"], "a stored node's label and network's name: one line, no control or bidi characters, capped");
+        assert(oddRow.label.startsWith("home server "), "… the words kept: " + oddRow.label);
+        assert(!/[\u0000-\u001f\u202a-\u202e]/.test(NetworkExitRules.choiceLabel({ choice: "nA1", label: "a\nb\u202ec" })), "a choice's label on one line");
+        assert(!/[\u0000-\u001f\u202a-\u202e]/.test(NetworkExitRules.markLabel({ choice: "nA1", label: "a\nb\u202ec" })), "… and the mark's");
+        same(NetworkExitRules.cardOptions([{ id: "nA1", name: "a\n\u202eb" }], null)[3], { value: "nA1", label: "a b", name: "a b" }, "… and the card's options");
+        same(NetworkExitRules.defaultDetail({ kind: "override", from: "network", network: "Café", label: "x\ny" }), "Café: x y", "… and \"Default\"'s detail");
+        const oddStatus = JSON.parse(fixture("status-rich.json"));
+        const exitPeer = Object.keys(oddStatus.Peer ?? {}).find(key => oddStatus.Peer[key].ExitNodeOption === true && !(oddStatus.Peer[key].Location));
+        if (exitPeer !== undefined) {
+            oddStatus.Peer[exitPeer].DNSName = "";
+            oddStatus.Peer[exitPeer].HostName = "evil\n\u202ehost";
+            const parsed = TailscaleRules.exitNodes(TailscaleRules.parseStatus(JSON.stringify(oddStatus)), prefs, "");
+            const option = parsed.own.find(item => item.name.indexOf("evil") === 0);
+            same([option?.name, option?.label], ["evil host", "evil host"], "an exit node named by a raw host name: on one line in the chooser");
+        } else {
+            fail("the fixture has an exit node of its own");
+        }
     }
 
     function cardSetsAndClears() {
@@ -178,8 +200,13 @@ TestCase {
              "… the mark on the network's name line, the node in its tooltip and accessible name");
         same([homeMark.visible, findNamed(other, "tailscaleNetworkExitChoice").value], [false, ""], "… another network untouched");
 
+        const tip = findNamed(cafeMark, "tailscaleNetworkExitTip");
+        same([tip !== null, tip?.text, tip?.target === cafeMark], [true, "Tailscale: Exit node: " + online.name, true], "… the tooltip: the shell's HoverTip on the mark");
+
         dropdown.picked("none");
-        same([setup.exit.rows[0].choice, cafeMark.visible, cafeMark.label], ["none", true, "No exit node"], "no exit node: a choice too, marked");
+        same([setup.exit.rows[0].choice, cafeMark.visible, cafeMark.label, tip.text], ["none", false, "", ""],
+             "no exit node: a choice (the dropdown keeps it), but no mark on the name line");
+        assertEqual(dropdown.value, "none", "… the dropdown shows it");
 
         dropdown.picked("");
         same([setup.exit.rows.length, cafeMark.visible, dropdown.value], [0, false, ""], "\"Not set\": the mark removed, the mark gone");
@@ -223,6 +250,10 @@ TestCase {
         const chooser = _chooserComponent.createObject(_holder, { client: client });
         const effectText = findNamed(chooser, "tailscaleExitNodeEffect");
         same([effectText?.visible, effectText?.text, effectText?.textFormat], [true, "for now", Text.PlainText], "chosen by hand: the header says \"for now\"");
+        // With no choice for the networks up, "Default" is offered too: it turns the exit node off
+        exit.effect = { kind: "override", from: "none", network: "", label: "No exit node" };
+        same([chooser._rows[0].key, chooser._rows[0].detail], ["default", "No exit node"], "no network's choice up: \"Default\" offered, bringing back no exit node");
+        exit.effect = { kind: "override", from: "network", network: "Café", label: "No exit node" };
         same([chooser._rows[0].key, chooser._rows[0].label, chooser._rows[0].detail, chooser._rows[1].key], ["default", "Default", "Café: No exit node", "none"],
              "… the list starts with \"Default\", naming what it brings back, then \"None\"");
         chooser.expanded = true;
@@ -232,7 +263,7 @@ TestCase {
         area?.clicked(null);
         same([exit.drops, picked.length, chooser.expanded], [1, 0, false], "\"Default\" clicked: the choice by hand dropped, no exit node set by the chooser, the list closed");
         same([effectText.text, chooser._rows[0].key], ["for Café", "none"], "… then \"for Café\", no \"Default\" any more");
-        exit.effect = { kind: "", network: "", label: "" };
+        exit.effect = { kind: "", from: "", network: "", label: "" };
         assertEqual(effectText.visible, false, "nothing in effect: no words");
         chooser.destroy();
         exit.destroy();

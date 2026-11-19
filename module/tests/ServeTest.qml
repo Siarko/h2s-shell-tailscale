@@ -444,21 +444,47 @@ TestCase {
                     "… and a pick by hand before the restart still stays");
         same(Object.keys(NetworkExitRules.withRow({}, "__proto__", "none")), [], "a prototype name is not a network");
 
+        // "for now" ended (clearUnmarked) with no marked network up: no exit node — never "same"
+        // or "none-marked"; with a network's choice up, that choice as always
+        const using = Object.assign({}, prefs, { exitNodeId: "nX" });
+        const cleared = decide({ networks: [], lastKey: "", clearUnmarked: true, prefs: using });
+        same([cleared.kind, cleared.name, cleared.key, cleared.choice], ["run", "exitNodeNone", "", "none"], "\"for now\" ended, no marked network up: the exit node turned off");
+        same([decide({ networks: [], lastKey: "", clearUnmarked: true }).kind, decide({ networks: [], lastKey: "", clearUnmarked: true, prefs: using, canChange: false }).kind,
+              decide({ networks: [], lastKey: "", clearUnmarked: true, prefs: using, useProblem: "offering" }).kind],
+             ["already", "needs-operator", "run"], "… none in use: already; not the operator: needs it (never a prompt); offering one: turning off is never refused");
+        same([decide({ lastKey: "", clearUnmarked: true }).name, decide({ networks: [], lastKey: "" , prefs: using }).kind], ["exitNode", "same"],
+             "… a marked network up: its choice; without clearUnmarked nothing changes (\"same\")");
+        assertEqual(react(cleared).act, "run", "… run");
+        assertEqual(react(decide({ networks: [], lastKey: "", clearUnmarked: true })).act, "take", "… already: taken");
+
         // What decides the exit node now: a choice made by hand "for now", the network's, or
-        // neither (for the chooser's header and its "Default")
+        // neither (for the chooser's header and its "Default"). The network's is said only
+        // while the exit node in use is still what it chose
+        const inUse = Object.assign({}, prefs, { exitNodeId: online.id });
         const effect = extra => NetworkExitRules.effect(Object.assign({ table: table, networks: networks, overridden: false, lastKey: "cafe-uuid",
-                                                                         decisionKind: "applied", held: false }, extra));
-        same(effect({}), { kind: "network", network: "Café", label: online.name }, "café up, its choice applied: in effect, for Café");
+                                                                         decisionKind: "applied", held: false, prefs: inUse }, extra));
+        same(effect({}), { kind: "network", from: "network", network: "Café", label: online.name }, "café up, its choice applied and in use: in effect, for Café");
         same([NetworkExitRules.effectText(effect({})), NetworkExitRules.defaultDetail(effect({}))], ["for Café", ""], "… \"for Café\", no \"Default\"");
-        same(effect({ overridden: true }), { kind: "override", network: "Café", label: online.name }, "chosen by hand: it overrides the café's choice");
+        same([effect({ prefs: Object.assign({}, prefs, { exitNodeId: "nOther" }) }).kind, effect({ prefs: prefs }).kind, effect({ prefs: null }).kind,
+              effect({ prefs: Object.assign({}, inUse, { ok: false }) }).kind], ["", "", "", ""],
+             "the exit node changed outside the shell (another node, none), or not read: not called the café's");
+        const homeUp = [Object.assign({}, networks[0], { active: false }), Object.assign({}, networks[1], { active: true })];
+        same([effect({ networks: homeUp, lastKey: "home-uuid", prefs: prefs }).kind, effect({ networks: homeUp, lastKey: "home-uuid", prefs: Object.assign({}, prefs, { exitNodeIp: "100.64.0.9" }) }).kind],
+             ["network", ""], "home's \"no exit node\": in effect while none is used, not once one is set outside the shell");
+        const autoTable = { "cafe-uuid": { choice: "auto" } };
+        same([effect({ table: autoTable }).kind, effect({ table: autoTable, prefs: prefs }).kind], ["network", ""], "automatic: in effect while an exit node is used");
+        same(effect({ overridden: true }), { kind: "override", from: "network", network: "Café", label: online.name }, "chosen by hand: it overrides the café's choice");
         same([NetworkExitRules.effectText(effect({ overridden: true })), NetworkExitRules.defaultDetail(effect({ overridden: true }))],
              ["for now", "Café: " + online.name], "… \"for now\"; \"Default\" names what it brings back");
-        same([effect({ overridden: true, networks: [] }).kind, effect({ networks: [] }).kind], ["", ""], "no marked network up: nothing to override, nothing in effect");
+        same(effect({ overridden: true, networks: [] }), { kind: "override", from: "none", network: "", label: "No exit node" },
+             "chosen by hand with no marked network up: \"for now\" too, \"Default\" brings back no exit node");
+        same([NetworkExitRules.effectText(effect({ overridden: true, networks: [] })), NetworkExitRules.defaultDetail(effect({ overridden: true, networks: [] })), effect({ networks: [] }).kind],
+             ["for now", "No exit node", ""], "… its words; without a choice by hand nothing is in effect");
         same([effect({ lastKey: "" }).kind, effect({ held: true }).kind, effect({ decisionKind: "unavailable" }).kind, effect({ decisionKind: "manual" }).kind],
              ["", "", "", ""], "the café's choice not applied (not taken, held, unavailable, a pick outside the shell): not said to be in effect");
         const both = networks.map(network => Object.assign({}, network, { active: true }));
-        same([effect({ networks: both, lastKey: "cafe-uuid home-uuid" }).kind, effect({ networks: both, overridden: true }).kind], ["", ""],
-             "two networks up that want different nodes: neither");
+        same([effect({ networks: both, lastKey: "cafe-uuid home-uuid" }).kind, effect({ networks: both, overridden: true }).kind, NetworkExitRules.defaultDetail(effect({ networks: both, overridden: true }))],
+             ["", "override", ""], "two networks up that want different nodes: neither in effect; chosen by hand, \"Default\" without a detail");
         assertEqual(effect({ networks: [{ id: "cafe-uuid", name: "  Long\nname " + "x".repeat(60), kind: "wifi", active: true }] }).network.length, 40,
                     "a network's name on one line, cut");
         assertEqual(NetworkExitRules.effectText({ kind: "network", network: "", label: "" }), "for this network", "… a network without a name");

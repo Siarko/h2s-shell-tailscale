@@ -89,8 +89,10 @@ On the status line and in notifications, IP addresses show as `[address]`.
 
 Each saved Wi-Fi and Ethernet network's card has "Tailscale exit node" when opened: "Not set",
 "No exit node", "Automatic" or one of the tailnet's exit nodes.
-While one is set, the card's name line shows the exit-node mark, open or closed.
+While the network routes through an exit node (a node or "Automatic"), the card's name line shows the exit-node mark, open or closed.
 Its tooltip names the choice, for example "Tailscale: Exit node: home-server".
+"No exit node" shows no mark.
+Node names are shown on one line: line breaks, control characters and invisible direction marks are dropped.
 
 - When the set of marked networks that are up changes, the module sets the exit node once.
 - An exit node changed outside the shell afterwards (the `tailscale` command) stays until the networks change.
@@ -115,15 +117,20 @@ A choice that cannot be applied stays open. It is applied once the reason goes:
 
 ### For now
 
-A choice in the exit node chooser (the popup, the network popup, the page) is for now.
-It wins over the networks' choices, whatever networks come and go, until one of these:
+A choice in the exit node chooser (the popup, the network popup, the page) is for now, once Tailscale made the change.
+A change that failed, timed out, was refused while another change ran, or whose password prompt was dismissed changes nothing: the networks' choices apply as before.
+Only a choice in the shell's chooser is for now; a change with the `tailscale` command is not.
+It wins over the networks' choices, whatever networks come and go (joining a network with its own choice keeps it), until one of these:
 
-- "Default" in the chooser. It shows while the networks up have a choice of their own, and names it, for example "Café: No exit node".
+- "Default" in the chooser. It shows while a choice is for now, with what it brings back: the networks' choice, for example "Café: home-server", or "No exit node".
 - The computer wakes from sleep or hibernation.
-- The shell or the computer restarts. The choice is kept in memory only.
+- The module's main is built again: the shell or the computer restarts, the shell reloads, the module is turned off and on. The choice is kept in memory only.
 
-Then the choice of the networks up applies again.
-The chooser's header says which one is in effect: "for now", or "for Café" when the network's choice is applied.
+Then the choice of the networks up applies again, as an automatic change (without the operator: "Needs the operator", no password prompt).
+With no network's choice up, no exit node is used: at once after "Default", after a wake once no marked network has been up for 30 s (the network that comes back after a wake applies its own choice instead).
+Two marked networks up that want different nodes: nothing is applied.
+A choice whose change was still running when the computer woke is for now once it succeeded.
+The chooser's header says which one is in effect: "for now", or "for Café" while the network's choice is applied and still the exit node in use (not after a change with the `tailscale` command).
 
 ## Network switches
 
@@ -198,7 +205,7 @@ Offering an exit node and using one exclude each other. The page says so and off
 Needs your user to be Tailscale's operator.
 
 - Send files to devices that can receive them. On the page: choose files, paste absolute paths, or drop them.
-- From the bar popup: a device's "Send file…" opens the shell's file chooser. The files chosen show in a row under that device ("2 files" for several, their names on Send's tooltip) with Send and "×" to drop them. After Send the row shows a progress bar and Cancel, then "Sent", why it failed, or "Cancelled". The settings window does not open. Each device keeps its own files; a device with files, a send or its result stays in the popup's list past its limit until cleared. The popup and the page each clear a send's result for themselves. Another file chooser open: a note under the device (on the page, under the files or the folder).
+- From the bar popup: a device's "Send file…" opens the shell's file chooser. The files chosen show in a row under that device ("2 files" for several, their names on Send's tooltip) with Send and "×" to drop them. After Send the row shows a progress bar and Cancel, then "Sent", why it failed, or "Cancelled". The bar slides while the size is not known yet; it ends full in the success colour when sent, in the danger colour when the send failed, and goes when cancelled. The settings window does not open. Each device keeps its own files; a device with files, a send or its result stays in the popup's list past its limit until cleared. The popup and the page each clear a send's result for themselves. Another file chooser open: a note under the device (on the page, under the files or the folder).
 - On the page progress is shown per file. Cancel stops the send.
 - Files and the folder for received files are chosen in the shell's file chooser. A chooser closed by the lock screen chooses nothing.
 - A send with no progress for 2 minutes is stopped. A send lasts 6 hours at most.

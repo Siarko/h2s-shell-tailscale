@@ -618,11 +618,14 @@ TestCase {
             assert(shown(inRow(row, "taildropPopupCancel")), "… Cancel");
             assert(!shown(inRow(row, "taildropPopupSend")) && !shown(inRow(row, "taildropPopupDrop")), "… no Send, no \"×\"");
             const bar = inRow(row, "taildropPopupProgress");
-            assert(bar.fraction > 0 && bar.fraction < 1, "… the bar filled part way: " + bar.fraction);
+            assert(bar.value > 0 && bar.value < 1, "… the bar filled part way: " + bar.value);
+            assertEqual(bar.kind, "normal", "… in the normal colour");
         });
         then(pop, "sent", () => drop(pop).send.state === "done", () => {
             const row = sendRowOf(pop, peer);
             same([row.row.kind, inRow(row, "taildropPopupState").text], ["result", "Sent"], "the row says sent");
+            same([shown(inRow(row, "taildropPopupProgress")), inRow(row, "taildropPopupProgress").kind, inRow(row, "taildropPopupProgress").value], [true, "success", 1],
+                 "… the bar full, in the success colour");
             assert(shown(inRow(row, "taildropPopupDrop")) && !shown(inRow(row, "taildropPopupCancel")), "… \"×\" to clear it, no Cancel");
             assertEqual(pop.module.settingsOpened, 0, "… the settings window never opened");
             inRow(row, "taildropPopupDrop").clicked();
@@ -672,6 +675,7 @@ TestCase {
         then(popFail, "failed", () => drop(popFail).send.state === "failed" && drop(popFail).send.files.some(file => file.ok), () => {
             const row = sendRowOf(popFail, peer);
             assertEqual(row.row.tone, "warning", "the daemon's failure: in the warning colour");
+            same([shown(inRow(row, "taildropPopupProgress")), inRow(row, "taildropPopupProgress").kind], [true, "danger"], "… the bar in the danger colour");
             assert(inRow(row, "taildropPopupState").text !== "" && inRow(row, "taildropPopupState").text !== "Sent", "… with its reason: " + inRow(row, "taildropPopupState").text);
         });
         _clock.start();

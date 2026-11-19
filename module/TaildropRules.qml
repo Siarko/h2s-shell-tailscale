@@ -388,7 +388,10 @@ Singleton {
     // id>: paths }: the files picked there per device, not sent yet; `send`: TaildropClient's
     // send (`origin` "popup" when the popup started it, `popupCleared` once the popup's "×"
     // cleared its result); `busy`: some send runs. → null (no row), or { kind, label, names,
-    // fraction, text, tone, canSend, canCancel, canDrop }:
+    // fraction, bar, text, tone, canSend, canCancel, canDrop }. `bar`: null (none), or { kind,
+    // value } for the public ProgressBar — a send running "normal", its share sent (-1 while
+    // checking or no size is known: of unknown length); sent "success", full; failed
+    // "danger", full (it ended, not sent); none for a choice or a send cancelled:
     //   "sending"  this device's send from the popup runs: the bar, Cancel
     //   "choice"   files picked for it: Send (while no send runs), "×" drops them
     //   "result"   its send from the popup ended (sent, failed and why, cancelled): "×" clears it
@@ -404,12 +407,13 @@ Singleton {
             const totals = sendTotals(files);
             const checking = send.state === "checking";
             return { kind: "sending", label: filesLabel(files.map(file => file.path)), names: names(files), fraction: checking ? -1 : totals.fraction,
+                     bar: { kind: "normal", value: checking ? -1 : totals.fraction },
                      text: checking ? "Checking…" : totals.fraction >= 0 ? Math.floor(totals.fraction * 100) + " %" : "Sending…",
                      tone: "normal", canSend: false, canCancel: true, canDrop: false };
         }
         const paths = popupPaths(choices, id);
         if (paths.length > 0)
-            return { kind: "choice", label: filesLabel(paths), names: names(paths), fraction: -1, text: "", tone: "normal",
+            return { kind: "choice", label: filesLabel(paths), names: names(paths), fraction: -1, bar: null, text: "", tone: "normal",
                      canSend: busy !== true, canCancel: false, canDrop: true };
         if (!ours || send.popupCleared === true || !["done", "failed", "cancelled"].includes(send.state))
             return null;
@@ -421,6 +425,7 @@ Singleton {
             : [message || "Not sent", good.length === 0 && refused.length === 1 ? String(refused[0].problem) : ""].filter(part => part !== "").join(" · ");
         return { kind: "result", label: files.length > 0 ? filesLabel(files.map(file => file.path)) : "", names: names(files),
                  fraction: send.state === "done" ? 1 : -1, text: text,
+                 bar: send.state === "done" ? { kind: "success", value: 1 } : send.state === "failed" ? { kind: "danger", value: 1 } : null,
                  tone: send.state === "done" ? "success" : send.state === "failed" ? "warning" : "muted",
                  canSend: false, canCancel: false, canDrop: true };
     }

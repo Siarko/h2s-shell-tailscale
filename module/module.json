@@ -2,7 +2,7 @@
     "id": "tailscale",
     "name": "Tailscale",
     "version": "0.6.0",
-    "api": "1.28",
+    "api": "1.31",
     "description": "Tailscale among the shell's VPNs: connect, log in and out, accounts, this device's name and key, exit nodes, the main switches, sharing this computer (exit node, routes, SSH server, web interface), Taildrop (send files, save received ones), serve and Funnel, certificates, tailnet lock status, an exit node per network, the devices, diagnostics.",
     "main": "Main.qml",
     "widgets": [

@@ -868,6 +868,16 @@ Singleton {
     // Text from Tailscale (the CLI's stderr, the daemon's errors and health) as plain text:
     // one line, no control characters, and nothing a Text could take for markup — angle
     // brackets and ampersands become look-alikes
+    // A name from another device or from the system on one line: control characters (C0, DEL,
+    // C1) as spaces, the invisible ones that reorder or hide text (bidi controls, zero-width
+    // marks, the BOM) dropped, white space collapsed, cut with "…" past `maxLength` (100)
+    function oneLine(value, maxLength) {
+        const text = (typeof value === "string" ? value : value === null || value === undefined ? "" : String(value)).slice(0, 4000)
+            .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff\ufff9-\ufffb]/g, "")
+            .replace(/\s+/g, " ").trim();
+        return _clip(text, maxLength ?? 100);
+    }
+
     function plainText(value, maxLength) {
         const text = _string(value, 4000).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim()
             .replace(/</g, "‹").replace(/>/g, "›").replace(/&/g, "＆");
@@ -1057,7 +1067,8 @@ Singleton {
             if (!node.exitNodeOption && !(current && current.id !== "" && node.id === current.id))
                 continue;
             options.push({
-                id: node.id, name: _shortName(node), label: exitNodeLabel(node), dnsName: node.dnsName,
+                // Names and labels on one line: shown in the chooser and kept with a network's choice
+                id: node.id, name: oneLine(_shortName(node), 64), label: oneLine(exitNodeLabel(node), 64), dnsName: node.dnsName,
                 argument: exitNodeArgument(node), online: node.online,
                 current: !!current && current.id !== "" && node.id === current.id,
                 suggested: wanted !== "" && (node.id.toLowerCase() === wanted || node.dnsName.toLowerCase() === wanted),

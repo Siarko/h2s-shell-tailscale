@@ -9,7 +9,10 @@ import ".."
 // it ends; a short pass through "no marked network" (a Wi-Fi reconnect) does not apply the
 // choice again over a manual change, a lasting one does. A choice not applied (the node offline,
 // not the operator, a failed run) leaves the network open, is notified once, and is applied when
-// what stopped it changes — never retried in a loop, never with a prompt.
+// what stopped it changes — never retried in a loop, never with a prompt. A choice made by hand
+// "for now" holds the networks' choices off until "Default" or a wake, which go back to them —
+// or, with no marked network up, to no exit node. The stand-in client runs one change at a
+// time, as the client does (busy).
 TestCase {
     id: suite
     suiteName: "tailscale: exit node per network, waiting for Tailscale"
@@ -59,10 +62,20 @@ TestCase {
             property var _heldEnd: null
             signal failed(string what, string reason)
             onFailed: (what, reason) => notices = notices.concat([reason])
+            // As the client's: one change at a time — refused while busy (said through onEnd),
+            // busy while it runs, cleared before its end is answered
             function _runChange(command, origin, operationName, onSuccess, prepare, onEnd) {
+                if (busy) {
+                    onEnd({ ok: false, dismissed: false, message: "Another Tailscale change is running." });
+                    return false;
+                }
                 ran = ran.concat([command.argv.join(" ") + " (" + origin + ")"]);
+                busy = true;
                 const ok = !failRuns;
-                const end = () => onEnd({ ok: ok, dismissed: false, message: ok ? "" : failMessage });
+                const end = () => {
+                    busy = false;
+                    onEnd({ ok: ok, dismissed: false, message: ok ? "" : failMessage });
+                };
                 if (holdRuns)
                     _heldEnd = end;
                 else
@@ -398,7 +411,12 @@ TestCase {
         step(1, () => s = make(running, nodes, { module: _moduleComponent.createObject(suite) }));
         step(1, () => s.follower.networks = cafeUp);
         until("applied on the network", () => s.follower.decision.kind === "applied", () => {
-            same([s.follower.effect.kind, s.follower.effect.network], ["network", "Café"], "the network's choice in effect, for Café");
+            assertEqual(s.follower.effect.kind, "", "applied, the prefs not read again yet: not called in effect");
+            // The daemon's prefs after the change (the stand-in runs nothing)
+            s.fake.prefs = Object.assign({}, prefs, { exitNodeId: online.id });
+            same([s.follower.effect.kind, s.follower.effect.network], ["network", "Café"], "… read: the network's choice in effect, for Café");
+            s.fake.prefs = manualPrefs;
+            assertEqual(s.follower.effect.kind, "", "… changed outside the shell: not called the network's");
             s.fake.prefs = manualPrefs;
             s.follower.chosenByHand();
             same([s.follower.overridden, s.follower.lastKey, s.fake.module.store.get("exitByNetwork.lastKey", null), s.follower.effect.kind],
@@ -429,20 +447,78 @@ TestCase {
             same([s.follower.overridden, s.fake.ran.length], [false, 3], "restarted: no choice by hand, the network's applied");
         });
 
-        // A run for the network still going when a choice by hand begins: its late answer takes
-        // nothing, the networks stay open for when the choice by hand ends
-        step(1, () => s = make(running, nodes, { holdRuns: true }));
-        step(1, () => s.follower.networks = cafeUp);
-        until("the network's run started", () => s.fake._heldEnd !== null, () => {
+        // "for now" ended with no marked network up: no exit node. "Default" at once; a wake once
+        // "no marked network up" lasted (the network often comes back after a wake), and the
+        // network's choice when it does; not the operator: held and said, never a prompt; two
+        // networks that differ: nothing
+        const usingPrefs = Object.assign({}, prefs, { exitNodeId: "nManual" });
+        const none = "tailscale set --exit-node= (network)";
+        const endsWith = (list, line) => list.length > 0 && list[list.length - 1].endsWith(line);
+        step(1, () => s = make(running, nodes, { prefs: usingPrefs, module: _moduleComponent.createObject(suite) }));
+        step(1, () => s.follower.networks = cafeDown);
+        settled("no marked network up", () => {
+            same([s.fake.ran.length, s.follower.lastKey], [0, ""], "no marked network up: nothing run");
             s.follower.chosenByHand();
-            s.fake.finishRun();
+            assertEqual(s.follower.effect.kind, "override", "chosen by hand with no marked network up: \"for now\"");
+            assertEqual(s.follower.effect.from, "none", "… \"Default\" brings back no exit node");
+            assert(s.follower.dropOverride(), "\"Default\"");
         });
-        settled("the late answer", () => {
-            same([s.follower.lastKey, s.follower.decision.kind, s.fake.ran.length], ["", "override", 1], "a late answer: the network not taken, the choice by hand stays");
-            s.fake.holdRuns = false;
+        until("\"Default\": the exit node turned off", () => s.follower.decision.kind === "applied", () => {
+            same([s.fake.ran.length, endsWith(s.fake.ran, "--exit-node= (network)"), s.follower.lastKey], [1, true, ""], "\"Default\", no marked network up: no exit node, at once");
+            s.fake.prefs = prefs;
+            s.follower.follow();
+        });
+        settled("and then", () => assertEqual(s.fake.ran.length, 1, "… once"));
+        // None in use already: nothing run
+        step(1, () => {
+            s.follower.chosenByHand();
             s.follower.dropOverride();
         });
-        until("applied after Default", () => s.follower.decision.kind === "applied", () => same([s.fake.ran.length, s.follower.lastKey], [2, "cafe-uuid"], "… applied when it ended"));
+        until("none in use: already", () => s.follower.decision.kind === "already", () => same([s.fake.ran.length, s.follower.lastKey], [1, ""], "none in use: nothing run"));
+        // A wake: once it lasted
+        step(1, () => {
+            s.fake.prefs = usingPrefs;
+            s.follower.chosenByHand();
+            s.follower.dropOverride(true);
+        });
+        settled("woken", () => {
+            same([s.fake.ran.length, s.follower.overridden, s.follower._noneMarkedTimer.running], [1, false, true], "a wake, no marked network up: waits for the networks first");
+        });
+        until("it lasted: turned off", () => s.fake.ran.length === 2, () => same([s.fake.ran[1], s.follower.decision.kind], [none, "applied"], "… then no exit node"));
+        // A wake, then the network comes back with its choice: that choice, no "off" first
+        step(1, () => {
+            s.fake.prefs = usingPrefs;
+            s.follower.chosenByHand();
+            s.follower.dropOverride(true);
+        });
+        step(100, () => s.follower.networks = cafeUp);
+        until("the network back after the wake", () => s.fake.ran.length === 3, () => {
+            same([s.fake.ran[2], s.follower.lastKey], [wanted, "cafe-uuid"], "a wake, the network back within the hold: its choice, never \"off\" first");
+        });
+        settled("past the hold", () => assertEqual(s.fake.ran.length, 3, "… and nothing more"));
+        // Not the operator
+        step(1, () => s = make(running, nodes, { prefs: usingPrefs, canChange: false }));
+        step(1, () => s.follower.networks = cafeDown);
+        settled("no marked network up", () => {
+            s.follower.chosenByHand();
+            s.follower.dropOverride();
+        });
+        until("needs the operator", () => s.follower.decision.kind === "needs-operator", () => {
+            same([s.fake.ran.length, s.fake.notices], [0, ["Needs the operator"]], "not the operator: nothing run, never a prompt, said once");
+        });
+        // Two marked networks up that differ: "Default" brings back nothing to apply
+        step(1, () => {
+            s = make(running, nodes, { prefs: usingPrefs });
+            s.follower.setChoice("home-uuid", "none", "", "Home");
+            s.follower.networks = cafeUp.concat([{ id: "home-uuid", name: "Home", kind: "ethernet", active: true }]);
+        });
+        until("conflict", () => s.follower.decision.kind === "conflict", () => {
+            s.follower.chosenByHand();
+            same([s.follower.effect.kind, s.follower.effect.from], ["override", "conflict"], "two networks that differ, chosen by hand: \"for now\", nothing to bring back");
+            s.follower.dropOverride();
+        });
+        until("conflict again", () => s.follower.decision.kind === "conflict", () => assertEqual(s.fake.ran.length, 0, "\"Default\": nothing run"));
+
         step(1, () => {});
         _clock.interval = 1;
         _clock.start();

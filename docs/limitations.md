@@ -32,4 +32,6 @@ Also not offered: Funnel over TCP, `--relay-server-static-endpoints`, `--remote-
 - A login from a logged-in account that does not finish leaves Tailscale on a new, empty profile. The page offers "Switch back".
 - Serve changes go through `tailscale serve`, which reads and writes the config itself. Something added on a port between the module's plan and that write goes public with a Funnel until the check after Funnel turns it off. Writing the config through the local API with `If-Match` would close the gap, but needs root or the operator for every change.
 - A failed exit node by network change is not retried for the same networks and choice while the shell runs. A restart tries it once more.
+- An exit node chosen for now is kept in memory only, in the module's main. Anything that builds the main again ends it and applies the networks' choice: a restart of the shell, a reload, the module turned off and on.
+- "for <network>" in the exit node chooser cannot tell an automatic exit node from one set by hand to some node: with "Automatic" any exit node in use counts as the network's.
 - Without a notification daemon, failures of serve and Funnel show only on the page, those of the exit node by network only on the network's card.

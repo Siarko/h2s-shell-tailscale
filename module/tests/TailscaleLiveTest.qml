@@ -120,6 +120,7 @@ TestCase {
     // directory's status-hold is removed), env {}, fixedNow, loginTimeoutMs, emptyTools (no
     // program found), lateTools (none found until a recheck after install()), recheckMinMs,
     // without (that program not found), untrusted (that program judged untrusted), timeLimits,
+    // setup (shell lines run once the state directory is made, $1 the scenario's directory),
     // forwarding ("<ipv4> <ipv6>", 1 or 0: what the system's facts read) }
     function scenario(name, options) {
         const dir = base + "/" + name;
@@ -144,6 +145,9 @@ TestCase {
             if (s.options.holdStatus)
                 lines.push(": > \"$1/state/status-hold\"");
             lines.push("echo '{\"Health\":{\"Warnings\":{}}}' > \"$1/bus.jsonl\"");
+            // Lines run after the state directory is made ($1 the scenario's directory)
+            for (const line of s.options.setup ?? [])
+                lines.push(line);
             if (s.options.busLines > 0)
                 lines.push("i=0; while [ $i -lt " + s.options.busLines + " ]; do echo '{\"State\":6}'; i=$((i+1)); done > \"$1/bus.jsonl\"");
             _shell.run(["sh", "-c", lines.join(" && "), "sh", dir, s.options.state ?? ""], result => {
@@ -482,9 +486,10 @@ TestCase {
             assert(peer4 !== undefined, "exit nodes: peer4 offered");
             assert(!exitNode.client.networkExit.overridden, "no choice by hand yet");
             exitNode.client.setExitNode(peer4);
-            assert(exitNode.client.networkExit.overridden, "… chosen: \"for now\", over the networks' choices");
+            assert(!exitNode.client.networkExit.overridden, "… not \"for now\" while its run goes on");
         });
         then(exitNode, "via peer4", () => /^Via /.test(_entry(exitNode).status) && !exitNode.client.busy, () => {
+            assert(exitNode.client.networkExit.overridden, "… succeeded: \"for now\", over the networks' choices");
             assertEqual(_entry(exitNode).status, "Via peer4", "exit node set: \"Via peer4\"");
             assert(exitNode.client.exitNodes.current?.name === "peer4", "… current in the chooser");
             exitNode.client.setExitNode(null);
@@ -499,6 +504,94 @@ TestCase {
         thenLogs(exitNode, "after the exit nodes", () => {
             assertEqual(count(exitNode.logLines, /^set --exit-node=100\.64\.0\.4$/), 1, "set --exit-node=<its IPv4>");
             assertEqual(count(exitNode.logLines, /^set --exit-node=$/), 1, "set --exit-node= (none)");
+        });
+
+        // ---- "for now" only once the pick succeeded: a dismissed prompt, a failed run, a time
+        // limit, a refusal while another change runs leave the networks' choices as they were,
+        // and the network's choice applies at the next network change ----
+        const cafe = { id: "cafe-uuid", name: "Café", kind: "wifi", active: true };
+        const work = { id: "work-uuid", name: "Work", kind: "wifi", active: true };
+        // The café taken (its choice: none, in use), the work network's: peer4
+        const onCafe = s => {
+            const exit = s.client.networkExit;
+            exit.setChoice("cafe-uuid", "none", "", "Café");
+            exit.setChoice("work-uuid", "nPEER4CNTRL", "peer4", "Work");
+            exit.lastKey = "cafe-uuid";
+            exit.networks = [cafe];
+        };
+        const pickFails = (name, options, pick, checks) => {
+            const s = scenario(name, Object.assign({ state: "running" }, options));
+            then(s, "read", () => s.client.status !== null && s.client.prefs?.ok === true && s.client.exitNodes.count > 0, () => {
+                onCafe(s);
+                pick(s);
+            });
+            then(s, "the pick ended", () => !s.client.busy && s.client.operation === "", () => {
+                const exit = s.client.networkExit;
+                same([exit.overridden, exit.lastKey, exit.effect.kind], [false, "cafe-uuid", "network"], name + ": no \"for now\", the café still taken, its choice in effect");
+                checks?.(s);
+                exit.networks = [work];
+            });
+            // The prefs name no operator (canChange false): decided as "needs the operator",
+            // never a prompt — not left waiting behind a "for now"
+            then(s, "the next network change", () => ["applied", "needs-operator", "failed"].includes(s.client.networkExit.decision.kind) && !s.client.busy, () => {
+                assertEqual(s.client.networkExit.decision.kind, "needs-operator", name + ": … the work network's choice decided");
+            });
+            return s;
+        };
+        const peer4Of = s => s.client.exitNodes.own.find(option => option.name === "peer4");
+        pickFails("for-now-dismissed", { env: { TS_FAKE_PKEXEC: "dismiss" } }, s => assert(s.client.setExitNode(peer4Of(s)), "a pick, not the operator: asks"),
+                  s => assertEqual(s.failures.length, 0, "… dismissed: silent"));
+        pickFails("for-now-failed", { env: { TS_FAKE_OPERATOR: "1" } }, s => assert(s.client.setExitNode(Object.assign({}, peer4Of(s), { argument: "nosuch" })), "a pick that fails"),
+                  s => assert(s.failures.length === 1, "… its failure said"));
+        // Only the pick's run runs out of time (the first `set --exit-node`), the network's runs
+        let timeoutsLeft = 1;
+        pickFails("for-now-timeout", { env: { TS_FAKE_OPERATOR: "1" }, recordRuns: true,
+                                       fakeRun: argv => argv[1] === "set" && argv[2] === "--exit-node=100.64.0.4" && timeoutsLeft-- > 0 ? { result: { ok: false, code: -1, timedOut: true } } : null },
+                  s => assert(s.client.setExitNode(peer4Of(s)), "a pick that runs out of time"),
+                  s => assert(/did not answer within/.test(s.failures[0]?.reason ?? ""), "… said: " + (s.failures[0]?.reason ?? "")));
+        pickFails("for-now-busy", { env: { TS_FAKE_OPERATOR: "1" }, recordRuns: true,
+                                                    fakeRun: argv => argv[1] === "set" && argv[2] === "--accept-routes=true" ? { hold: true } : null }, s => {
+            assert(s.client.setAcceptRoutes(true), "another change runs");
+            assert(!s.client.setExitNode(peer4Of(s)), "… a pick meanwhile: refused");
+            assertEqual(s.client.networkExit.overridden, false, "… no \"for now\"");
+            s.runs.find(run => run.argv[2] === "--accept-routes=true").deliver({ ok: true, code: 0 });
+        });
+
+        // ---- a wake while the user's pick runs: the pick, once it succeeds, is "for now" — the
+        // network's choice (waiting for the change lock) never overwrites it ----
+        // This user the operator (the prefs say so): the café's change can run plainly
+        const wakeDuring = scenario("for-now-wake-during-pick", { state: "running", env: { TS_FAKE_OPERATOR: "1" }, recordRuns: true,
+                                                                  setup: ["printf 'OperatorUser=%s\\n' '" + Api.system.userName + "' > \"$1/state/prefs\""],
+                                                                  fakeRun: argv => argv[1] === "set" && argv[2] === "--exit-node=100.64.0.10" ? { hold: true } : null });
+        then(wakeDuring, "read", () => wakeDuring.client.status !== null && wakeDuring.client.prefs?.ok === true && wakeDuring.client.exitNodes.count > 0, () => {
+            assert(wakeDuring.client.canChange, "the operator");
+            onCafe(wakeDuring);
+            assert(wakeDuring.client.setExitNode(peer4Of(wakeDuring)), "a first pick: peer4");
+        });
+        // peer4 read back in the prefs: the café's "none" is a real change from here on
+        then(wakeDuring, "for now", () => wakeDuring.client.networkExit.overridden && !wakeDuring.client.busy && wakeDuring.client.prefs?.exitNodeId === "nPEER4CNTRL", () => {
+            const peer10 = wakeDuring.client.exitNodes.own.find(option => option.name === "peer10") ?? null;
+            assert(peer10 !== null, "peer10 offered");
+            assert(wakeDuring.client.setExitNode(Object.assign({}, peer10, { online: true, argument: "100.64.0.10" })), "a second pick, held in flight");
+            wakeDuring.module.resumed();
+            same([wakeDuring.client.networkExit.overridden, wakeDuring.client.busy], [false, true], "woken while it runs: the first pick's \"for now\" ended, the pick still running");
+            assertEqual(wakeDuring.client.networkExit.lastKey, "", "… the café open: its \"none\" is due");
+        });
+        // The café's "none" is due (the first pick's peer4 in use) and waits for the change lock
+        then(wakeDuring, "the café's choice waits for the lock", () => !wakeDuring.client.networkExit.overridden && wakeDuring.client.busy, () => {
+            assertEqual(wakeDuring.runs.filter(run => run.argv[1] === "set" && run.argv[2] === "--exit-node=").length, 0, "… the café's \"none\" not run while the pick runs");
+            wakeDuring.runs.find(run => run.argv[2] === "--exit-node=100.64.0.10").deliver({ ok: true, code: 0 });
+            assert(wakeDuring.client.networkExit.overridden, "the pick succeeded: \"for now\"");
+        });
+        then(wakeDuring, "after it", () => !wakeDuring.client.busy && wakeDuring.client.reads > 0, () => {
+            const exit = wakeDuring.client.networkExit;
+            same([exit.overridden, exit.decision.kind, wakeDuring.runs.filter(run => run.argv[1] === "set" && run.argv[2] === "--exit-node=").length], [true, "override", 0],
+                 "… the café's choice never ran over it");
+            // "Default" now: the café's "none" runs (it was due, only the pick held it off)
+            assert(exit.dropOverride(), "\"Default\"");
+        });
+        then(wakeDuring, "Default: the café's choice", () => wakeDuring.client.networkExit.decision.kind === "applied" && !wakeDuring.client.busy, () => {
+            assertEqual(wakeDuring.runs.filter(run => run.argv[1] === "set" && run.argv[2] === "--exit-node=").length, 1, "… the café's \"none\" ran once");
         });
 
         // ---- exit node offline: a grace, then attention ----

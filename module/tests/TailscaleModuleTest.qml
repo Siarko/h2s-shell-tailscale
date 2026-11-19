@@ -161,7 +161,7 @@ TestCase {
         assert(module !== null && module.active, "the module is loaded and active");
         assertEqual(module.status?.state, "loaded", "… state loaded");
         assertEqual(JSON.stringify(module.status?.warnings ?? null), "[]", "… no warning (imports: qs.api, qs.components, Quickshell)");
-        assertEqual(module.manifest.api, "1.28", "written for module API 1.28 (the helpers, the system's and the networks' facts, its data directory, the VPN places and the network cards' places as anchors)");
+        assertEqual(module.manifest.api, "1.31", "written for module API 1.31 (the helpers, the system's and the networks' facts, its data directory, the VPN places and the network cards' places as anchors, the public ProgressBar and HoverTip)");
         assert(Api.testMode, "the module test runner: module test mode");
         const deprecations = JSON.stringify(module.status?.deprecations ?? []);
         assert(!/pkexec|PrivilegedAction|elevate|stand-in/i.test(deprecations),
@@ -267,8 +267,10 @@ TestCase {
             const choice = _findNamed(exitCard, "tailscaleNetworkExitChoice");
             assertEqual(exitMark?.visible, false, "… nothing set for the network: no mark");
             choice?.picked("none");
-            same([exitMark?.visible, exitMark?.label, module.main.client.networkExit.rows.map(row => row.id)], [true, "No exit node", ["cafe-uuid"]],
-                 "… set in the card: kept, and marked on the name line");
+            same([exitMark?.visible, exitMark?.label, module.main.client.networkExit.rows.map(row => row.id)], [false, "", ["cafe-uuid"]],
+                 "… \"No exit node\" set in the card: kept, no mark on the name line");
+            choice?.picked("auto");
+            same([exitMark?.visible, exitMark?.label], [true, "Exit node: automatic"], "… an exit node set: marked on the name line");
             choice?.picked("");
             same([exitMark?.visible, module.main.client.networkExit.rows.length], [false, 0], "… cleared: the mark gone");
             // Each before its parent: the shell's dropdown, torn down with its parent, reads
