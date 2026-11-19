@@ -42,29 +42,40 @@ Singleton {
     }
 
     // The script that runs as the user: the folder made private (700, the user's own, not a
-    // link), then the CLI under timeout, then the certificate's end date (openssl, when there).
-    // argv: ["sh", "-c", script, "sh", dir, domain, timeout, seconds, tailscale]
+    // link), then the CLI under timeout, then the certificate's end date (openssl, when the
+    // module found it: module.programs). Every program by the absolute path given ("": none).
+    // argv: ["sh", "-c", script, "sh", dir, domain, timeout, seconds, tailscale, openssl]
     readonly property string script: [
-        "dir=$1; domain=$2; limit=$3; seconds=$4; tailscale=$5; umask 077",
+        "dir=$1; domain=$2; limit=$3; seconds=$4; tailscale=$5; openssl=$6; umask 077",
         "[ -L \"$dir\" ] && { echo 'h2s: the folder is a link' >&2; exit 3; }",
         "mkdir -p -- \"$dir\" && [ -d \"$dir\" ] && [ ! -L \"$dir\" ] && [ -O \"$dir\" ] || { echo 'h2s: the folder is not usable' >&2; exit 3; }",
         "chmod 700 -- \"$dir\" || exit 3",
         "if [ -n \"$limit\" ]; then \"$limit\" -k 5 \"$seconds\" \"$tailscale\" cert --cert-file=\"$dir/$domain.crt\" --key-file=\"$dir/$domain.key\" \"$domain\" || exit $?",
         "else \"$tailscale\" cert --cert-file=\"$dir/$domain.crt\" --key-file=\"$dir/$domain.key\" \"$domain\" || exit $?; fi",
-        "command -v openssl > /dev/null 2>&1 && openssl x509 -noout -enddate -in \"$dir/$domain.crt\" 2> /dev/null; true"
+        "[ -n \"$openssl\" ] && \"$openssl\" x509 -noout -enddate -in \"$dir/$domain.crt\" 2> /dev/null; true"
     ].join("\n")
 
-    // Only the end date of a certificate there (any user may read their own files)
+    // Only the end date of a certificate there (any user may read their own files):
+    // ["sh", "-c", checkScript, "sh", cert, key, openssl ("": none)]
     readonly property string checkScript: [
         "[ -f \"$1\" ] && [ -f \"$2\" ] || exit 0",
         "echo present",
-        "command -v openssl > /dev/null 2>&1 && openssl x509 -noout -enddate -in \"$1\" 2> /dev/null; true"
+        "[ -n \"$3\" ] && \"$3\" x509 -noout -enddate -in \"$1\" 2> /dev/null; true"
     ].join("\n")
 
-    function argv(dir, domain, timeoutPath, seconds, tailscalePath) {
+    function argv(dir, domain, timeoutPath, seconds, tailscalePath, opensslPath) {
         if (files(dir, domain) === null || typeof tailscalePath !== "string" || !tailscalePath.startsWith("/"))
             return [];
-        return ["sh", "-c", script, "sh", dir, domain, timeoutPath ?? "", String(seconds), tailscalePath];
+        const openssl = typeof opensslPath === "string" && opensslPath.startsWith("/") ? opensslPath : "";
+        return ["sh", "-c", script, "sh", dir, domain, timeoutPath ?? "", String(seconds), tailscalePath, openssl];
+    }
+
+    // The check's argv for the files (files()'s), openssl by its absolute path ("": none)
+    function checkArgv(files, opensslPath) {
+        if (files === null || typeof files !== "object")
+            return [];
+        const openssl = typeof opensslPath === "string" && opensslPath.startsWith("/") ? opensslPath : "";
+        return ["sh", "-c", checkScript, "sh", String(files.cert), String(files.key), openssl];
     }
 
     // openssl's "notAfter=Feb 14 12:00:00 2027 GMT" → ms (0 none)

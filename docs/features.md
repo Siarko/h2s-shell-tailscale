@@ -35,7 +35,7 @@ When something needs you, the entry says so and offers one button:
 | locked out by tailnet lock (while connected) | Open admin console |
 
 The entry also covers "Not answering — state unknown".
-"Not trusted" means a `tailscale`, `timeout` or `pkexec` on PATH that your user could replace. Then nothing runs.
+"Not trusted" means a `tailscale`, `timeout` or `pkexec` the shell found on PATH that your user could replace. Then nothing runs.
 
 ### Looking again
 

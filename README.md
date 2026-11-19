@@ -26,9 +26,9 @@ It works through the `tailscale` CLI and the daemon's local API.
 
 | What | Needed for |
 |---|---|
-| h2s-shell with module API 1.3 | everything |
+| h2s-shell with module API 1.13 | everything |
 | `tailscale` and a running `tailscaled` | everything |
-| coreutils `timeout` and `pkexec` | changes that need an administrator |
+| `pkexec` and coreutils `timeout`, found by the shell | changes that need an administrator |
 | `curl` | live updates and saving received files |
 | `openssl` | showing a certificate's end date |
 
@@ -82,7 +82,7 @@ Details are in [docs/privileges.md](docs/privileges.md).
 | [privileges.md](docs/privileges.md) | what runs as you, what runs as root, the operator |
 | [settings.md](docs/settings.md) | the setting, widget options, stored data, facts |
 | [ipc.md](docs/ipc.md) | the `tailscale` IPC target |
-| [architecture.md](docs/architecture.md) | file map, how state is read, the tools seam |
+| [architecture.md](docs/architecture.md) | file map, how state is read, programs, module test mode |
 | [limitations.md](docs/limitations.md) | what is not offered and why, known gaps |
 | [development.md](docs/development.md) | tests, stand-ins, fixtures |
 | [CHANGELOG.md](CHANGELOG.md) | changes |

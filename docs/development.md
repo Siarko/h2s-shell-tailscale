@@ -38,7 +38,13 @@ When other test runs may share the machine, wrap the runners in `flock /tmp/h2s-
 - Exit status: 0 all passed, 1 a failure, 2 the runner could not start or a name is not a suite of the module.
 
 The suites extend the shell's `TestCase` (`import qs.tests`).
-They run the live client against the stand-ins only.
+The shell runs them in module test mode: every program the module names comes from
+`module/tests/stand-in` (the manifest's `testPrograms`), a run as administrator goes through
+the stand-in `pkexec`, links are recorded (`ModuleTestKit.opened`), and `Api.system` gives
+made-up facts. The live suites run many scenarios at once, each with a client of its own: its
+handle is a `StandInModule` (`module/tests/StandInModule.qml`), which gives the stand-ins as its
+programs (or a scenario's: one missing, an untrusted one, one installed later).
+`TailscaleModuleTest` uses the module's real handle.
 
 #### NixOS
 
@@ -51,7 +57,10 @@ Without `nix`, labwc has to be installed; Quickshell is `qs` on `PATH`, else
 
 ### `tests/lock-bed/run.sh`
 
-Starts the real shell in the shell's lock test bed, with this module and the stand-ins.
+Starts the real shell in the shell's lock test bed, with this module, in module test mode:
+the module's programs are its stand-ins, its runs as administrator go through the stand-in
+`pkexec`. The stand-ins take the test's state from the `TS_FAKE_*`
+variables the test exports.
 The tests are in `tests/lock-bed/tests/`.
 The shell's `tests/lock/run.sh` must support `LOCKTEST_EXTRA_TESTS`.
 It needs `nix`, on NixOS and on Arch: the shell's lock test bed takes its tools from it only.
@@ -67,7 +76,9 @@ Checks the stand-ins. It runs each one by absolute path, so the real tools never
 
 ## Stand-ins
 
-`tools/stand-in/` holds fake programs. None of them touches a real daemon or the network.
+`module/tests/stand-in/` holds the fake programs the module runs (`tailscale`, `pkexec`,
+`curl`, `timeout`, `systemctl`, `openssl`); `tools/stand-in/` the two the lock bed puts on the
+shell's own `PATH` (`xdg-open`, `nmcli`). None of them touches a real daemon or the network.
 
 | Program | Does |
 |---|---|
@@ -81,7 +92,9 @@ Checks the stand-ins. It runs each one by absolute path, so the real tools never
 | `nmcli` | answers nothing |
 
 They are configured with `TS_FAKE_*` variables. Each script's header lists them.
-State lives in `TS_FAKE_STATE_DIR`, one directory per test.
+State lives in `TS_FAKE_STATE_DIR`, one directory per test. A file `user` there names the
+caller for the operator's checks (it wins over `TS_FAKE_USER`); `TS_FAKE_CALLS` names a file
+each call's own path is added to.
 
 Some cases of the stand-in `tailscale`.
 A scenario comes from `TS_FAKE_STATE`, else from the file `scenario` in the state dir.

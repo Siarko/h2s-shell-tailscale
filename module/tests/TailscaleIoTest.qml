@@ -5,8 +5,8 @@ import ".."
 // TailscaleRules, the process side: the IPN bus (one message per line, and the pretty-printed
 // form fed in arbitrary chunks), what an exit code and stderr mean (the real "Access denied"
 // and not-running texts, the `up` trap), pkexec's own exits, the one command builder (argv
-// arrays only; never a flag on `up`), the pkexec form, and the CLI's other outputs (login,
-// ping, netcheck).
+// arrays only; never a flag on `up`), the pkexec form, which programs run, and the CLI's other
+// outputs (login, ping, netcheck).
 TestCase {
     id: suite
     suiteName: "tailscale: bus, errors, commands"
@@ -316,61 +316,34 @@ TestCase {
                         "invalid value \"[address]\" for --exit-node; [address] and [address] too, version 1.104.4 at 12:30", "withoutAddresses: IPv4, IPv6, prefixes gone; versions and times kept");
         }
 
-        // --- which programs run: the probe and the trust check ---
+        // --- which programs run: module.programs (the shell's lookup and verdict) ---
         {
-            const probe = lines => lines.join("\n");
-            const store = "/nix/store/abc-tailscale-1.104.4/bin/tailscale";
-            const good = probe([
-                "tool\ttailscale\t/run/current-system/sw/bin/tailscale", "real\ttailscale\t" + store,
-                "stat\ttailscale\t0\t555\t/run/current-system/sw/bin", "stat\ttailscale\t1000\t555\t" + store, "stat\ttailscale\t1000\t555\t/nix/store/abc-tailscale-1.104.4/bin",
-                "tool\ttimeout\t/usr/bin/timeout", "real\ttimeout\t/usr/bin/timeout",
-                "stat\ttimeout\t0\t755\t/usr/bin", "stat\ttimeout\t0\t755\t/usr/bin/timeout", "stat\ttimeout\t0\t755\t/usr/bin",
-                "tool\tpkexec\t/run/wrappers/bin/pkexec", "real\tpkexec\t/run/wrappers/wrappers.x/pkexec",
-                "stat\tpkexec\t0\t755\t/run/wrappers/bin", "stat\tpkexec\t0\t4511\t/run/wrappers/wrappers.x/pkexec", "stat\tpkexec\t0\t755\t/run/wrappers/wrappers.x",
-                "tool\tcurl\t/home/u/bin/curl", "socket\t/run/tailscale/tailscaled.sock"]);
-            const found = rules.toolsProbe(good, true);
-            same(found.untrusted, [], "trust: root-owned and Nix store programs are trusted");
-            assertEqual(found.tools.tailscale.path, "/run/current-system/sw/bin/tailscale", "trust: the path kept as found (the link)");
-            assertEqual(found.tools.curl.trusted, true, "trust: curl is not judged (never run as root)");
-            assertEqual(found.socket, "/run/tailscale/tailscaled.sock", "probe: the socket that exists (the fallback)");
-            const writable = probe(["tool\ttailscale\t/home/u/.local/bin/tailscale", "real\ttailscale\t/home/u/.local/bin/tailscale",
-                "stat\ttailscale\t1000\t755\t/home/u/.local/bin", "stat\ttailscale\t1000\t755\t/home/u/.local/bin/tailscale", "stat\ttailscale\t1000\t755\t/home/u/.local/bin"]);
-            const bad = rules.toolsProbe(writable, true);
-            same(bad.untrusted, ["tailscale"], "trust: a tailscale this user owns is refused");
-            assert(/isn't trusted/.test(bad.tools.tailscale.reason) && bad.tools.tailscale.reason.indexOf("/home/") < 0, "trust: the reason says so, without the path: " + bad.tools.tailscale.reason);
-            const linkInHome = probe(["tool\tpkexec\t/home/u/bin/pkexec", "real\tpkexec\t/run/wrappers/wrappers.x/pkexec",
-                "stat\tpkexec\t1000\t755\t/home/u/bin", "stat\tpkexec\t0\t4511\t/run/wrappers/wrappers.x/pkexec", "stat\tpkexec\t0\t755\t/run/wrappers/wrappers.x"]);
-            same(rules.toolsProbe(linkInHome, true).untrusted, ["pkexec"], "trust: a link to a good pkexec in a directory this user owns is refused (it could be swapped)");
-            const groupWritable = probe(["tool\ttimeout\t/opt/bin/timeout", "real\ttimeout\t/opt/bin/timeout",
-                "stat\ttimeout\t0\t775\t/opt/bin", "stat\ttimeout\t0\t755\t/opt/bin/timeout", "stat\ttimeout\t0\t775\t/opt/bin"]);
-            same(rules.toolsProbe(groupWritable, true).untrusted, ["timeout"], "trust: a group-writable directory is refused");
-            same(rules.toolsProbe(probe(["tool\ttailscale\t/usr/bin/tailscale"]), true).untrusted, ["tailscale"], "trust: not checkable (no stat): refused");
-            same(rules.toolsProbe(writable, false).untrusted, [], "trust: the seam's programs are not judged");
-            // Arch and other distributions without Nix: root's files in /usr/bin (merged /usr:
-            // /bin a link to usr/bin — stat -L reads the directory it leads to), a set-uid
-            // pkexec (4755), a tailscale in /usr/local/bin
-            const arch = probe([
-                "tool\ttailscale\t/usr/bin/tailscale", "real\ttailscale\t/usr/bin/tailscale",
-                "stat\ttailscale\t0\t755\t/usr/bin", "stat\ttailscale\t0\t755\t/usr/bin/tailscale", "stat\ttailscale\t0\t755\t/usr/bin",
-                "tool\ttimeout\t/bin/timeout", "real\ttimeout\t/usr/bin/timeout",
-                "stat\ttimeout\t0\t755\t/bin", "stat\ttimeout\t0\t755\t/usr/bin/timeout", "stat\ttimeout\t0\t755\t/usr/bin",
-                "tool\tpkexec\t/usr/bin/pkexec", "real\tpkexec\t/usr/bin/pkexec",
-                "stat\tpkexec\t0\t755\t/usr/bin", "stat\tpkexec\t0\t4755\t/usr/bin/pkexec", "stat\tpkexec\t0\t755\t/usr/bin",
-                "tool\tcurl\t/usr/bin/curl", "socket\t/var/run/tailscale/tailscaled.sock"]);
-            const archFound = rules.toolsProbe(arch, true);
-            same(archFound.untrusted, [], "trust: Arch's /usr/bin programs (pkexec set-uid, timeout through the /bin link) are trusted");
-            same([archFound.tools.tailscale.path, archFound.tools.timeout.path, archFound.tools.pkexec.path], ["/usr/bin/tailscale", "/bin/timeout", "/usr/bin/pkexec"],
-                 "trust: … by the paths found");
-            const local = probe(["tool\ttailscale\t/usr/local/bin/tailscale", "real\ttailscale\t/usr/local/bin/tailscale",
-                "stat\ttailscale\t0\t755\t/usr/local/bin", "stat\ttailscale\t0\t755\t/usr/local/bin/tailscale", "stat\ttailscale\t0\t755\t/usr/local/bin"]);
-            same(rules.toolsProbe(local, true).untrusted, [], "trust: root's /usr/local/bin is trusted");
-            const linked = probe(["tool\ttailscale\t/usr/local/bin/tailscale", "real\ttailscale\t/opt/tailscale/tailscale",
-                "stat\ttailscale\t0\t755\t/usr/local/bin", "stat\ttailscale\t0\t755\t/opt/tailscale/tailscale", "stat\ttailscale\t1000\t755\t/opt/tailscale"]);
-            same(rules.toolsProbe(linked, true).untrusted, ["tailscale"], "trust: a root link to a program in a directory this user owns is refused");
-            assertEqual(rules.toolsProbe(probe(["tool\ttailscale\t"]), true).tools.tailscale.path, "", "probe: not found");
-            assertEqual(rules.toolsProbe(probe(["socket\t/tmp/evil.sock"]), true).socket, "", "probe: only the known socket paths");
-            for (const hostile of [null, undefined, 5, "tool\t__proto__\t/x", "stat\ttailscale\t0"])
-                assert(Array.isArray(rules.toolsProbe(hostile, true).untrusted), "probe: hostile input " + JSON.stringify(hostile) + " gives an answer");
+            const verdict = (path, trusted, reason) => ({ path: path, trusted: trusted, reason: reason ?? "" });
+            const all = { tailscale: verdict("/run/current-system/sw/bin/tailscale", true), timeout: verdict("/usr/bin/timeout", true),
+                          pkexec: verdict("/run/wrappers/bin/pkexec", true), curl: verdict("/home/u/bin/curl", false, "others than root can change /home/u/bin/curl"),
+                          systemctl: verdict("/usr/bin/systemctl", true), openssl: verdict("", false, "not found") };
+            same(rules.programsFound(all), { known: true, cli: "present", untrustedReason: "", tailscale: "/run/current-system/sw/bin/tailscale",
+                                             timeout: "/usr/bin/timeout", pkexec: "/run/wrappers/bin/pkexec", curl: "/home/u/bin/curl", systemctl: "/usr/bin/systemctl", openssl: "" },
+                 "programs: each by the path the shell found; curl not judged (it runs as this user only); openssl not found");
+            same(rules.programsFound(null), { known: false, cli: "unknown", untrustedReason: "", tailscale: "", timeout: "", pkexec: "", curl: "", systemctl: "", openssl: "" },
+                 "programs: not looked up yet: unknown");
+            assertEqual(rules.programsFound({}).cli, "missing", "programs: looked up, no tailscale: missing");
+            assertEqual(rules.programsFound({ tailscale: verdict("", false, "not found") }).cli, "missing", "programs: tailscale not found: missing");
+            const untrusted = rules.programsFound(Object.assign({}, all, { tailscale: verdict("/home/u/bin/tailscale", false, "others than root can change /home/u/bin/tailscale") }));
+            same([untrusted.cli, untrusted.tailscale, untrusted.timeout, untrusted.pkexec], ["untrusted", "", "", ""],
+                 "programs: a tailscale this user could change: untrusted, none of the three handed to pkexec taken");
+            assertEqual(untrusted.untrustedReason, "Tailscale isn't trusted (others than root can change /home/u/bin/tailscale): nothing runs.", "… the shell's reason, said");
+            for (const name of ["timeout", "pkexec"])
+                assertEqual(rules.programsFound(Object.assign({}, all, { [name]: verdict("/home/u/bin/" + name, false, "others than root can change it") })).cli, "untrusted",
+                            "programs: an untrusted " + name + " (run as root): untrusted too");
+            assertEqual(rules.programsFound({ tailscale: { path: "/usr/bin/tailscale" } }).cli, "untrusted", "programs: no verdict: untrusted, never trusted");
+            assertEqual(rules.programsFound({ tailscale: verdict("/x/tailscale", false, "") }).untrustedReason, "Tailscale isn't trusted (it could not be checked): nothing runs.",
+                        "programs: no reason given");
+            assert(rules.programsFound({ tailscale: verdict("/x/tailscale", false, "<b>x</b>\nline") }).untrustedReason.indexOf("<") < 0, "programs: the reason as plain text, one line");
+            for (const path of ["tailscale", "/usr/../tmp/tailscale", "/a b/tailscale", "/usr/bin/", 5])
+                assertEqual(rules.programsFound({ tailscale: verdict(path, true) }).cli, "missing", "programs: path " + JSON.stringify(path) + " is no program");
+            for (const hostile of [5, "x", [], { tailscale: null }, { tailscale: "x" }])
+                assert(["unknown", "missing"].includes(rules.programsFound(hostile).cli), "programs: hostile " + JSON.stringify(hostile) + " runs nothing");
         }
 
         // --- the CLI's other outputs ---

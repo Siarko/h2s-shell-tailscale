@@ -1,11 +1,13 @@
 #!/bin/sh
 # h2s-stand-in: a stand-in `systemctl` for the module's tests: it starts and stops nothing but the stand-in
 # tailscale's daemon — the file "daemon-down" in its state directory (TS_FAKE_STATE_DIR, the
-# same default as the stand-in tailscale's). Logs each call to TS_FAKE_LOG.
+# same default as the stand-in tailscale's). Logs each call to TS_FAKE_LOG (and its own
+# path to TS_FAKE_CALLS).
 #
 #   TS_FAKE_SYSTEMCTL  ok (default) | fail: exit 1 with systemd's words for a refused start
 state_dir=${TS_FAKE_STATE_DIR:-${XDG_RUNTIME_DIR:-/tmp}/ts-fake-$(id -u)}
 [ -n "${TS_FAKE_LOG:-}" ] && printf 'systemctl %s\n' "$*" >> "$TS_FAKE_LOG"
+[ -n "${TS_FAKE_CALLS:-}" ] && printf '%s\n' "$0" >> "$TS_FAKE_CALLS"
 if [ "${TS_FAKE_SYSTEMCTL:-ok}" = fail ]; then
     echo "Failed to start tailscaled.service: Access denied" >&2
     exit 1

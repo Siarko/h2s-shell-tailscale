@@ -4,7 +4,7 @@ Current version: 0.6.0 (`module/module.json`).
 
 ## Unreleased
 
-Needs h2s-shell with module API 1.3.
+Needs h2s-shell with module API 1.13.
 
 ### Added
 
@@ -51,3 +51,11 @@ Needs h2s-shell with module API 1.3.
 - Read failures are logged once per change, not on every try.
 - Reads while Tailscale is missing or stopped follow a backoff from 5 s to 60 s.
 - Funnel is refused on ports of terminal sessions and Tailscale Services.
+- The programs it runs (`tailscale`, `timeout`, `pkexec`, `curl`, `systemctl`, `openssl`) are the ones the shell finds and judges.
+- Links and the Taildrop folder open through the shell.
+- IP forwarding, the download folder and the data folder come from the shell's system facts.
+- IPC `state`: `testMode` in place of `toolsMode`; `tools` names `systemctl` too.
+
+### Removed
+
+- The test seams `H2S_TAILSCALE_TOOLS`, `H2S_TAILSCALE_FORWARDING_DIR`, `H2S_TAILSCALE_DOWNLOAD_DIR`, `H2S_TAILSCALE_CERT_DIR`. Tests use the shell's module test mode; the stand-ins are in `module/tests/stand-in`.

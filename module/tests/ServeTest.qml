@@ -306,8 +306,13 @@ TestCase {
         assertEqual(CertRules.problem(serveStatus, true, "/d"), "", "the operator: offered");
         assertEqual(CertRules.certDir("", "/home/user1"), "/home/user1/.local/share/h2s-shell/tailscale/certs", "the default folder");
         assertEqual(CertRules.certDir("relative", ""), "", "no absolute data home: none");
-        const argv = CertRules.argv("/d", "self.example-tailnet.ts.net", "/bin/timeout", 180, "/bin/tailscale");
-        same(argv.slice(3), ["sh", "/d", "self.example-tailnet.ts.net", "/bin/timeout", "180", "/bin/tailscale"], "the script's arguments");
+        const argv = CertRules.argv("/d", "self.example-tailnet.ts.net", "/bin/timeout", 180, "/bin/tailscale", "/usr/bin/openssl");
+        same(argv.slice(3), ["sh", "/d", "self.example-tailnet.ts.net", "/bin/timeout", "180", "/bin/tailscale", "/usr/bin/openssl"], "the script's arguments, openssl by the path found");
+        assertEqual(CertRules.argv("/d", "self.example-tailnet.ts.net", "/bin/timeout", 180, "/bin/tailscale", "openssl")[9], "", "openssl not by absolute path: none");
+        assert(CertRules.script.indexOf("command -v") < 0 && CertRules.checkScript.indexOf("command -v") < 0, "openssl never looked up by name in the scripts");
+        same(CertRules.checkArgv({ cert: "/d/a.crt", key: "/d/a.key" }, "/usr/bin/openssl").slice(3), ["sh", "/d/a.crt", "/d/a.key", "/usr/bin/openssl"], "the check's arguments");
+        same(CertRules.checkArgv({ cert: "/d/a.crt", key: "/d/a.key" }, "").slice(4), ["/d/a.crt", "/d/a.key", ""], "… no openssl: \"\"");
+        same(CertRules.checkArgv(null, "/usr/bin/openssl"), [], "… no files: nothing");
         same(CertRules.argv("/d", "self.example-tailnet.ts.net", "", 180, "tailscale"), [], "tailscale not by absolute path: nothing");
         assertEqual(CertRules.expiry("notAfter=Feb 14 12:00:00 2027 GMT\n"), Date.UTC(2027, 1, 14, 12, 0, 0), "openssl's end date");
         assertEqual(CertRules.expiry("garbage"), 0, "no date");

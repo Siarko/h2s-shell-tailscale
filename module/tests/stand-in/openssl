@@ -1,7 +1,7 @@
 #!/bin/sh
 # h2s-stand-in: a stand-in `openssl` for the module's end-to-end tests: it reads only the stand-in
 # certificates the stand-in `tailscale cert` writes ("STAND-IN <domain> notAfter=<date>"), and
-# logs each call to TS_FAKE_LOG. One command is replayed:
+# logs each call to TS_FAKE_LOG (its own path to TS_FAKE_CALLS). One command is replayed:
 #
 #   openssl x509 -noout -enddate -in <file>   (the options in any order)
 #       → "notAfter=<date>" (exit 0); a file without that text, or none: "unable to load
@@ -9,6 +9,7 @@
 #
 # Anything else: exit 2 "stand-in: not replayed".
 [ -n "${TS_FAKE_LOG:-}" ] && printf 'openssl %s\n' "$*" >> "$TS_FAKE_LOG"
+[ -n "${TS_FAKE_CALLS:-}" ] && printf '%s\n' "$0" >> "$TS_FAKE_CALLS"
 
 not_replayed() { echo "stand-in: openssl $* not replayed" >&2; exit 2; }
 

@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell
 import Quickshell.Io
 import qs.api
 
@@ -41,28 +40,24 @@ import qs.api
 // A read that times out marks the state stale (the entry: "Not answering — state unknown")
 // and is retried with a backoff (readRetryMinMs, doubling to readRetryMaxMs).
 //
-// THE TOOLS SEAM — the one place that decides which tailscale, timeout, curl, pkexec,
-// systemctl and xdg-open run (`tool(name)`):
-//   - `toolsDir` set by the owner (the suites): programs from there;
-//   - else H2S_TAILSCALE_TOOLS in the shell's environment (an absolute directory): from there
-//     (the module's lock-bed test);
-//   - else, under the shell's module test runner (H2S_TEST_MODULES is set): the stand-ins next
-//     to the module (../tools/stand-in) — a module test can never reach the real tailscale;
-//     when they are not there nothing runs (the CLI counts as missing);
-//   - else (inert): the names, found on PATH, by absolute path resolved once with `command -v`
-//     (kept as found — on NixOS /run/current-system/sw/bin/tailscale, a link that survives
-//     updates) — and CHECKED (TailscaleRules.toolsProbe): a tailscale, timeout or pkexec this
-//     user could replace (not owned by root, not in the Nix store) is not trusted, and then
-//     nothing runs; a link is opened with Api.openUrl.
-// With the seam in use a link is opened by the seam's xdg-open (never Api.openUrl's).
+// PROGRAMS — which tailscale, timeout, pkexec, curl, systemctl and openssl run: the shell's
+// lookup, the module handle's `programs` (module API 1.9: each by its absolute path, judged
+// trusted or not; TailscaleRules.programsFound). A tailscale, timeout or pkexec this user
+// could change is not trusted, and then nothing runs. In module test mode the shell hands over the stand-ins of the manifest's
+// testPrograms instead (tests/stand-in) — a module test never reaches the real tailscale. A
+// suite's own client is given a stand-in handle (tests/StandInModule.qml). Looking again
+// (recheck(), wake(), the backoff) asks the shell to look the programs up again
+// (recheckPrograms), and the LocalAPI socket is looked for each time. Links open through
+// Api.openUrl (in module test mode it records them).
 //
 // ACTIONS run one at a time (`busy`, `operation`): planned by TailscaleRules (planConnect,
 // planDisconnect, planAttend, commandFor), run plainly by absolute path; when Tailscale
 // answers "Access denied" and ONLY when the user asked (origin "user"), run again through
-// the API's PrivilegedAction (pkexec, TailscaleRules.privileged: under timeout, so a root
-// process ends by itself). Origin "network" never prompts and never opens a browser: it sets
-// `attention` instead. pkexec 126 (dismissed) shows nothing; 127 is `failed` with the
-// contract's sentence; any other failure is `failed(what, reason)` with the rules' sentence.
+// the API's PrivilegedAction (its `elevate`: the pkexec of module.programs;
+// TailscaleRules.privileged: under timeout, so a root process ends by itself). Origin
+// "network" never prompts and never opens a browser: it sets `attention` instead. pkexec 126
+// (dismissed) shows nothing; 127 is `failed` with the contract's sentence; any other failure
+// is `failed(what, reason)` with the rules' sentence.
 // A failed connect, disconnect, login or start the user asked for also leaves its reason on
 // the entry's status line (`failure`, TailscaleRules.failureText / failureAfter) — never as
 // attention, so the shell's "VPN with a network" may still connect it — until the phase
@@ -82,12 +77,12 @@ QtObject {
 
     // Acts only while true (Main binds it to module.active); false ends everything
     property bool running: false
-    // The module's handle (its store, its settings, resumed()), or null (a suite's client)
+    // The module's handle (its store, its settings, resumed(), its programs), or a suite's
+    // stand-in handle (tests/StandInModule.qml), or null
     property var module: null
-    // The tools seam (above): "" = decided at start from the environment
-    property string toolsDir: ""
-    // Judge the programs as on PATH even with a tools directory (the suites' trust test)
-    property bool checkTrust: false
+    // The system's facts (module API 1.13; a suite may give its own): the data and download
+    // folders, IP forwarding
+    property var system: Api.system
     // Added to every process's environment (the suites: the stand-ins' TS_FAKE_* variables)
     property var environment: ({})
     // The clock, for the suites (0: the real one)
@@ -108,13 +103,8 @@ QtObject {
     property real _startedAt: 0
     // Overrides of TailscaleRules.timeLimits (seconds), for the suites
     property var timeLimits: ({})
-    // Where IP forwarding is read (the forwarding seam): a directory holding `ipv4` and `ipv6`
-    // files ("" = H2S_TAILSCALE_FORWARDING_DIR in the environment when it names an absolute
-    // directory, else the real /proc/sys/net/ipv4/ip_forward and
-    // /proc/sys/net/ipv6/conf/all/forwarding)
-    property string forwardingDir: ""
-    // The system's host name ("" = read at start from /proc/sys/kernel/hostname — only with the
-    // programs on PATH; with a tools directory it stays unknown unless the owner sets it)
+    // The system's host name ("" = read at start from /proc/sys/kernel/hostname — outside
+    // module test mode; in it the name stays unknown unless the owner sets it)
     property string systemHostname: ""
     // Open the login page in the browser (setting mod.tailscale.openLoginInBrowser)
     readonly property bool openLoginInBrowser: module ? module.value("openLoginInBrowser") !== false : true
@@ -123,16 +113,17 @@ QtObject {
     // forwards it as the provider's failed(entryId, what, reason))
     signal failed(string what, string reason)
 
-    // ---- Tools ----
+    // ---- Programs ----
 
-    // "owner" | "seam" | "test-stand-ins" | "path" ("" before the start)
-    property string toolsMode: ""
-    property string _tools: ""
-    // Absolute paths ("" unknown or missing)
+    // The handle's (above): { <name>: { path, trusted, reason } }, null while not looked up
+    readonly property var programs: module?.programsReady === false ? null : (module?.programs ?? null)
+    // Absolute paths, as last applied ("" unknown or missing)
     property string tailscalePath: ""
     property string timeoutPath: ""
     property string pkexecPath: ""
     property string curlPath: ""
+    property string systemctlPath: ""
+    property string opensslPath: ""
     property string socketPath: TailscaleRules.localApiSocket
     // "unknown" | "present" | "missing" | "untrusted"
     property string cli: "unknown"
@@ -143,10 +134,6 @@ QtObject {
     readonly property string elevationProblem: cli !== "present" ? ""
         : timeoutPath === "" ? "Changes that need an administrator are not offered: coreutils' timeout was not found, and a command run as administrator could not be stopped once started."
         : pkexecPath === "" ? "Changes that need an administrator are not offered: pkexec was not found." : ""
-
-    function tool(name) {
-        return _tools !== "" ? _tools + "/" + name : name;
-    }
 
     function _limit(name) {
         const value = (timeLimits ?? {})[name];
@@ -300,22 +287,9 @@ QtObject {
 
     function _start() {
         _generation++;
-        _tools = toolsDir;
-        toolsMode = toolsDir !== "" ? "owner" : "";
-        if (toolsDir === "") {
-            const seam = Quickshell.env("H2S_TAILSCALE_TOOLS");
-            if (typeof seam === "string" && seam.startsWith("/")) {
-                _tools = seam.replace(/\/+$/, "");
-                toolsMode = "seam";
-            } else if (typeof Quickshell.env("H2S_TEST_MODULES") === "string" && Quickshell.env("H2S_TEST_MODULES") !== "") {
-                _tools = String(Qt.resolvedUrl("../tools/stand-in")).replace(/^file:\/\//, "").replace(/\/+$/, "");
-                toolsMode = "test-stand-ins";
-            } else {
-                toolsMode = "path";
-            }
-        }
         // A look of an earlier start is no longer waited for (its answer is dropped)
         _probing = false;
+        _lookAgain = false;
         _resolveTools();
         _readIdentity();
         _readLan();
@@ -362,74 +336,91 @@ QtObject {
         return running && generation === _generation;
     }
 
-    // tailscale, timeout, pkexec and curl by absolute path (the seam's, or PATH's — then
-    // judged: TailscaleRules.toolsProbe), and the LocalAPI socket that exists
-    function _resolveTools() {
-        // One look at a time (a view and the timer may ask together)
-        if (_probing)
+    // The programs as the handle has them now (TailscaleRules.programsFound), and the LocalAPI
+    // socket that exists. `lookUp`: the shell is asked to look the programs up again first
+    // (installed or changed since); its answer comes as a change of `programs`, which applies
+    // them again
+    function _resolveTools(lookUp) {
+        if (lookUp === true && typeof module?.recheckPrograms === "function")
+            module.recheckPrograms();
+        // One look at a time (a view and the timer may ask together); one asked meanwhile
+        // follows it
+        if (_probing) {
+            _lookAgain = true;
             return;
+        }
         _probing = true;
         const generation = _generation;
-        const judge = toolsMode === "path" || checkTrust;
-        const probe = [
-            "dir=$1; check=$2; shift 2",
-            "for n in tailscale timeout pkexec curl; do",
-            "  if [ -n \"$dir\" ]; then p=\"$dir/$n\"; { [ -f \"$p\" ] && [ -x \"$p\" ]; } || p=''; else p=$(command -v \"$n\" 2> /dev/null) || p=''; fi",
-            "  case $p in /*) ;; *) p='' ;; esac",
-            "  printf 'tool\\t%s\\t%s\\n' \"$n\" \"$p\"",
-            "  if [ -n \"$p\" ] && [ \"$check\" = 1 ] && [ \"$n\" != curl ]; then",
-            "    r=$(readlink -f -- \"$p\") && printf 'real\\t%s\\t%s\\n' \"$n\" \"$r\" && stat -L --printf \"stat\\t$n\\t%u\\t%a\\t%n\\n\" -- \"$(dirname -- \"$p\")\" \"$r\" \"$(dirname -- \"$r\")\"",
-            "  fi",
-            "done",
-            "for s in \"$@\"; do [ -S \"$s\" ] && { printf 'socket\\t%s\\n' \"$s\"; break; }; done",
-            "true"
-        ].join("\n");
-        _misc.run(["sh", "-c", probe, "sh", _tools, judge ? "1" : "0"].concat(TailscaleRules.localApiSockets), result => {
+        const probe = "for s in \"$@\"; do [ -S \"$s\" ] && { printf 'socket\\t%s\\n' \"$s\"; break; }; done; true";
+        _misc.run(["sh", "-c", probe, "sh"].concat(TailscaleRules.localApiSockets), result => {
             if (!_alive(generation))
                 return;
             _probing = false;
-            const found = TailscaleRules.toolsProbe(result.lines.join("\n"), judge);
-            const tools = found.tools;
-            curlPath = tools.curl.path;
-            socketPath = found.socket !== "" ? found.socket : TailscaleRules.localApiSocket;
-            const untrusted = found.untrusted.filter(name => name !== "curl");
-            if (untrusted.length > 0) {
-                tailscalePath = "";
-                timeoutPath = "";
-                pkexecPath = "";
-                untrustedReason = tools[untrusted[0]].reason;
-                cli = "untrusted";
-                _logOutcome("looking for tailscale", false, untrustedReason);
-                _readIntent = "";
-                _followRecheck();
-                return;
+            let socket = "";
+            for (const line of result.lines ?? []) {
+                const parts = String(line).split("\t");
+                if (parts[0] === "socket" && parts.length === 2 && TailscaleRules.localApiSockets.includes(parts[1])) {
+                    socket = parts[1];
+                    break;
+                }
             }
-            untrustedReason = "";
-            timeoutPath = tools.timeout.path;
-            pkexecPath = tools.pkexec.path;
-            _admin.elevate = [pkexecPath !== "" ? pkexecPath : "pkexec"];
-            _adminSpare.elevate = _admin.elevate;
-            if (tools.tailscale.path === "") {
-                tailscalePath = "";
-                cli = "missing";
-                _logOutcome("looking for tailscale", false, "not installed");
-                _readIntent = "";
-                _followRecheck();
-                return;
+            socketPath = socket !== "" ? socket : TailscaleRules.localApiSocket;
+            _applyPrograms();
+            if (_lookAgain) {
+                _lookAgain = false;
+                _resolveTools();
             }
-            tailscalePath = tools.tailscale.path;
-            cli = "present";
-            _logOutcome("looking for tailscale", true, "");
-            _streamFailures = 0;
-            _scheduleRead(true);
-            _startStream();
-            _followRecheck();
         });
     }
+    property bool _lookAgain: false
 
-    // The OS's name (only with the programs on PATH and when the owner set none: systemHostname)
+    // A new answer of the shell's lookup (a recheck, the machine woke): applied again
+    onProgramsChanged: {
+        if (running)
+            _resolveTools();
+    }
+
+    function _applyPrograms() {
+        const found = TailscaleRules.programsFound(programs);
+        curlPath = found.curl;
+        timeoutPath = found.timeout;
+        pkexecPath = found.pkexec;
+        _admin.elevate = [pkexecPath !== "" ? pkexecPath : "pkexec"];
+        _adminSpare.elevate = _admin.elevate;
+        systemctlPath = found.systemctl;
+        opensslPath = found.openssl;
+        untrustedReason = found.untrustedReason;
+        // Not looked up yet: the handle's answer starts it (onProgramsChanged)
+        if (!found.known) {
+            tailscalePath = "";
+            cli = "unknown";
+            return;
+        }
+        if (found.cli !== "present") {
+            const wasPresent = cli === "present";
+            tailscalePath = "";
+            cli = found.cli;
+            _logOutcome("looking for tailscale", false, found.cli === "untrusted" ? untrustedReason : "not installed");
+            _readIntent = "";
+            if (wasPresent && _stream.running)
+                _stream.running = false;
+            _followRecheck();
+            return;
+        }
+        const again = cli === "present" && tailscalePath === found.tailscale;
+        tailscalePath = found.tailscale;
+        cli = "present";
+        _logOutcome("looking for tailscale", true, "");
+        if (!again)
+            _streamFailures = 0;
+        _scheduleRead(true);
+        _startStream();
+        _followRecheck();
+    }
+
+    // The OS's name (outside module test mode, and only when the owner set none: systemHostname)
     function _readSystemHostname() {
-        if (toolsMode !== "path" || (systemHostname !== "" && !_systemHostnameRead))
+        if (Api.testMode || (systemHostname !== "" && !_systemHostnameRead))
             return;
         const generation = _generation;
         _misc.run(["cat", "/proc/sys/kernel/hostname"], result => {
@@ -544,7 +535,7 @@ QtObject {
 
     function refresh() {
         if (cli !== "present" && running)
-            _resolveTools();
+            _resolveTools(true);
         else
             _scheduleRead(true);
     }
@@ -587,7 +578,7 @@ QtObject {
     function _recheck(asked) {
         const plan = TailscaleRules.recheckPlan({ cli: cli, daemon: daemon, phase: view.phase, readFailing: _statusFailing }, asked);
         if (plan === "probe") {
-            _resolveTools();
+            _resolveTools(true);
             return true;
         }
         if (plan === "read") {
@@ -1185,34 +1176,25 @@ QtObject {
     readonly property string autoUpdateProblem: updateManagedBySystem
         ? "Not available: Tailscale is updated with the system here and refuses to update itself." : ""
     readonly property var _switchCommands: ["ssh", "webClient", "snat", "statefulFiltering", "connector", "posture", "autoUpdate", "updateCheck"]
-    property bool _forwardingReading: false
     property real _forwardingAskedAt: 0
 
-    function _forwardingPaths() {
-        const dir = forwardingDir !== "" ? forwardingDir : String(Quickshell.env("H2S_TAILSCALE_FORWARDING_DIR") ?? "");
-        return dir.startsWith("/") ? [dir.replace(/\/+$/, "") + "/ipv4", dir.replace(/\/+$/, "") + "/ipv6"]
-            : ["/proc/sys/net/ipv4/ip_forward", "/proc/sys/net/ipv6/conf/all/forwarding"];
-    }
-
-    // Reads both files (unprivileged), at most once a second
+    // Reads both switches (unprivileged: the system's facts, module API 1.13), at most once a
+    // second
     function readForwarding() {
         if (!running)
             return false;
         const moment = Date.now();
-        if (_forwardingReading || moment - _forwardingAskedAt < 1000)
+        if (moment - _forwardingAskedAt < 1000)
             return false;
-        _forwardingReading = true;
         _forwardingAskedAt = moment;
-        const generation = _generation;
-        const paths = _forwardingPaths();
-        _misc.run(["sh", "-c", "printf 'ipv4\\t%s\\n' \"$(cat \"$1\" 2> /dev/null)\"; printf 'ipv6\\t%s\\n' \"$(cat \"$2\" 2> /dev/null)\"",
-                   "sh", paths[0], paths[1]], result => {
-            _forwardingReading = false;
-            if (!_alive(generation))
-                return;
-            const parsed = TailscaleRules.parseForwarding((result.lines ?? []).join("\n"));
-            forwarding = { ipv4: parsed.ipv4, ipv6: parsed.ipv6, readAt: fixedNow > 0 ? fixedNow : moment };
-        });
+        let read = null;
+        try {
+            read = typeof system?.readIpForwarding === "function" ? system.readIpForwarding() : null;
+        } catch (error) {
+            read = null;
+        }
+        const state = value => value === true || value === false ? value : null;
+        forwarding = { ipv4: state(read?.ipv4), ipv6: state(read?.ipv6), readAt: fixedNow > 0 ? fixedNow : moment };
         return true;
     }
 
@@ -1615,15 +1597,21 @@ QtObject {
         _scheduleRead(true);
     }
 
-    // `systemctl start tailscaled.service` (systemd asks polkit itself: no pkexec)
+    // `systemctl start tailscaled.service` (systemd asks polkit itself: no pkexec), systemctl
+    // by the path the shell found
     function _startService() {
         const command = TailscaleRules.commandFor("startService", {});
+        if (systemctlPath === "") {
+            failed(command.description, "systemctl was not found.");
+            _noteFailure("Not started.");
+            return false;
+        }
         const generation = _generation;
         const token = ++_opToken;
         const seconds = _limit("change");
-        const timed = TailscaleRules.timed([tool("systemctl")].concat(command.argv.slice(1)), timeoutPath, seconds);
+        const timed = TailscaleRules.timed([systemctlPath].concat(command.argv.slice(1)), timeoutPath, seconds);
         operation = "start";
-        _opProcess = _spawn(timed.ok ? timed.argv : [tool("systemctl")].concat(command.argv.slice(1)), _watchdogMs(seconds), result => {
+        _opProcess = _spawn(timed.ok ? timed.argv : [systemctlPath].concat(command.argv.slice(1)), _watchdogMs(seconds), result => {
             if (!_alive(generation) || token !== _opToken)
                 return;
             _opProcess = null;
@@ -1649,18 +1637,13 @@ QtObject {
         return true;
     }
 
-    // Opens a link: the seam's xdg-open when the seam is in use, else Api.openUrl
     // A folder in the file manager (Taildrop's "Open folder"): a file: URL of a FOLDER only — the
-    // caller passes the save folder, never a received file — through the seam's xdg-open, or
-    // Api.openUrl with allowFile
+    // caller passes the save folder, never a received file — through Api.openUrl with allowFile
     function openFolder(url) {
         if (typeof url !== "string" || !url.startsWith("file:///") || /[\u0000-\u001f]/.test(url))
             return false;
         opened++;
-        if (_tools !== "")
-            _misc.run([tool("xdg-open"), url], () => {}, _environment());
-        else
-            Api.openUrl(url, { allowFile: true });
+        Api.openUrl(url, { allowFile: true });
         return true;
     }
 
@@ -1687,10 +1670,7 @@ QtObject {
         if (safe === "")
             return false;
         opened++;
-        if (_tools !== "")
-            _misc.run([tool("xdg-open"), safe], () => {}, _environment());
-        else
-            Api.openUrl(safe);
+        Api.openUrl(safe);
         return true;
     }
 

@@ -5,7 +5,7 @@ import qs.tests
 import ".."
 
 // Taildrop's live side (TaildropClient, on TailscaleClient's runner) against the stand-ins
-// (tools/stand-in): sending — the user-side check, `file cp --` plainly, denied → pkexec, the
+// (tests/stand-in, each client's StandInModule): sending — the user-side check, `file cp --` plainly, denied → pkexec, the
 // bus's progress, cancel, a dismissed prompt, an offline device — and receiving — the bus's
 // arrivals for a user who is not the operator (a notice, no listing, no save), the operator's
 // listing and save with adversarial names into a real folder (sanitised, owned by the user,
@@ -24,7 +24,7 @@ TestCase {
         return String(url).replace(/^file:\/\//, "").replace(/\/+$/, "");
     }
 
-    readonly property string standIns: _path(Qt.resolvedUrl("../../tools/stand-in"))
+    readonly property string standIns: _path(Qt.resolvedUrl("stand-in"))
     readonly property string fixtures: _path(Qt.resolvedUrl("../../fixtures"))
     readonly property string base: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/ts-drop-" + Date.now()
 
@@ -34,6 +34,9 @@ TestCase {
         TailscaleClient {}
     }
     property CommandAction _shell: CommandAction {}
+    property Component _moduleComponent: Component {
+        StandInModule {}
+    }
 
     // options: { env {}, setup (sh lines, $1 the scenario's directory) }
     function scenario(name, options) {
@@ -53,9 +56,10 @@ TestCase {
             _shell.run(["sh", "-c", lines.join(" && "), "sh", dir], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
+                s.module = _moduleComponent.createObject(suite);
                 s.client = _clientComponent.createObject(suite, {
-                    toolsDir: standIns, environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 5000,
-                    readRetryMinMs: 300, readRetryMaxMs: 1200, forwardingDir: dir + "/forwarding"
+                    module: s.module, environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 5000,
+                    readRetryMinMs: 300, readRetryMaxMs: 1200
                 });
                 s.client.taildrop.defaultFolder = dir + "/downloads";
                 if (s.options.idleLimitMs)
@@ -404,12 +408,14 @@ TestCase {
             assertEqual(drop(op).saved.filter(item => item.outcome === "skipped").length, 1, "a file left again: one line, not two");
             assert(drop(op).openFolder(), "Open folder");
         });
-        thenShellUntil(op, "the folder opened", "grep -c '^xdg-open file://' \"$1/log\"", "opened", "1", () => {});
+        then(op, "the folder opened", () => op.client.opened === 1, () => {});
         logs(op, "after saving", () => {
             assertEqual(op.pkexecLines.length, 0, "receiving never runs anything as root");
             assert(count(op.logLines, /^curl -sS --fail --unix-socket \S+ http:\/\/local-tailscaled\.sock\/localapi\/v0\/files\/$/) >= 3, "the listing: GET files/");
             assertEqual(count(op.logLines, /^curl .*-X DELETE /), 6, "DELETE only after each placed file (5 + the overwrite; not the skipped)");
-            assertEqual(count(op.logLines, /^xdg-open file:\/\/\S+\/downloads$/), 1, "Open folder: the folder (checked to be one), never a file");
+            const folderUrl = "file://" + op.dir.split("/").map(part => encodeURIComponent(part)).join("/") + "/downloads";
+            assert((ModuleTestKit.opened ?? []).some(entry => entry.url === folderUrl && entry.allowFile === true),
+                   "Open folder: the folder (checked to be one), never a file, through Api.openUrl with allowFile");
             assertEqual(count(op.logLines, /^file get/), 0, "never `tailscale file get`");
         });
 

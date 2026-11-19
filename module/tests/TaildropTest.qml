@@ -178,12 +178,12 @@ TestCase {
     }
 
     function folders() {
-        assertEqual(rules.downloadFolder("XDG_DOWNLOAD_DIR=\"$HOME/Hämtningar\"\n", "/home/u"), "/home/u/Hämtningar", "XDG_DOWNLOAD_DIR with $HOME");
-        assertEqual(rules.downloadFolder("# comment\nXDG_DOWNLOAD_DIR=\"/data/dl/\"", "/home/u"), "/data/dl", "an absolute one");
-        assertEqual(rules.downloadFolder("XDG_DOWNLOAD_DIR=\"$HOME/\"", "/home/u"), "/home/u/Downloads", "\"$HOME/\" (none): ~/Downloads");
-        assertEqual(rules.downloadFolder("XDG_DOWNLOAD_DIR=\"$(rm -rf ~)\"", "/home/u"), "/home/u/Downloads", "never run: a command substitution is no folder");
-        assertEqual(rules.downloadFolder("", "/home/u/"), "/home/u/Downloads", "no file: ~/Downloads");
-        assertEqual(rules.downloadFolder("", ""), "", "no home: none");
+        assertEqual(rules.defaultFolder("/home/u/Hämtningar", "/home/u"), "/home/u/Hämtningar", "the system's download folder (Api.system)");
+        assertEqual(rules.defaultFolder("/data/dl/", "/home/u"), "/data/dl", "… an absolute one elsewhere, without the trailing \"/\"");
+        assertEqual(rules.defaultFolder("/home/u", "/home/u/"), "/home/u/Downloads", "the home itself (\"$HOME/\": none): ~/Downloads");
+        assertEqual(rules.defaultFolder("relative/dl", "/home/u"), "/home/u/Downloads", "not a folder: ~/Downloads");
+        assertEqual(rules.defaultFolder("", "/home/u/"), "/home/u/Downloads", "not read: ~/Downloads");
+        assertEqual(rules.defaultFolder("", ""), "", "no home: none");
         assertEqual(rules.folderUrl("/home/u/My Files/#1"), "file:///home/u/My%20Files/%231", "a folder as a file: URL, each part encoded");
         assertEqual(rules.folderUrl("relative"), "", "not absolute: no URL");
         assertEqual(rules.folderProblem("/a/../b"), "\".\" or \"..\" in the path", "\"..\" refused");

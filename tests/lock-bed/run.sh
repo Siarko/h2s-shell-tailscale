@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Runs the module's lock-bed tests (tests/lock-bed/tests/*.sh) in the shell's lock test bed:
-# the real shell, started by its launcher in an invisible nested Hyprland, with this
-# repository's module/ loaded and the stand-ins (tools/stand-in) as every program the module
-# runs — the shell's tests/lock/run.sh, which takes tests from another directory through
-# LOCKTEST_EXTRA_TESTS. Its isolation is the test bed's (tests/lock/README.md in the shell).
+# the real shell, started by its launcher in an invisible nested Hyprland, in module test mode,
+# with this repository's module/ loaded — every program the module runs its stand-in
+# (module/tests/stand-in, the manifest's testPrograms) — the shell's tests/lock/run.sh, which
+# takes tests from another directory through LOCKTEST_EXTRA_TESTS. Its isolation is the test bed's (tests/lock/README.md in the shell).
 #
 #   tests/lock-bed/run.sh              every test here
 #   tests/lock-bed/run.sh tailscale    the named ones

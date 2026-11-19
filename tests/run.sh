@@ -12,7 +12,9 @@
 # it loads the module through the real module host (manifest, API, imports checked) in the
 # shell's private headless compositor, with the tools the shell's runners take (the pinned
 # ones through nix where there is a `nix` command, else those on PATH; its first lines say
-# which). A shell checkout without that runner cannot run the suites: status 2.
+# which), in module test mode: the module's programs are its stand-ins (module/tests/stand-in,
+# the manifest's testPrograms). A shell checkout without that runner cannot run the suites:
+# status 2.
 #
 # When other runs may share the machine: flock /tmp/h2s-locktest.flock tests/run.sh
 #
@@ -40,10 +42,6 @@ for name in "$@"; do
     case "$name" in -*) echo "usage: tests/run.sh [--log <file>] [<suite>…]" >&2; exit 2 ;; esac
     suite_arguments+=(--suite "$name")
 done
-
-# The stand-ins first on PATH, whatever runs a program by name (the shell's Api.openUrl runs
-# xdg-open): the module itself takes them through its tools seam under the module runner
-export PATH="$REPOSITORY/tools/stand-in:$PATH"
 
 [ -x "$SHELL_DIR/tests/run-modules.sh" ] \
     || { echo "run.sh: $SHELL_DIR has no tests/run-modules.sh (the shell's module test runner, which runs these suites); nothing was run" >&2; exit 2; }

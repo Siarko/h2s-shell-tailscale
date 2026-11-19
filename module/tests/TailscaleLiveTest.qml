@@ -4,13 +4,12 @@ import qs.api
 import qs.tests
 import ".."
 
-// The live side (TailscaleClient) against the stand-ins (tools/stand-in), through its tools
-// seam: every scenario the stand-in tailscale supports, each with a client, a state directory
-// and logs of its own, side by side. Asserts on what the client shows AND on what was run
-// (the stand-ins log argv): `up` never has a flag, every change is a `set`, nothing
-// privileged and no browser on origin "network". Nothing here reaches a real tailscale: the
-// client's toolsDir is the stand-ins' directory (and the shell's module test runner would
-// give it those anyway).
+// The live side (TailscaleClient) against the stand-ins (tests/stand-in): every scenario the
+// stand-in tailscale supports, each with a client, a state directory and logs of its own, side
+// by side. Asserts on what the client shows AND on what was run (the stand-ins log argv): `up`
+// never has a flag, every change is a `set`, nothing privileged and no browser on origin
+// "network". Nothing here reaches a real tailscale: each client's handle is a StandInModule —
+// the stand-ins as its programs, as the shell hands them over in module test mode.
 TestCase {
     id: suite
     suiteName: "tailscale: the live side against the stand-ins"
@@ -34,7 +33,7 @@ TestCase {
         return String(url).replace(/^file:\/\//, "").replace(/\/+$/, "");
     }
 
-    readonly property string standIns: _path(Qt.resolvedUrl("../../tools/stand-in"))
+    readonly property string standIns: _path(Qt.resolvedUrl("stand-in"))
     readonly property string fixtures: _path(Qt.resolvedUrl("../../fixtures"))
     readonly property string base: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/ts-live-" + Date.now()
     // "now" as the key-expiry fixtures have it
@@ -46,14 +45,18 @@ TestCase {
         TailscaleClient {}
     }
     property CommandAction _shell: CommandAction {}
+    property Component _moduleComponent: Component {
+        StandInModule {}
+    }
 
     // ---- The scenario machinery ----
 
     // A scenario: its own directory, stand-in state and client. options: { state (the stand-in
     // scenario), daemonDown, holdStatus (the stand-in's `status` waits until the state
-    // directory's status-hold is removed), env {}, toolsDir, fixedNow, loginTimeoutMs,
-    // emptyTools, lateTools (a tools directory that starts empty: installTools fills it),
-    // recheckMinMs, without (a copy of the stand-ins without this one), timeLimits, checkTrust }
+    // directory's status-hold is removed), env {}, fixedNow, loginTimeoutMs, emptyTools (no
+    // program found), lateTools (none found until a recheck after install()), recheckMinMs,
+    // without (that program not found), untrusted (that program judged untrusted), timeLimits,
+    // forwarding ("<ipv4> <ipv6>", 1 or 0: what the system's facts read) }
     function scenario(name, options) {
         const dir = base + "/" + name;
         const s = { name: name, dir: dir, log: dir + "/log", pkexecLog: dir + "/pkexec.log", client: null, failures: [],
@@ -69,7 +72,7 @@ TestCase {
         // Set up, then the client
         then(s, "set up", () => true, () => {});
         s.steps[0].start = () => {
-            const lines = ["mkdir -p \"$1/state\" \"$1/empty-tools\" \"$1/late-tools\"", ": > \"$1/log\"", ": > \"$1/pkexec.log\""];
+            const lines = ["mkdir -p \"$1/state\"", ": > \"$1/log\"", ": > \"$1/pkexec.log\""];
             if (s.options.state)
                 lines.push("printf '%s\\n' \"$2\" > \"$1/state/scenario\"");
             if (s.options.daemonDown)
@@ -77,22 +80,21 @@ TestCase {
             if (s.options.holdStatus)
                 lines.push(": > \"$1/state/status-hold\"");
             lines.push("echo '{\"Health\":{\"Warnings\":{}}}' > \"$1/bus.jsonl\"");
-            // IP forwarding as /proc would say it (the forwarding seam): "<ipv4> <ipv6>"
-            const forwarding = (s.options.forwarding ?? "1 1").split(" ");
-            lines.push("mkdir -p \"$1/forwarding\" && echo " + forwarding[0] + " > \"$1/forwarding/ipv4\" && echo " + forwarding[1] + " > \"$1/forwarding/ipv6\"");
-            if (s.options.without)
-                lines.push("mkdir -p \"$1/tools\" && cp \"$3\"/* \"$1/tools/\" && rm -f \"$1/tools/$4\"");
             if (s.options.busLines > 0)
                 lines.push("i=0; while [ $i -lt " + s.options.busLines + " ]; do echo '{\"State\":6}'; i=$((i+1)); done > \"$1/bus.jsonl\"");
-            _shell.run(["sh", "-c", lines.join(" && "), "sh", dir, s.options.state ?? "", standIns, s.options.without ?? ""], result => {
+            _shell.run(["sh", "-c", lines.join(" && "), "sh", dir, s.options.state ?? ""], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
+                s.module = _moduleComponent.createObject(suite);
+                s.module.programs = s.module.programsIn({ missing: s.options.emptyTools === true || s.options.lateTools === true,
+                                                          without: s.options.without, untrusted: s.options.untrusted });
+                // IP forwarding as the system's facts read it: "<ipv4> <ipv6>"
+                const forwarding = (s.options.forwarding ?? "1 1").split(" ").map(value => value === "1");
                 s.client = _clientComponent.createObject(suite, {
-                    toolsDir: s.options.emptyTools ? dir + "/empty-tools" : s.options.lateTools ? dir + "/late-tools" : (s.options.without ? dir + "/tools" : standIns),
+                    module: s.module, system: Object.assign({}, Api.system, { readIpForwarding: () => ({ ipv4: forwarding[0], ipv6: forwarding[1] }) }),
                     environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: s.options.pollMs ?? 2000,
                     loginTimeoutMs: s.options.loginTimeoutMs ?? 60000, fixedNow: s.options.fixedNow ?? 0,
-                    timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, checkTrust: s.options.checkTrust === true,
-                    forwardingDir: dir + "/forwarding", recheckMinMs: s.options.recheckMinMs ?? 5000
+                    timeLimits: s.options.timeLimits ?? {}, readRetryMinMs: 300, readRetryMaxMs: 1200, recheckMinMs: s.options.recheckMinMs ?? 5000
                 });
                 s.client.failed.connect((what, reason) => s.failures.push({ what: what, reason: reason }));
                 s.client.running = true;
@@ -149,6 +151,11 @@ TestCase {
     function elevatedLine(seconds, rest) {
         const escape = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
         return new RegExp("^pkexec\\t" + escape(standIns) + "/timeout\\t-k\\t5\\t" + seconds + "\\t" + escape(standIns) + "/tailscale\\t" + rest + "$");
+    }
+
+    // Api.openUrl was asked to open `url` (in module test mode it records; any scenario's)
+    function opened(url) {
+        return (ModuleTestKit.opened ?? []).some(entry => entry.url === url);
     }
 
     // A step that runs `script` (sh -c, $1 = the scenario's directory) and stores its output's
@@ -266,8 +273,8 @@ TestCase {
             assert(running.client.devices.length > 0, "running: devices listed (" + running.client.devices.length + ")");
             assert(running.client.exitNodes.count >= 2, "running: exit nodes listed");
             assert(running.client.events > 0, "running: bus messages read from the stream");
-            assertEqual(running.client.toolsMode, "owner", "running: the tools seam given by the owner");
-            assert(running.client.tailscalePath === standIns + "/tailscale", "running: tailscale by the seam's absolute path");
+            assertEqual(running.client.tailscalePath, standIns + "/tailscale", "running: tailscale by the absolute path its handle's programs give");
+            assertEqual(running.client.curlPath, standIns + "/curl", "… curl too");
             running.client.suggest(() => running.suggested = true);
         });
         then(running, "exit-node suggest answered", () => running.suggested === true, () => {
@@ -318,7 +325,7 @@ TestCase {
         waitMs(login, 300);
         thenLogs(login, "network did nothing", () => {
             assertEqual(changesIn(login).length, 0, "origin network: nothing run");
-            assertEqual(count(login.logLines, /^xdg-open /), 0, "origin network: no browser");
+            assertEqual(login.client.opened, 0, "origin network: no browser");
             assertEqual(login.pkexecLines.length, 0, "origin network: no pkexec");
             assert(login.client.connect("user"), "connect (user): the login starts");
         });
@@ -333,8 +340,8 @@ TestCase {
         thenLogs(login, "after the login", () => {
             assertEqual(count(login.logLines, /^login$/), 2, "bare `login`, denied, then as root");
             assertEqual(count(login.pkexecLines, elevatedLine(60, "login")), 1, "… through pkexec, under timeout (the login's limit: it ends by itself)");
-            assertEqual(count(login.logLines, /^xdg-open https:\/\/login\.tailscale\.com\/a\/REDACTED$/), 1, "the browser opened ONCE, through the seam's xdg-open");
-            assertEqual(login.client.opened, 1, "… counted once");
+            assertEqual(login.client.opened, 1, "the browser opened ONCE");
+            assert(opened("https://login.tailscale.com/a/REDACTED"), "… with the login link, through Api.openUrl (recorded in module test mode)");
         });
 
         // ---- a login that is never finished: the module ends it ----
@@ -353,7 +360,8 @@ TestCase {
             assert(approval.client.attend(), "attend: opens the admin page");
         });
         thenLogs(approval, "the admin page", () => {
-            assertEqual(count(approval.logLines, /^xdg-open https:\/\/login\.tailscale\.com\/admin\/machines$/), 1, "attend: the admin console opened");
+            assertEqual(approval.client.opened, 1, "attend: a link opened");
+            assert(opened("https://login.tailscale.com/admin/machines"), "… the admin console");
         });
 
         // ---- operator: log out with no pkexec at all ----
@@ -587,7 +595,7 @@ TestCase {
         thenLogs(slowUp, "after the pending connect", () => {
             assertEqual(count(slowUp.logLines, /^up$/), 1, "bare `up` once");
             assertEqual(count(slowUp.logLines, /^down$/), 1, "… then `down` (the daemon would keep trying)");
-            assertEqual(count(slowUp.logLines, /^xdg-open https:\/\/login\.tailscale\.com\/a\/REDACTED$/), 1, "… the URL opened once (the user's connect)");
+            assertEqual(slowUp.client.opened, 1, "… the URL opened once (the user's connect)");
         });
 
         // ---- A2: `up` past its time limit; a URL from the bus while it waits ----
@@ -677,10 +685,11 @@ TestCase {
             assertEqual(noCurl.client.streamStarts, 0, "no stream started (nothing that cannot start, restarted): the slow poll reads instead");
         });
 
-        // ---- programs this user could replace: not trusted, nothing runs ----
-        const untrusted = scenario("untrusted", { state: "running", checkTrust: true });
+        // ---- a tailscale this user could replace (the shell's verdict): nothing runs ----
+        const untrusted = scenario("untrusted", { state: "running", untrusted: "tailscale" });
         then(untrusted, "judged", () => untrusted.client.cli !== "unknown", () => {
-            assertEqual(untrusted.client.cli, "untrusted", "the stand-ins (owned by this user, not in the Nix store) are not trusted");
+            assertEqual(untrusted.client.cli, "untrusted", "a tailscale the shell judged untrusted is not run");
+            assertEqual(untrusted.client.tailscalePath, "", "… its path not taken");
             assertEqual(_entry(untrusted).status, "Not trusted", "the entry: \"Not trusted\"");
             assert(/isn't trusted/.test(_entry(untrusted).attention?.reason ?? ""), "… with the reason: " + _entry(untrusted).attention?.reason);
             assertEqual(_entry(untrusted).attention?.action, "Check again", "… its action looks again");
@@ -691,14 +700,17 @@ TestCase {
         thenLogs(untrusted, "nothing ran", () => {
             assertEqual(untrusted.logLines.length, 0, "not trusted: nothing run at all");
             assertEqual(untrusted.pkexecLines.length, 0, "… nothing through pkexec");
+            assert(untrusted.module.rechecks >= 1, "… Connect asked the shell to look the programs up again");
         });
 
         // ---- Tailscale installed while the shell runs: found without a restart ----
-        // The stand-ins copied into the (empty) tools directory after the start, as a package
-        // installed meanwhile; the slow poll and the backoff kept out of the way (an hour), so
-        // only what is under test can find it
-        const install = s => thenShell(s, "Tailscale installed meanwhile", "cp '" + standIns + "'/* \"$1/late-tools/\" && echo ok", "installed",
-                                       done => assertEqual(done, "ok", s.name + ": the stand-ins installed"));
+        // The shell's lookup finds the stand-ins only at the next recheckPrograms() after the
+        // start, as a package installed meanwhile; the slow poll and the backoff kept out of the
+        // way (an hour), so only what is under test can find it
+        const install = s => then(s, "Tailscale installed meanwhile", () => true, () => {
+            s.module.installed = s.module.programsIn({});
+            assertEqual(s.client.cli, "missing", s.name + ": not found before the shell looks again");
+        });
         // A view coming on screen (wake)
         const appears = scenario("cli-appears-wake", { state: "running", lateTools: true, pollMs: 3600000, recheckMinMs: 3600000 });
         then(appears, "not installed", () => appears.client.cli === "missing", () => {
@@ -732,8 +744,8 @@ TestCase {
         then(checkAgain, "connected", () => _entry(checkAgain).state === "activated" && !checkAgain.client.busy, () => {});
         thenLogs(checkAgain, "after the login", () => {
             assertEqual(count(checkAgain.logLines, /^login$/), 2, "bare `login`, denied, then as root");
-            assertEqual(count(checkAgain.pkexecLines, /^pkexec\t\S+\/late-tools\/timeout\t-k\t5\t60\t\S+\/late-tools\/tailscale\tlogin$/), 1, "… through pkexec, the newly found programs by absolute path");
-            assertEqual(count(checkAgain.logLines, /^xdg-open https:\/\/login\.tailscale\.com\/a\/REDACTED$/), 1, "the login page opened once");
+            assertEqual(count(checkAgain.pkexecLines, elevatedLine(60, "login")), 1, "… through pkexec, the newly found tailscale by absolute path");
+            assertEqual(checkAgain.client.opened, 1, "the login page opened once");
         });
         // Nothing asked: the backoff finds it
         const backoff = scenario("cli-appears-backoff", { state: "running", lateTools: true, pollMs: 3600000, recheckMinMs: 300 });
@@ -1067,7 +1079,7 @@ TestCase {
         });
         then(sharing, "route offered", () => !sharing.client.busy && sharing.client.sharing.routes.length === 1 && sharing.client.forwarding.readAt > 0, () => {
             same(sharing.client.sharing.routes.map(route => route.route + " " + route.state), ["192.168.7.0/24 pending"], "the route, waiting for an admin's approval");
-            same([sharing.client.forwarding.ipv4, sharing.client.forwarding.ipv6], [false, true], "forwarding read from the seam after offering");
+            same([sharing.client.forwarding.ipv4, sharing.client.forwarding.ipv6], [false, true], "forwarding read from the system's facts after offering");
             assert(sharing.client.forwardingWarning !== null && /IPv4/.test(sharing.client.forwardingWarning.text), "… IPv4 off: the warning");
             assert(sharing.client.setAdvertiseExitNode(true), "offer the exit node: starts");
         });

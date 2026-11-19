@@ -3,7 +3,7 @@
 # tailscaled's unix socket: the event stream (GET /localapi/v0/watch-ipn-bus) and Taildrop's
 # inbox (GET/DELETE /localapi/v0/files/…). It connects to nothing.
 #
-#   TS_FAKE_FIXTURES   the fixtures directory (default ../../fixtures from this script)
+#   TS_FAKE_FIXTURES   the fixtures directory (default ../../../fixtures from this script)
 #   TS_FAKE_BUS_FILE   the lines to print (default $TS_FAKE_FIXTURES/bus-lines.jsonl)
 #   TS_FAKE_BUS_DELAY  seconds between lines (default 0)
 #   TS_FAKE_BUS_END    eof (default: exit 0 after the last line) | die (exit 56, as a
@@ -16,17 +16,20 @@
 #                      file "daemon-down" in TS_FAKE_STATE_DIR (default as the stand-in
 #                      tailscale's: ${XDG_RUNTIME_DIR:-/tmp}/ts-fake-$(id -u))
 #   TS_FAKE_LOG        a file each call's arguments are appended to
+#   TS_FAKE_CALLS      a file each call's own path ($0) is appended to
 #
 # Taildrop's inbox is the state dir's "inbox" directory (a file per received file). As the
 # daemon (feature/taildrop/localapi.go serveFiles), files/ needs write access: root
-# (TS_FAKE_ROOT=1), TS_FAKE_OPERATOR=1, or the prefs' OperatorUser = TS_FAKE_USER — else 403,
+# (TS_FAKE_ROOT=1), TS_FAKE_OPERATOR=1, or the prefs' OperatorUser = TS_FAKE_USER (or the state
+# dir's "user" file, as the stand-in tailscale reads it) — else 403,
 # which curl --fail reports as exit 22. GET files/ lists [{"Name","Size"}]; GET files/<name>
 # hands the file over (-o <path> or stdout); -X DELETE files/<name> removes it.
 #
 # Without --unix-socket, or for any other URL, it fails as curl would (exit 7 / 22).
 here=$(cd "$(dirname "$0")" && pwd)
-F=${TS_FAKE_FIXTURES:-$here/../../fixtures}
+F=${TS_FAKE_FIXTURES:-$here/../../../fixtures}
 [ -n "${TS_FAKE_LOG:-}" ] && printf 'curl %s\n' "$*" >> "$TS_FAKE_LOG"
+[ -n "${TS_FAKE_CALLS:-}" ] && printf '%s\n' "$0" >> "$TS_FAKE_CALLS"
 socket=""
 url=""
 method=GET
@@ -54,7 +57,9 @@ case $url in
     */localapi/v0/files/*)
         operator=""
         [ -f "$state_dir/prefs" ] && operator=$(sed -n 's/^OperatorUser=//p' "$state_dir/prefs" | tail -n 1)
-        if [ "${TS_FAKE_ROOT:-0}" != 1 ] && [ "${TS_FAKE_OPERATOR:-0}" != 1 ] && { [ -z "$operator" ] || [ "$operator" != "${TS_FAKE_USER:-${USER:-}}" ]; }; then
+        fake_user=${TS_FAKE_USER:-${USER:-}}
+        [ -s "$state_dir/user" ] && fake_user=$(head -n 1 "$state_dir/user")
+        if [ "${TS_FAKE_ROOT:-0}" != 1 ] && [ "${TS_FAKE_OPERATOR:-0}" != 1 ] && { [ -z "$operator" ] || [ "$operator" != "$fake_user" ]; }; then
             http_error 403
         fi
         inbox=$state_dir/inbox

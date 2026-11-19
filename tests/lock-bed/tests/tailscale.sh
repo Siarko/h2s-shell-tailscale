@@ -1,10 +1,12 @@
 # shellcheck shell=bash
 # Tailscale's module in the real shell (sourced by the shell's tests/lock/run.sh after its
 # lib.sh, through LOCKTEST_EXTRA_TESTS — see tests/lock-bed/run.sh): the launcher starts the
-# shell with this repository's module/ (H2S_SHELL_MODULE_PATH) and the stand-ins as every
-# program the module runs — named to it by its tools seam (H2S_TAILSCALE_TOOLS) and first on
-# the shell's PATH too (so even the shell's own xdg-open and nmcli are stand-ins). Wrappers
-# give the stand-ins this test's private state and logs.
+# shell with this repository's module/ (H2S_SHELL_MODULE_PATH). The bed's shell is in module
+# test mode, so every program the module runs is its own stand-in (module/tests/stand-in, the
+# manifest's testPrograms), its runs as administrator through the stand-in pkexec;
+# tools/stand-in (xdg-open, nmcli) is first on the shell's PATH, for the
+# shell's own use. The stand-ins take this test's private state and logs from the TS_FAKE_*
+# variables exported below (the shell's environment, which its commands inherit).
 #
 # Checked: the module loads; the Tailscale entry appears among the VPNs (its IPC state) and in
 # the network popup's VPN section (screenshot); connecting as a user who is not Tailscale's
@@ -16,11 +18,12 @@
 # netcheck run and the diagnostics section opened by a click; step 3: a rename while disconnected
 # (shown as set, "the tailnet shows it after connecting"), a route and the exit node offered through
 # pkexec (waiting for approval, the route kept beside the exit node, approved by the stand-in's
-# admin), the forwarding warning from the bed's fake /proc (H2S_TAILSCALE_FORWARDING_DIR), SSH on,
+# admin), the forwarding warning from the system's facts (module test mode's: forwarding off), SSH on,
 # screenshots of This device, Sharing and SSH; step 4: as a user who is not the operator a send
 # refused (nothing run) and an arrival noticed ("Files received" on the entry, no inbox access),
 # then as the operator a file sent to peer4 as the user (never pkexec) and two waiting files saved
-# into the bed's download folder (H2S_TAILSCALE_DOWNLOAD_DIR) — ".bashrc" as
+# into the download folder of the system's facts (module test mode's: below the shell's private
+# temporary home) — ".bashrc" as
 # "bashrc", owned by the user, nothing left over, never as root —, screenshots of each; an
 # arrival while locked (noticed, not saved, nothing of the module on the lock screen); step 6: the
 # module's bar widget on the bed's bar (connected, the Taildrop badge), its popup opened by a click
@@ -29,10 +32,12 @@
 
 module_repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P) || abort "no module repository"
 [ -f "$module_repo/module/module.json" ] || abort "no module at $module_repo/module"
-standins=$module_repo/tools/stand-in
+standins=$module_repo/module/tests/stand-in
 tools=$WORK/ts-tools
 mkdir -p "$tools/state"
 printf 'stopped\n' > "$tools/state/scenario"
+# Who the stand-ins take the caller for (their operator checks); changed below
+printf 'tester\n' > "$tools/state/user"
 echo '{"Health":{"Warnings":{}}}' > "$tools/bus.jsonl"
 : > "$tools/log"
 : > "$tools/pkexec.log"
@@ -43,29 +48,13 @@ cp -r "$module_repo/fixtures" "$tools/fixtures"
 for file in status-key-expiring.json status-key-expiring-work.json; do
     sed -i "0,/\"KeyExpiry\": \"[^\"]*\"/s//\"KeyExpiry\": \"$(date -u -d '+3 days' +%Y-%m-%dT%H:%M:%SZ)\"/" "$tools/fixtures/$file"
 done
-for program in tailscale timeout curl pkexec systemctl xdg-open nmcli; do
-    cat > "$tools/$program" << WRAPPER
-#!/bin/sh
-# h2s-stand-in wrapper: every call logged by the path it was called by
-printf '%s\n' "\$0" >> "$tools/calls"
-export TS_FAKE_STATE_DIR="$tools/state" TS_FAKE_LOG="$tools/log" TS_FAKE_PKEXEC_LOG="$tools/pkexec.log" \\
-    TS_FAKE_LOGIN_DELAY=1 TS_FAKE_FIXTURES="$tools/fixtures" TS_FAKE_BUS_FILE="$tools/bus.jsonl" \\
-    TS_FAKE_BUS_END=hold TS_FAKE_BUS_HOLD=240 TS_FAKE_BUS_FOLLOW=1 TS_FAKE_USER=tester
-exec "$standins/$program" "\$@"
-WRAPPER
-    chmod +x "$tools/$program"
-done
-export H2S_TAILSCALE_TOOLS=$tools
-# IP forwarding as the bed's /proc would say it (the forwarding seam): IPv4 off, IPv6 on
-mkdir -p "$tools/forwarding"
-echo 0 > "$tools/forwarding/ipv4"
-echo 1 > "$tools/forwarding/ipv6"
-export H2S_TAILSCALE_FORWARDING_DIR=$tools/forwarding
-# Taildrop's default save folder (the download-folder seam): a folder of the bed's
-mkdir -p "$WORK/downloads"
-export H2S_TAILSCALE_DOWNLOAD_DIR=$WORK/downloads
+# Every stand-in's call logged by its own path (TS_FAKE_CALLS), its state and logs this test's
+export TS_FAKE_STATE_DIR="$tools/state" TS_FAKE_LOG="$tools/log" TS_FAKE_PKEXEC_LOG="$tools/pkexec.log" TS_FAKE_CALLS="$tools/calls" \
+    TS_FAKE_LOGIN_DELAY=1 TS_FAKE_FIXTURES="$tools/fixtures" TS_FAKE_BUS_FILE="$tools/bus.jsonl" \
+    TS_FAKE_BUS_END=hold TS_FAKE_BUS_HOLD=240 TS_FAKE_BUS_FOLLOW=1
+unset TS_FAKE_USER
 
-stack_start --modules "$module_repo/module" --shell-path "$tools" \
+stack_start --modules "$module_repo/module" --shell-path "$module_repo/tools/stand-in" \
     --settings '{"bar.left": [{"type": "network", "preset": ""}, {"type": "clock", "preset": ""}, {"type": "tailscale", "preset": ""}]}'
 
 ts_state() { shell_ipc tailscale state 2> /dev/null; }
@@ -89,7 +78,26 @@ print(json.dumps(modules[0]["errors"] + modules[0].get("warnings", []) if module
 module_loaded() { [ "$(module_state)" = loaded ]; }
 check_within 20 "the module is loaded" module_loaded
 check_within 15 "its IPC answers, its provider registered" ts_is registered true
-check "the tools seam names the stand-ins (H2S_TAILSCALE_TOOLS)" ts_is toolsMode seam
+# Taildrop's default folder: the system's download folder, in module test mode below the
+# shell's private temporary home (mktemp -d in the runtime directory); made here, as a user's is
+test_home() { ls -d "$XDG_RUNTIME_DIR"/h2s-module-data.* 2> /dev/null | head -n 1; }
+has_test_home() { [ -n "$(test_home)" ]; }
+check_within 10 "the shell's private temporary home is there (module test mode)" has_test_home
+downloads=$(test_home)/Downloads
+mkdir -p "$downloads"
+ts_tool() { ts_state | python3 -I -c 'import json,sys; print(json.load(sys.stdin)["tools"][sys.argv[1]])' "$1" 2> /dev/null; }
+check "module test mode in the bed's shell" ts_is testMode true
+check "… its programs are its stand-ins (testPrograms): tailscale, timeout, curl, systemctl" \
+    test "$(ts_tool tailscale)|$(ts_tool timeout)|$(ts_tool curl)|$(ts_tool systemctl)" = "$standins/tailscale|$standins/timeout|$standins/curl|$standins/systemctl"
+module_deprecations() {
+    shell_ipc modules list | python3 -I -c '
+import json, sys
+modules = [m for m in json.load(sys.stdin)["modules"] if m["id"] == "tailscale"]
+print(json.dumps(modules[0].get("deprecations", []) if modules else ["absent"]))'
+}
+not_in_test_gate() { ! module_deprecations | grep -qiE 'pkexec|stand-in|PrivilegedAction'; }
+check "… and it is not in the transitional test-mode gate (no stand-in pkexec outside testPrograms)" not_in_test_gate
+log "deprecations: $(module_deprecations)"
 check_within 15 "the entry: off (the stand-in is stopped)" ts_is phase stopped
 check "… not busy, no attention" test "$(ts_field state)|$(ts_field attention)|$(ts_field busy)" = "||false"
 check "… changes ask for a password (not the operator)" ts_is canChange false
@@ -116,7 +124,7 @@ shell_ipc tailscale connect > /dev/null
 check_within 15 "connect: the entry is connected" ts_is state activated
 check "… not busy any more" ts_is busy false
 check "bare \`up\`, run plainly, denied, then as root" test "$(grep -cx 'up' "$tools/log")" = 2
-check "… through pkexec: the seam's timeout (60 s) around the seam's tailscale, by absolute paths" grep -qP "^pkexec\t$tools/timeout\t-k\t5\t60\t$tools/tailscale\tup\$" "$tools/pkexec.log"
+check "… through pkexec: the stand-in timeout (60 s) around the stand-in tailscale, by absolute paths" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tup\$" "$tools/pkexec.log"
 check "no \`up\` with a flag, ever" test "$(grep -c '^up ' "$tools/log")" = 0
 
 # The exit-node chooser under Tailscale's row: its header, then the list
@@ -205,14 +213,14 @@ check "the accounts are not read by themselves (the list needs a password)" prof
 shell_ipc tailscale readProfiles > /dev/null
 check_within 10 "Show accounts (IPC, as the button): two accounts, a1b2 in use" profiles_is ids "a1b2,c3d4"
 check "… a1b2 in use" profiles_is selected a1b2
-check "… read through pkexec (switch --list --json under the read limit)" grep -qP "^pkexec\t$tools/timeout\t-k\t5\t15\t$tools/tailscale\tswitch\t--list\t--json\$" "$tools/pkexec.log"
+check "… read through pkexec (switch --list --json under the read limit)" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t15\t$standins/tailscale\tswitch\t--list\t--json\$" "$tools/pkexec.log"
 check_within 5 "the page lists them (a row per account)" item_on_screen tailscaleAccount-c3d4
 sleep 1
 screenshot settings-tailscale-accounts
 
 shell_ipc tailscale switchProfile c3d4 > /dev/null
 check_within 10 "switch to c3d4: the list marks it" profiles_is selected c3d4
-check "… through pkexec: switch c3d4" grep -qP "^pkexec\t$tools/timeout\t-k\t5\t60\t$tools/tailscale\tswitch\tc3d4\$" "$tools/pkexec.log"
+check "… through pkexec: switch c3d4" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tswitch\tc3d4\$" "$tools/pkexec.log"
 entry_named_org() { shell_ipc tailscale state | grep -q '"status":"Tailnet only"' && ! profiles_is outdated true; }
 check_within 10 "… the state follows (connected, the list matching the account in use)" entry_named_org
 sleep 1
@@ -220,7 +228,7 @@ screenshot settings-tailscale-switched
 
 shell_ipc tailscale setHostname box > /dev/null
 check_within 10 "rename this device to box: prefs say so" profiles_is hostname box
-check "… through pkexec: set --hostname=box" grep -qP "^pkexec\t$tools/timeout\t-k\t5\t60\t$tools/tailscale\tset\t--hostname=box\$" "$tools/pkexec.log"
+check "… through pkexec: set --hostname=box" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tset\t--hostname=box\$" "$tools/pkexec.log"
 
 # The key about to expire (3 days): no attention (nothing renews it without harm) — the status
 # line and the page say it, with the admin console's link
@@ -301,8 +309,8 @@ check "sharing: nothing offered at first" sharing_is routes 0
 check_within 10 "… prefs read since the last change (a route edit is accepted only then)" sharing_is prefsCurrent true
 shell_ipc tailscale advertiseRoute 192.168.7.0/24 > /dev/null
 check_within 10 "offer 192.168.7.0/24: listed, waiting for approval" sharing_is routeStates pending
-check "… through pkexec: set --advertise-routes=192.168.7.0/24" grep -qP "^pkexec\t$tools/timeout\t-k\t5\t60\t$tools/tailscale\tset\t--advertise-routes=192\.168\.7\.0/24\$" "$tools/pkexec.log"
-check_within 5 "… IP forwarding read from the bed's fake /proc: IPv4 off" sharing_is ipv4Forwarding false
+check "… through pkexec: set --advertise-routes=192.168.7.0/24" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tset\t--advertise-routes=192\.168\.7\.0/24\$" "$tools/pkexec.log"
+check_within 5 "… IP forwarding read from the system's facts (module test mode's: off): IPv4 off" sharing_is ipv4Forwarding false
 check "… the forwarding warning shown" sharing_is forwardingWarning true
 shell_ipc tailscale advertiseExitNode true > /dev/null
 check_within 10 "offer the exit node: waiting for approval" sharing_is exitNodeState pending
@@ -314,7 +322,7 @@ check_within 10 "an admin approved the route: approved" sharing_is routeStates a
 check "… the exit node still waiting" sharing_is exitNodeState pending
 shell_ipc tailscale setSsh true > /dev/null
 check_within 10 "Tailscale SSH on" sharing_is ssh true
-check "… set --ssh=true through pkexec, no --accept-risk" grep -qP "^pkexec\t$tools/timeout\t-k\t5\t60\t$tools/tailscale\tset\t--ssh=true\$" "$tools/pkexec.log"
+check "… set --ssh=true through pkexec, no --accept-risk" grep -qP "^pkexec\t$standins/timeout\t-k\t5\t60\t$standins/tailscale\tset\t--ssh=true\$" "$tools/pkexec.log"
 item_on_screen tailscaleForwardingWarning || log "the forwarding warning has no size"
 show_item tailscaleOfferExitNode
 screenshot settings-tailscale-sharing
@@ -355,7 +363,7 @@ screenshot settings-tailscale-taildrop-waiting
 # user, and the stand-ins grant the operator's access) — then saving needs no password
 user_name=$(id -un)
 printf 'OperatorUser=%s\n' "$user_name" >> "$tools/state/prefs"
-sed -i "s/TS_FAKE_USER=tester/TS_FAKE_USER=$user_name/" "$tools/tailscale" "$tools/curl"
+printf '%s\n' "$user_name" > "$tools/state/user"
 arrive ".bashrc" "echo pwned"
 check_within 10 "the operator: both waiting files listed" drop_is waitingCount 2
 # Sending as the operator: as the user, never through pkexec, holding no change lock
@@ -370,10 +378,10 @@ screenshot settings-tailscale-taildrop-sent
 check "… saving offered" drop_is canSave true
 shell_ipc tailscale saveReceived > /dev/null
 check_within 10 "save: both saved" drop_is saved "saved,saved"
-check "… into the bed's download folder, the hidden name made visible" test -f "$WORK/downloads/holiday.jpg" -a -f "$WORK/downloads/bashrc" -a ! -e "$WORK/downloads/.bashrc"
-check "… owned by this user" test "$(stat -c %u "$WORK/downloads/holiday.jpg")|$(stat -c %u "$WORK/downloads/bashrc")" = "$(id -u)|$(id -u)"
-check "… the contents as sent" test "$(cat "$WORK/downloads/holiday.jpg")" = "jpeg data"
-check "… nothing else in the folder (no staging left)" test "$(ls -A "$WORK/downloads" | wc -l)" = 2
+check "… into the bed's download folder, the hidden name made visible" test -f "$downloads/holiday.jpg" -a -f "$downloads/bashrc" -a ! -e "$downloads/.bashrc"
+check "… owned by this user" test "$(stat -c %u "$downloads/holiday.jpg")|$(stat -c %u "$downloads/bashrc")" = "$(id -u)|$(id -u)"
+check "… the contents as sent" test "$(cat "$downloads/holiday.jpg")" = "jpeg data"
+check "… nothing else in the folder (no staging left)" test "$(ls -A "$downloads" | wc -l)" = 2
 check_within 5 "… Tailscale's inbox emptied" drop_is waitingCount 0
 check "… never through pkexec, never \`file get\`" test "$(grep -c 'file.get\|localapi' "$tools/pkexec.log")|$(grep -c '^file get' "$tools/log")" = "0|0"
 show_item taildropSaved
@@ -465,7 +473,7 @@ check "… Settings…" item_shown tailscalePopupSettings
 sleep 1
 screenshot widget-popup
 click_rect "$(item_rect tailscalePopupSave)"
-check_within 10 "Save in the popup: the file saved" test -f "$WORK/downloads/notes.txt"
+check_within 10 "Save in the popup: the file saved" test -f "$downloads/notes.txt"
 check_within 5 "… the badge gone" widget_is badge ""
 # The exit node from the popup's chooser: the header opens the list, the first node chosen
 check_within 5 "the popup's exit-node chooser" item_shown tailscaleExitNodeHeader
@@ -490,12 +498,12 @@ check "… the popup built without an error or a warning" test "$(module_errors)
 
 
 check "the stand-ins were called (their log)" test "$(grep -c . "$tools/log")" -gt 3
-outside_calls() { grep -cv "^$tools/[a-z-]*\$" "$tools/calls"; }
-check "every program the module ran was one of the seam's: each call's path under $tools" test "$(grep -c . "$tools/calls")" -gt 3 -a "$(outside_calls)" = 0
-outside_pkexec() { awk -F '\t' -v dir="$tools/" '{ for (i = 2; i <= NF; i++) if ($i ~ /^\// && index($i, dir) != 1) bad++ } END { print bad + 0 }' "$tools/pkexec.log"; }
-check "… and every path handed to pkexec too" test "$(outside_pkexec)" = 0
-check "… and as many tailscale calls through the seam as its log has lines (none bypassed it)" \
-    test "$(grep -cx "$tools/tailscale" "$tools/calls")" -ge "$(grep -cvE '^(curl|xdg-open|systemctl) |^$' "$tools/log")"
+outside_calls() { grep -cv "^$standins/[a-z-]*\$" "$tools/calls"; }
+check "every program the module ran was one of its stand-ins: each call's path under $standins" test "$(grep -c . "$tools/calls")" -gt 3 -a "$(outside_calls)" = 0
+outside_pkexec() { awk -F '\t' -v dir="$standins/" '{ for (i = 2; i <= NF; i++) if ($i ~ /^\// && index($i, dir) != 1) bad++ } END { print bad + 0 }' "$tools/pkexec.log"; }
+check "… and every path handed to pkexec too" test "$(grep -c . "$tools/pkexec.log")" -gt 0 -a "$(outside_pkexec)" = 0
+check "… and as many calls of the stand-in tailscale as its log has lines (none bypassed it)" \
+    test "$(grep -cx "$standins/tailscale" "$tools/calls")" -ge "$(grep -cvE '^(curl|xdg-open|systemctl|nmcli|openssl) |^$' "$tools/log")"
 
 # The lock, with the module loaded and streaming
 lock_by_ipc
@@ -509,7 +517,7 @@ arrive "while-locked.txt" "x"
 check_within 10 "an arrival while locked: noticed (the shell's notification)" drop_is notices "$((notices_before + 1))"
 sleep 1
 screenshot locked-after-arrival
-check "… not saved by itself (auto-save is off)" test ! -e "$WORK/downloads/while-locked.txt"
+check "… not saved by itself (auto-save is off)" test ! -e "$downloads/while-locked.txt"
 wake_prompt || fail "the prompt did not wake"
 check_within 5 "the methods are known" state_is armed true
 type_text "$LOCKTEST_PASSWORD"

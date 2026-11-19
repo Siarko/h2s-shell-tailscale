@@ -94,9 +94,9 @@ QtObject {
                 failure: client.failureText, backendState: client.status?.backendState ?? "",
                 haveNodeKey: client.status?.haveNodeKey ?? false, wantRunning: client.prefs?.wantRunning ?? false,
                 loggedOut: client.prefs?.loggedOut ?? false,
-                tools: { tailscale: client.tailscalePath, timeout: client.timeoutPath, pkexec: client.pkexecPath, curl: client.curlPath },
+                tools: { tailscale: client.tailscalePath, timeout: client.timeoutPath, pkexec: client.pkexecPath, curl: client.curlPath, systemctl: client.systemctlPath },
                 exitNode: exitNode !== null, exitNodeOnline: exitNode?.online ?? false, cli: client.cli, daemon: client.daemon,
-                streamUp: client.streamUp, canChange: client.canChange, ready: client.ready, toolsMode: client.toolsMode,
+                streamUp: client.streamUp, canChange: client.canChange, ready: client.ready, testMode: Api.testMode,
                 stale: client.stale, curlMissing: client.curlMissing, elevation: client.elevationProblem === "",
                 loginPending: client.authUrl !== "", devices: client.devices.length, exitNodes: client.exitNodes.count,
                 warnings: client.warnings.length, reads: client.reads, streamStarts: client.streamStarts, events: client.events,
@@ -105,8 +105,8 @@ QtObject {
         }
 
         // The provider's own, for tests and scripts — as origin "network" (never a password
-        // prompt, never a browser: any process of the user may call this), except while the
-        // tools seam names stand-ins (the lock-bed test: its pkexec asks nobody)
+        // prompt, never a browser: any process of the user may call this), except in module
+        // test mode (the lock-bed test: its pkexec is a stand-in that asks nobody)
         function connect(): void {
             main.provider.connect(TailscaleRules.entryId, { origin: main._ipcOrigin() });
         }
@@ -139,8 +139,8 @@ QtObject {
 
         // These change Tailscale or read what only root may: as the page's buttons, but never
         // a password prompt from a script — only while this user needs none (the operator) or
-        // the tools seam names stand-ins (the lock-bed test); and asked as origin "network"
-        // (_ipcOrigin) outside the seam, so a denial (a stale canChange) is a failure, not a prompt
+        // in module test mode (the lock-bed test); and asked as origin "network" (_ipcOrigin)
+        // outside it, so a denial (a stale canChange) is a failure, not a prompt
         function readProfiles(): void {
             if (main._ipcMayChange())
                 main.client.readAccounts(main._ipcOrigin());
@@ -317,8 +317,10 @@ QtObject {
         return client.canChange || _ipcOrigin() === "user";
     }
 
+    // Module test mode (module API 1.10): set only by the shell's test entry points, never by
+    // a variable alone — there the programs are stand-ins and nothing reaches a real pkexec
     function _ipcOrigin() {
-        return client.toolsMode === "seam" || client.toolsMode === "test-stand-ins" || client.toolsMode === "owner" ? "user" : "network";
+        return Api.testMode ? "user" : "network";
     }
 
     Component.onCompleted: {

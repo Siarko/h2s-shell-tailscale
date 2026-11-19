@@ -403,25 +403,15 @@ Singleton {
         return text.length > 1 ? text.replace(/\/+$/, "") : text;
     }
 
-    // XDG_DOWNLOAD_DIR from user-dirs.dirs text ("$HOME/…" or an absolute path, quoted), else
-    // <home>/Downloads — read, never run
-    function downloadFolder(userDirsText, home) {
+    // The default save folder: the system's download folder (Api.system.downloadDirectory,
+    // module API 1.13: XDG_DOWNLOAD_DIR, else ~/Downloads), when it is a folder below a home —
+    // the home itself ("$HOME/" in user-dirs.dirs means "no download folder") or a path that
+    // is not one gives <home>/Downloads; no home: ""
+    function defaultFolder(downloadDirectory, home) {
         const homeDir = cleanFolder(home);
         const fallback = homeDir !== "" && homeDir.startsWith("/") ? homeDir + "/Downloads" : "";
-        for (const line of String(userDirsText ?? "").split("\n")) {
-            const match = /^\s*XDG_DOWNLOAD_DIR\s*=\s*"((?:[^"\\]|\\.)*)"\s*$/.exec(line);
-            if (!match)
-                continue;
-            let value = match[1].replace(/\\(.)/g, "$1");
-            if (value.startsWith("$HOME"))
-                value = homeDir + value.slice(5);
-            value = cleanFolder(value);
-            // Only a folder below a home is taken; "$HOME/" alone means "no download folder"
-            if (folderProblem(value) === "" && value !== homeDir)
-                return value;
-            return fallback;
-        }
-        return fallback;
+        const value = cleanFolder(downloadDirectory);
+        return value !== "" && folderProblem(value) === "" && value !== homeDir ? value : fallback;
     }
 
     // The save script, run AS THE USER (never through pkexec) with sh -c and its values as

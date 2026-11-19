@@ -17,8 +17,9 @@ h2s-shell ipc call tailscale advertiseRoute 192.168.1.0/24
 - Functions marked "operator" do nothing unless your user needs no password.
 - If Tailscale still refuses a change, it fails like any other failure.
 
-Calls run as a user's click only when the tools seam names stand-ins.
-This lets tests drive the stand-in pkexec. See [architecture.md](architecture.md#tools-seam).
+Calls run as a user's click only in the shell's module test mode, where the programs are
+stand-ins and nothing reaches a real pkexec. This lets tests drive the stand-in pkexec. See
+[architecture.md](architecture.md#module-test-mode).
 
 ## Connection
 
@@ -44,8 +45,8 @@ This lets tests drive the stand-in pkexec. See [architecture.md](architecture.md
 | `backendState` | the daemon's `BackendState` |
 | `haveNodeKey` | from `status --json` |
 | `wantRunning`, `loggedOut` | from `debug prefs` |
-| `tools` | `{ tailscale, timeout, pkexec, curl }`: absolute paths; empty when not found |
-| `toolsMode` | `owner`, `seam`, `test-stand-ins` or `path` |
+| `tools` | `{ tailscale, timeout, pkexec, curl, systemctl }`: absolute paths; empty when not found |
+| `testMode` | the shell is in module test mode |
 | `cli` | `present`, `missing`, `untrusted` or `unknown` |
 | `daemon` | `running`, `not-running` or `unknown` |
 | `exitNode`, `exitNodeOnline` | an exit node is in use; it is online |
@@ -54,7 +55,7 @@ This lets tests drive the stand-in pkexec. See [architecture.md](architecture.md
 | `ready` | the client has a first answer: state read, read timed out, Tailscale not found, or the service down |
 | `stale` | the last read timed out |
 | `curlMissing` | `curl` was not found |
-| `elevation` | pkexec changes are possible |
+| `elevation` | changes as administrator are possible |
 | `loginPending` | a login link is waiting |
 | `devices`, `exitNodes`, `warnings` | counts |
 | `reads` | `status --json` reads so far |

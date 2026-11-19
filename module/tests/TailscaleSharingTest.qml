@@ -187,9 +187,6 @@ TestCase {
     }
 
     function forwarding() {
-        same(rules.parseForwarding("ipv4\t1\nipv6\t0\n"), { ipv4: true, ipv6: false }, "forwarding: read");
-        same(rules.parseForwarding("ipv4\t\nipv6\tx\n"), { ipv4: null, ipv6: null }, "forwarding: unreadable → unknown");
-        same(rules.parseForwarding(null), { ipv4: null, ipv6: null }, "forwarding: nothing → unknown");
         const status = rules.parseStatus(fixture("status-sharing.json"));
         const share = rules.sharing(status, rules.parsePrefs(fixture("prefs-sharing.json")));
         assertEqual(rules.forwardingWarning(share, { ipv4: true, ipv6: true }, null, status, true), null, "both on: no warning");

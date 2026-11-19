@@ -1538,19 +1538,6 @@ Singleton {
         };
     }
 
-    // `/proc/sys/net/ipv4/ip_forward` and `/proc/sys/net/ipv6/conf/all/forwarding` as the live
-    // side reads them: lines "ipv4\t<content>" and "ipv6\t<content>" → { ipv4, ipv6 } each true
-    // (1), false (0) or null (unreadable)
-    function parseForwarding(text) {
-        const result = { ipv4: null, ipv6: null };
-        for (const line of (typeof text === "string" ? text.slice(0, 4096) : "").split("\n")) {
-            const match = /^(ipv4|ipv6)\t\s*([01])\s*$/.exec(line);
-            if (match)
-                result[match[1]] = match[2] === "1";
-        }
-        return result;
-    }
-
     // The forwarding warning for the Sharing section: forwardingWarning(sharing, forwarding,
     // busHealth, status, nixos) → null | { text, families [4|6 that are off], tailscaleSays
     // (Tailscale's own health text, or ""), nixosLines [] }. Only while something is offered
@@ -2149,72 +2136,42 @@ Singleton {
 
     // ---- Which programs run ----
     //
-    // The live side finds tailscale, timeout, pkexec and curl once (by the tools seam, or on
-    // PATH with `command -v`) and, for those found on PATH, `stat`s them: a program this
-    // user could replace would be handed to pkexec — run as root. Its probe prints, per
-    // program, tab-separated:
-    //   tool  <name> <path, "" not found>
-    //   real  <name> <readlink -f of it>
-    //   stat  <name> <uid> <octal mode> <path>   for the found path's directory, the real
-    //                                            file and the real file's directory
-    // and `socket <path>` for the first LocalAPI socket (localApiSockets) that exists.
-    readonly property var probedTools: ["tailscale", "timeout", "pkexec", "curl"]
+    // The shell looks the module's programs up (the manifest's optionalPrograms) and judges
+    // them: module.programs (module API 1.9) — { <name>: { path, trusted, reason } }, or, in
+    // module test mode, the stand-ins of the manifest's testPrograms. The module runs each by
+    // that absolute path. tailscale, timeout and pkexec must be trusted (only root can change
+    // them): a run as administrator is `pkexec <timeout> … <tailscale> …` (privileged()).
+    // curl, systemctl and openssl run as this user only and are not judged.
+    readonly property var programNames: ["tailscale", "timeout", "pkexec", "curl", "systemctl", "openssl"]
+    readonly property var _judgedPrograms: ["tailscale", "timeout", "pkexec"]
 
-    // One `stat` line's verdict: in the Nix store (read-only), or owned by root and writable
-    // by nobody else (no group / other write bit)
-    function _statTrusted(uid, mode, path) {
-        if (typeof path === "string" && path.startsWith("/nix/store/") && !path.split("/").includes(".."))
-            return true;
-        const bits = /^[0-7]{1,5}$/.test(mode ?? "") ? parseInt(mode, 8) : -1;
-        return uid === "0" && bits >= 0 && (bits & 0o022) === 0;
-    }
-
-    // probeText: the probe's output; checkTrust: judge each program (false: the seam's
-    // programs, chosen by the owner, are taken as they are) → { tools: { <name>: { path,
-    // trusted, reason } }, socket, untrusted: [names] }. curl is never judged (it runs as
-    // this user only, never through pkexec).
-    function toolsProbe(probeText, checkTrust) {
-        const tools = {};
-        for (const name of probedTools)
-            tools[name] = { path: "", real: "", stats: [], trusted: false, reason: "" };
-        let socket = "";
-        const lines = typeof probeText === "string" ? probeText.slice(0, 65536).split("\n") : [];
-        for (const line of lines.slice(0, 200)) {
-            const parts = line.split("\t");
-            if (parts[0] === "socket" && parts.length === 2 && localApiSockets.includes(parts[1]) && socket === "")
-                socket = parts[1];
-            if (!probedTools.includes(parts[1]))
-                continue;
-            const entry = tools[parts[1]];
-            if (parts[0] === "tool" && parts.length === 3 && (parts[2] === "" || (_validPath(parts[2]) && !/\s/.test(parts[2]))))
-                entry.path = parts[2];
-            else if (parts[0] === "real" && parts.length === 3 && _validPath(parts[2]))
-                entry.real = parts[2];
-            else if (parts[0] === "stat" && parts.length === 5)
-                entry.stats.push({ uid: parts[2], mode: parts[3], path: parts[4] });
+    // programsFound(programs) → { known, cli ("unknown" while not looked up | "present" |
+    // "missing" | "untrusted": nothing runs), untrustedReason, and each of programNames: its
+    // absolute path or "" }. A path that is not absolute, or holds white space, counts as not
+    // found. With an untrusted tailscale, timeout or pkexec, the three paths are not given.
+    function programsFound(programs) {
+        const result = { known: false, cli: "unknown", untrustedReason: "" };
+        for (const name of programNames)
+            result[name] = "";
+        if (programs === null || typeof programs !== "object" || Array.isArray(programs))
+            return result;
+        result.known = true;
+        for (const name of programNames) {
+            const path = _get(_get(programs, name), "path");
+            result[name] = _validPath(path) && !/\s/.test(path) && !path.endsWith("/") ? path : "";
         }
-        const untrusted = [];
-        for (const name of probedTools) {
-            const entry = tools[name];
-            if (entry.path === "")
-                continue;
-            if (checkTrust !== true || name === "curl") {
-                entry.trusted = true;
-            } else if (entry.real === "" || entry.stats.length < 3) {
-                entry.reason = (name === "tailscale" ? "Tailscale" : name) + " couldn't be checked: nothing runs.";
-            } else {
-                const bad = entry.stats.find(stat => !_statTrusted(stat.uid, stat.mode, stat.path));
-                entry.trusted = bad === undefined;
-                if (bad)
-                    entry.reason = (name === "tailscale" ? "Tailscale" : name) + " isn't trusted: this user could change it.";
-            }
-            if (!entry.trusted)
-                untrusted.push(name);
+        const untrusted = _judgedPrograms.find(name => result[name] !== "" && _get(_get(programs, name), "trusted") !== true);
+        if (untrusted !== undefined) {
+            const reason = plainText(_string(_get(_get(programs, untrusted), "reason"), 300), 200).replace(/[.\s]+$/, "");
+            result.cli = "untrusted";
+            result.untrustedReason = (untrusted === "tailscale" ? "Tailscale" : untrusted) + " isn't trusted ("
+                + (reason !== "" ? reason : "it could not be checked") + "): nothing runs.";
+            for (const name of _judgedPrograms)
+                result[name] = "";
+            return result;
         }
-        const result = {};
-        for (const name of probedTools)
-            result[name] = { path: tools[name].path, trusted: tools[name].trusted, reason: tools[name].reason };
-        return { tools: result, socket: socket, untrusted: untrusted };
+        result.cli = result.tailscale === "" ? "missing" : "present";
+        return result;
     }
 
     // The plain form of a command with its time limit: timed(argv, timeoutPath, seconds) →

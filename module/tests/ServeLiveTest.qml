@@ -22,7 +22,7 @@ TestCase {
         return String(url).replace(/^file:\/\//, "").replace(/\/+$/, "");
     }
 
-    readonly property string standIns: _path(Qt.resolvedUrl("../../tools/stand-in"))
+    readonly property string standIns: _path(Qt.resolvedUrl("stand-in"))
     readonly property string fixtures: _path(Qt.resolvedUrl("../../fixtures"))
     readonly property string base: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/ts-serve-" + Date.now()
 
@@ -32,6 +32,9 @@ TestCase {
         TailscaleClient {}
     }
     property CommandAction _shell: CommandAction {}
+    property Component _moduleComponent: Component {
+        StandInModule {}
+    }
 
     // options: { env {}, setup (sh lines, $1 the scenario's directory) }
     function scenario(name, options) {
@@ -51,9 +54,10 @@ TestCase {
             _shell.run(["sh", "-c", lines.join(" && "), "sh", dir], result => {
                 if (!result.ok)
                     fail(name + ": set up failed: " + result.error);
+                s.module = _moduleComponent.createObject(suite);
                 s.client = _clientComponent.createObject(suite, {
-                    toolsDir: standIns, environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 5000,
-                    readRetryMinMs: 300, readRetryMaxMs: 1200, forwardingDir: dir + "/forwarding"
+                    module: s.module, environment: s.env, readDebounceMs: 100, streamBackoffMinMs: 200, streamBackoffMaxMs: 800, pollMs: 5000,
+                    readRetryMinMs: 300, readRetryMaxMs: 1200
                 });
                 s.client.cert.certDir = dir + "/certs";
                 s.client.tailnetLock.lockSettleMs = 1500;

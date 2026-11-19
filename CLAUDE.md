@@ -17,8 +17,10 @@ Read the core's `CLAUDE.md` too: its development rules apply here.
 
 ```
 module/            the module: module.json (manifest), qmldir, the QML, module/tests/ (suites)
+module/tests/stand-in/  fake tailscale, pkexec, curl, timeout, systemctl, openssl: the
+                   manifest's testPrograms, which the shell hands over in module test mode
 tests/             runners: run.sh (QML suites, headless), lock-bed/ (the real shell)
-tools/stand-in/    fake tailscale, pkexec, curl, systemctl, … for the tests
+tools/stand-in/    fake xdg-open and nmcli, for the shell itself in the lock bed
 tools/test.sh      checks the stand-ins; tools/redact-status.jq makes fixtures
 fixtures/          CLI and local API output, redacted (fixtures/README.md lists each file)
 docs/              user and developer documentation; README.md stays short
@@ -58,8 +60,9 @@ there is a `nix` command, else labwc and Quickshell from `PATH`. The lock bed ne
 - **Fixtures are redacted.** No real tailnet or device names, addresses, e-mail addresses
   or keys: use the placeholders in `docs/development.md` ("Fixtures"), and check a fixture
   made with `tools/redact-status.jq` by hand.
-- **Tests run the live client against the stand-ins only** (`tools/stand-in/`, configured
-  with `TS_FAKE_*`); never against the real `tailscale`, `tailscaled` or `pkexec`.
+- **Tests run the live client against the stand-ins only** (`module/tests/stand-in/`,
+  configured with `TS_FAKE_*`, in the shell's module test mode); never against the real
+  `tailscale`, `tailscaled` or `pkexec`.
 
 ## Development rules
 

@@ -2,7 +2,7 @@
     "id": "tailscale",
     "name": "Tailscale",
     "version": "0.6.0",
-    "api": "1.3",
+    "api": "1.13",
     "description": "Tailscale among the shell's VPNs: connect, log in and out, accounts, this device's name and key, exit nodes, the main switches, sharing this computer (exit node, routes, SSH server, web interface), Taildrop (send files, save received ones), serve and Funnel, certificates, tailnet lock status, an exit node per network, the devices, diagnostics.",
     "main": "Main.qml",
     "widgets": [
@@ -24,6 +24,8 @@
         { "fact": "tailscale.connected", "label": "Tailscale connected", "type": "bool" },
         { "fact": "tailscale.exitNodeInUse", "label": "Tailscale sends internet traffic through an exit node", "type": "bool" }
     ],
+    "optionalPrograms": ["tailscale", "timeout", "curl", "systemctl", "openssl", "pkexec"],
+    "testPrograms": "tests/stand-in",
     "setupHints": [
         "Install Tailscale and run its service (NixOS: services.tailscale.enable = true;).",
         "Changes ask for an administrator's password through the shell's polkit agent; making your user Tailscale's operator (offered on the module's page) asks once instead."

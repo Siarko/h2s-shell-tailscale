@@ -1,5 +1,4 @@
 import QtQuick
-import Quickshell
 import qs.api
 
 // Taildrop's live side (delivery step 4): I/O only, every decision TaildropRules'. Made by
@@ -31,8 +30,8 @@ QtObject {
     // ---- Set by the owner ----
 
     property var client: null
-    // The default save folder ("" = H2S_TAILSCALE_DOWNLOAD_DIR when absolute — the lock bed —,
-    // else XDG_DOWNLOAD_DIR from user-dirs.dirs, else ~/Downloads)
+    // The default save folder ("" = the system's download folder: Api.system's, through the
+    // client — TaildropRules.defaultFolder)
     property string defaultFolder: ""
     // A send with no progress on the bus for this long is stopped (only while the bus is up)
     property int idleLimitMs: 120000
@@ -46,9 +45,9 @@ QtObject {
     property string _folderSetting: String(store?.get("taildrop.folder", "") ?? "")
     property string _conflictSetting: String(store?.get("taildrop.conflict", "") ?? "")
     property bool _autoSaveSetting: store?.get("taildrop.autoSave", false) === true
-    property string _resolvedDefault: ""
+    readonly property string _systemDefault: TaildropRules.defaultFolder(String(client?.system?.downloadDirectory ?? ""), String(client?.system?.home ?? ""))
     readonly property string folder: TaildropRules.folderProblem(_folderSetting) === "" ? _folderSetting
-        : (defaultFolder !== "" ? defaultFolder : _resolvedDefault)
+        : (defaultFolder !== "" ? defaultFolder : _systemDefault)
     readonly property bool folderIsDefault: TaildropRules.folderProblem(_folderSetting) !== ""
     readonly property string conflict: TaildropRules.conflictPolicies.includes(_conflictSetting) ? _conflictSetting : TaildropRules.defaultConflict
     readonly property bool autoSave: _autoSaveSetting
@@ -520,7 +519,6 @@ QtObject {
 
     onRunningChanged: {
         if (running) {
-            _resolveDefaultFolder();
             refreshWaiting();
         } else {
             _listing = false;
@@ -532,24 +530,4 @@ QtObject {
     }
     onCanSaveChanged: refreshWaiting()
     Component.onDestruction: _stopSend("cancelled", "Stopped")
-
-    function _resolveDefaultFolder() {
-        if (defaultFolder !== "")
-            return;
-        const home = String(Quickshell.env("HOME") ?? "");
-        const seam = String(Quickshell.env("H2S_TAILSCALE_DOWNLOAD_DIR") ?? "");
-        if (seam.startsWith("/")) {
-            _resolvedDefault = TaildropRules.cleanFolder(seam);
-            return;
-        }
-        _resolvedDefault = TaildropRules.downloadFolder("", home);
-        const config = String(Quickshell.env("XDG_CONFIG_HOME") ?? "");
-        const file = (config.startsWith("/") ? config : home + "/.config") + "/user-dirs.dirs";
-        const generation = client._generation;
-        // Read, never sourced or run
-        client._spawn(["cat", "--", file], 5000, result => {
-            if (client._alive(generation) && result.ok)
-                _resolvedDefault = TaildropRules.downloadFolder(result.out, home);
-        });
-    }
 }

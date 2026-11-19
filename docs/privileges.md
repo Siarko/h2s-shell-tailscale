@@ -21,10 +21,12 @@ Buttons show a lock while changes need a password.
 pkexec <timeout> -k 5 <seconds> <tailscale> <arguments>
 ```
 
-- `timeout` and `tailscale` are absolute paths, resolved once at start.
+- `pkexec`, `timeout` and `tailscale` are the absolute paths the shell found for the module
+  (`module.programs`).
 - The time limit ends a root process the shell cannot signal.
 - Without coreutils `timeout`, nothing runs as administrator. The page says why.
-- `tailscale`, `timeout` and `pkexec` must be owned by root and not writable by others, or live in the Nix store. Otherwise nothing runs.
+- `tailscale`, `timeout` and `pkexec` must be judged trusted by the shell: owned by root and
+  writable by root alone, or in the Nix store. Otherwise nothing runs.
 
 ## What may run through pkexec
 

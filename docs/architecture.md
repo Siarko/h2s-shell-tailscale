@@ -16,12 +16,12 @@ The rules hold every decision, so the suites test them with plain objects.
 
 ```
 module/
-  module.json                  manifest: main, widget, two VPN slots, page, setting, facts, tests
+  module.json                  manifest: main, widget, two VPN slots, page, setting, facts, programs, tests
   qmldir                       types and singletons
   Main.qml                     created by the shell's module host: client, VPN provider, IPC, facts
   Tailscale.qml                singleton pointing at the running client
   TailscaleRules.qml           state, entry, devices, exit nodes, event bus, errors, commands
-  TailscaleClient.qml          event stream, reads, actions, tools seam
+  TailscaleClient.qml          event stream, reads, actions, programs, runs as administrator
   TailscaleRow.qml             slot network.vpn.row: exit node chooser, login link
   TailscaleCard.qml            slot network.vpn.card: tailnet, account, device, warnings
   TailscalePage.qml            settings page "tailscale"
@@ -39,9 +39,11 @@ module/
   TailscalePopup.qml           its popup
   TailscaleWidgetSettings.qml  its preset pane
   TailscaleWidgetRules.qml     icon state, text, badge, popup devices
-  tests/                       QML suites
+  tests/                       QML suites; StandInModule.qml, a handle for a suite's own client
+  tests/stand-in/              fake tailscale, pkexec, curl, timeout, systemctl, openssl: the
+                               manifest's testPrograms
 fixtures/                      outputs of the tailscale CLI and local API
-tools/stand-in/                fake tailscale, pkexec, curl and other tools for tests
+tools/stand-in/                fake xdg-open and nmcli, for the shell itself in the lock bed
 tools/test.sh                  checks the stand-ins
 tools/redact-status.jq         turns a real `status --json` into a fixture
 tests/run.sh                   runs the QML suites
@@ -110,30 +112,37 @@ Addresses in the reason show as `[address]`.
 - After Funnel goes on, `ServeClient` reads the config again and checks it with `ServeRules.publicCheck`. Meanwhile `serve.checking` holds back other serve changes and the exit node by network.
 - A failed click on Connect, Disconnect, Log in or Start sets `failure` (`TailscaleRules.failureText`, `failureAfter`). Changes run by other clients (operation `serve`, `exit-node`) never set it.
 
-## Tools seam
+## Programs
 
-`TailscaleClient.tool()` decides which `tailscale`, `timeout`, `curl`, `pkexec`, `systemctl` and `xdg-open` run.
-The first that applies wins:
+The manifest names the programs the module runs (`optionalPrograms`: `tailscale`, `timeout`,
+`curl`, `systemctl`, `openssl`, `pkexec`). The shell looks each up on PATH and judges it;
+the module takes them from its handle, `module.programs` (module API 1.9), and runs each by
+that absolute path (`TailscaleRules.programsFound`).
 
-| Source | `toolsMode` | Used by |
-|---|---|---|
-| `toolsDir` set by the owner | `owner` | the suites |
-| `H2S_TAILSCALE_TOOLS` (an absolute directory) | `seam` | the lock-bed test |
-| `tools/stand-in` next to the module, when `H2S_TEST_MODULES` is set | `test-stand-ins` | the shell's module test runner |
-| the names on PATH | `path` | normal use |
+- `tailscale`, `timeout` and `pkexec` must be trusted: owned by root and writable by root
+  alone, or in the Nix store. A run as administrator is `pkexec <timeout> … <tailscale> …`.
+  Otherwise the module counts as "not trusted" and runs nothing.
+- `curl`, `systemctl` and `openssl` run as you only and are not judged. Without `curl` there
+  is no event stream; without `openssl` a certificate's end date is not shown.
+- "Check again", a view coming on screen and the backoff ask the shell to look again
+  (`module.recheckPrograms()`); the shell also does after the machine wakes.
 
-On PATH, each program is resolved once to an absolute path with `command -v` and checked with `stat`.
-`tailscale`, `timeout` and `pkexec` must be owned by root and not group- or other-writable, or be in the Nix store.
-Otherwise the module counts as "not trusted" and runs nothing.
+Links open through `Api.openUrl`. Runs as administrator go through the API's
+`PrivilegedAction`, its `elevate` the `pkexec` of `module.programs`. See
+[privileges.md](privileges.md).
 
-With a tools directory, links open through its `xdg-open`, not the shell's.
+The system's facts come from `Api.system` (module API 1.13): IP forwarding
+(`readIpForwarding()`), the download folder (Taildrop's default folder) and the data home
+(the certificate folder, `<data home>/h2s-shell/tailscale/certs`).
 
-Other environment variables, for tests:
+### Module test mode
 
-| Variable | Replaces |
-|---|---|
-| `H2S_TAILSCALE_FORWARDING_DIR` | the two `/proc` forwarding files (`ipv4`, `ipv6` in that directory) |
-| `H2S_TAILSCALE_DOWNLOAD_DIR` | the default Taildrop folder |
-| `H2S_TAILSCALE_CERT_DIR` | the certificate folder |
+Under the shell's module test runner and in the lock bed the shell is in module test mode
+(`Api.testMode`). There every program comes from `module/tests/stand-in` (the manifest's
+`testPrograms`), runs as administrator go through the stand-in `pkexec`, `Api.openUrl` only
+records the link, and `Api.system` gives made-up facts. IPC calls count as a click there
+(the stand-in pkexec asks nobody). A suite's own client gets a `StandInModule` as its handle:
+the stand-ins as its programs (or a scenario's: one missing, an untrusted one, one found
+later).
 
-Small helpers (`sh`, `find`, `stat`, `cat`, `openssl`) are found through PATH.
+Small helpers (`sh`, `find`, `stat`, `cat`, `id`, `ip`) are found through PATH.

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Checks the stand-ins (tools/stand-in: tailscale, pkexec, curl, timeout, …) do what the next stage's
-# end-to-end tests will count on. Each is run by its absolute path, never through PATH — so
+# Checks the stand-ins do what the module's end-to-end tests count on: module/tests/stand-in
+# (tailscale, pkexec, curl, timeout, systemctl, openssl — the manifest's testPrograms, which the
+# shell hands the module in module test mode) and tools/stand-in (xdg-open, nmcli: put on the
+# lock bed's PATH for the shell's own use). Each is run by its absolute path, never through PATH — so
 # the real tailscale (or pkexec, or curl) can never be the one that runs — with a private
 # state directory, and nothing reaches a daemon or the network.
 #
@@ -9,9 +11,10 @@ set -uo pipefail
 
 TOOLS=$(cd "$(dirname "$(readlink -f "$0")")" && pwd -P)
 FIXTURES=$(cd "$TOOLS/../fixtures" && pwd -P)
-TS=$TOOLS/stand-in/tailscale
-PKEXEC=$TOOLS/stand-in/pkexec
-CURL=$TOOLS/stand-in/curl
+STANDINS=$(cd "$TOOLS/../module/tests/stand-in" && pwd -P)
+TS=$STANDINS/tailscale
+PKEXEC=$STANDINS/pkexec
+CURL=$STANDINS/curl
 work=$(mktemp -d "${TMPDIR:-/tmp}/ts-standin.XXXXXX") || exit 2
 trap 'rm -rf "$work"' EXIT
 passed=0
@@ -30,7 +33,7 @@ fresh() {
     rm -rf "$work/state" "$work/log" "$work/pkexec.log"
     mkdir -p "$work/state"
     unset SSH_CLIENT
-    unset TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT TS_FAKE_UP_DELAY TS_FAKE_UP_URL TS_FAKE_STATUS_HANG TS_FAKE_CERT_DELAY TS_FAKE_CERT_NOT_AFTER
+    unset TS_FAKE_CALLS TS_FAKE_STATE TS_FAKE_DAEMON TS_FAKE_OPERATOR TS_FAKE_ROOT TS_FAKE_PKEXEC TS_FAKE_BUS_END TS_FAKE_PING TS_FAKE_LOGIN_RESULT TS_FAKE_UP_DELAY TS_FAKE_UP_URL TS_FAKE_STATUS_HANG TS_FAKE_CERT_DELAY TS_FAKE_CERT_NOT_AFTER
     export TS_FAKE_STATE_DIR=$work/state TS_FAKE_LOG=$work/log TS_FAKE_PKEXEC_LOG=$work/pkexec.log
     export TS_FAKE_LOGIN_DELAY=0 TS_FAKE_USER=tester TS_FAKE_FIXTURES=$FIXTURES
 }
@@ -392,7 +395,7 @@ check "scenario serve: its CertDomains allow the cert" test "$status" = 0 -a -f 
 unset TS_FAKE_OPERATOR
 
 echo "=== stand-in openssl (step 5) ==="
-OPENSSL=$TOOLS/stand-in/openssl
+OPENSSL=$STANDINS/openssl
 run "$work/out" "$work/err" "$OPENSSL" x509 -noout -enddate -in "$work/certs/c.crt"
 check "openssl x509 -enddate: notAfter from the stand-in cert" test "$status" = 0 -a "$(cat "$work/out")" = "notAfter=Mar  1 00:00:00 2027 GMT"
 run "$work/out" "$work/err" "$OPENSSL" x509 -noout -enddate -in "$work/certs/c.key"
@@ -435,6 +438,21 @@ check "no-agent: exit 127" test "$status" = 127
 run "$work/out" "$work/err" "$PKEXEC" tailscale down
 check "a relative program name is refused (127)" test "$status" = 127 -a "$(backend)" = Running
 
+echo "=== the caller's name from the state dir; each call's own path ==="
+fresh
+printf 'OperatorUser=someone\n' >> "$work/state/prefs"
+run "$work/out" "$work/err" "$TS" set --shields-up=true
+check "another user is the operator: a change is denied" test "$status" = 1 -a "$(pref ShieldsUp)" != true
+run "$work/out" "$work/err" "$CURL" -sS --fail --unix-socket /s "http://local-tailscaled.sock/localapi/v0/files/"
+check "… and so is the inbox (403: exit 22)" test "$status" = 22
+echo someone > "$work/state/user"
+run "$work/out" "$work/err" "$TS" set --shields-up=true
+check "the state dir's \"user\" file names the caller (it wins over TS_FAKE_USER): the change goes through" test "$status" = 0 -a "$(pref ShieldsUp)" = true
+run "$work/out" "$work/err" "$CURL" -sS --fail --unix-socket /s "http://local-tailscaled.sock/localapi/v0/files/"
+check "… the inbox too" test "$status" = 0
+run "$work/out" "$work/err" env TS_FAKE_CALLS="$work/calls" "$PKEXEC" "$STANDINS/timeout" 5 "$TS" version
+check "TS_FAKE_CALLS: each stand-in adds its own path" test "$(cat "$work/calls" 2> /dev/null | tr '\n' ' ')" = "$PKEXEC $STANDINS/timeout $TS "
+
 echo "=== stand-in curl ==="
 fresh
 check "the bus lines, as scripted" cmp -s <("$CURL" -sN --unix-socket /var/run/tailscale/tailscaled.sock "http://local-tailscaled.sock/localapi/v0/watch-ipn-bus?mask=11414") "$FIXTURES/bus-lines.jsonl"
@@ -452,7 +470,7 @@ check "hold: waits, then ends" test "$status" = 0 -a $((SECONDS - start)) -ge 1
 
 echo "=== stand-in systemctl, xdg-open, nmcli ==="
 fresh
-SYSTEMCTL=$TOOLS/stand-in/systemctl
+SYSTEMCTL=$STANDINS/systemctl
 XDG_OPEN=$TOOLS/stand-in/xdg-open
 NMCLI=$TOOLS/stand-in/nmcli
 run "$work/out" "$work/err" "$SYSTEMCTL" stop tailscaled.service
@@ -487,13 +505,13 @@ check "a login ended while it waits takes its sleep with it" test -z "$(own_proc
 
 echo "=== stand-in timeout, unkillable pkexec, slow up, hung status ==="
 fresh
-TIMEOUT=$TOOLS/stand-in/timeout
+TIMEOUT=$STANDINS/timeout
 run "$work/out" "$work/err" "$TIMEOUT" -k 1 5 "$TS" version
 check "timeout: runs the program (the real timeout(1) found on PATH)" test "$status" = 0 -a "$(head -n 1 "$work/out")" = 1.104.4
 start=$SECONDS
 run "$work/out" "$work/err" env TS_FAKE_STATUS_HANG=30 "$TIMEOUT" -k 1 1 "$TS" status --json
 check "hung status: under timeout 1 s it is stopped with 124" test "$status" = 124 -a $((SECONDS - start)) -le 4
-run "$work/out" "$work/err" env PATH="$TOOLS/stand-in" "$TIMEOUT" 1 /bin/true
+run "$work/out" "$work/err" env PATH="$STANDINS" "$TIMEOUT" 1 /bin/true
 check "timeout: no real timeout(1) on PATH → 125, nothing run" test "$status" = 125
 echo 30 > "$work/state/status-hang"
 start=$SECONDS

@@ -1,6 +1,8 @@
 #!/bin/sh
 # h2s-stand-in: a stand-in `pkexec` for the module's end-to-end tests: it asks nobody and
-# runs nothing as root. It logs what it was asked to run, then answers as pkexec does:
+# runs nothing as root. In module test mode the module's runs as administrator go through it
+# (the manifest's testPrograms), never through a real pkexec. It logs what it was asked to
+# run, then answers as pkexec does:
 #
 #   TS_FAKE_PKEXEC      ok (default): runs the program, with TS_FAKE_ROOT=1 so the stand-in
 #                       tailscale behaves as for root | dismiss: exit 126 (the prompt was
@@ -12,9 +14,11 @@
 #                       program's status
 #   TS_FAKE_PKEXEC_LOG  a file each call's argv is appended to (one line, arguments
 #                       separated by tabs)
+#   TS_FAKE_CALLS       a file each call's own path ($0) is appended to
 #
-# Like the module's rule (TailscaleRules.privileged) it insists on an absolute path for the
-# program: the module never relies on pkexec resolving a name.
+# Like the real pkexec it insists on an absolute path for the program: root's PATH is never
+# searched.
+[ -n "${TS_FAKE_CALLS:-}" ] && printf '%s\n' "$0" >> "$TS_FAKE_CALLS"
 [ -n "${TS_FAKE_PKEXEC_LOG:-}" ] && { printf '%s' "pkexec"; for argument in "$@"; do printf '\t%s' "$argument"; done; printf '\n'; } >> "$TS_FAKE_PKEXEC_LOG"
 case ${1:-} in
     "") echo "pkexec --version | --help | [--user username] PROGRAM [ARGUMENTS...]" >&2; exit 127 ;;
