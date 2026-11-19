@@ -533,8 +533,7 @@ Singleton {
         return [curl, "-sS", "--fail", "--unix-socket", socket, "http://local-tailscaled.sock/localapi/v0/files/"];
     }
 
-    // A folder as a file: URL (for Api.openUrl's allowFile, or the seam's xdg-open): each
-    // component percent-encoded
+    // A folder as a file: URL (for Api.openUrl's allowFile): each component percent-encoded
     function folderUrl(folder) {
         const path = cleanFolder(folder);
         if (folderProblem(path) !== "")

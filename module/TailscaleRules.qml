@@ -750,8 +750,9 @@ Singleton {
     // unattended: never a password prompt, never a browser — attention instead, state back
     // to ""), anything else "user" (a click; as VpnManager reads it). → { kind, command,
     // privileged, attention, url }:
-    //   kind "run"         run `command` (commandFor's); `privileged`: through pkexec
-    //                      (privileged(argv, path)) — only ever with origin "user"
+    //   kind "run"         run `command` (commandFor's); `privileged`: may be run again as
+    //                      administrator when denied (privilegedRun, the shell's
+    //                      module.privileged) — only ever with origin "user"
     //        "needs-user"  do nothing; set `attention` (lasting until the user acts)
     //        "open-url"    open `url` in the browser (origin "user" only)
     //        "read"        the state is not known (not read yet, or the last read timed
